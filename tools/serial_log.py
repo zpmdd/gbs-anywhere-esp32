@@ -23,19 +23,22 @@ def open_without_reset(stream):
 
 
 def computer_running(port=8089):
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
-            return True
-    except ConnectionRefusedError:
-        return False
-    except OSError as error:
-        raise RuntimeError("Cannot check the desktop listener; active command not sent") from error
+    for candidate in dict.fromkeys((80, 8089, port)):
+        try:
+            with socket.create_connection(("127.0.0.1", candidate), timeout=1):
+                return True
+        except ConnectionRefusedError:
+            continue
+        except OSError as error:
+            raise RuntimeError("Cannot check the desktop listener; active command not sent") from error
+    return False
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="Board USB serial device")
-    parser.add_argument("--desktop-port", type=int, default=8089)
+    parser.add_argument("--desktop-port", type=int, default=8089,
+                        help="Additional local listener to check; ports 80 and 8089 are always checked")
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--command", choices=("status", "mode monitor", "mode active"))
     args = parser.parse_args()

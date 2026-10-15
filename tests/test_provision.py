@@ -57,6 +57,14 @@ class ProvisionTest(unittest.TestCase):
                 self.config(application={"integrations": [{"kind": "la_marzocco", "settings": {
                     "username": "rick@example.org", "password": password}}]})
 
+    def test_export_requires_exactly_one_saved_cloud_integration(self):
+        cloud = {"kind": "la_marzocco", "settings": {
+            "username": "rick@example.org", "password": "hunter2"}}
+        for entries in ([], [{"kind": "half_decent", "settings": {}}], [cloud, cloud]):
+            with self.subTest(entries=len(entries)), self.assertRaisesRegex(
+                    ValueError, "Exactly one La Marzocco integration is required"):
+                self.config(application={"integrations": entries})
+
     def test_creates_private_nvs_image_in_monitor_mode(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

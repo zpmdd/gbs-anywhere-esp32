@@ -70,7 +70,8 @@ def build_config(application, pairing, grinder, certificate, ssid, wifi_password
     clouds = [entry["settings"] for entry in application["integrations"]
               if entry.get("kind") == "la_marzocco"]
     if len(clouds) != 1:
-        raise ValueError("Exactly one La Marzocco integration is required")
+        raise ValueError("Exactly one La Marzocco integration is required. "
+                         "Add it in the desktop app before exporting settings; command-line flags are not saved.")
     cloud = clouds[0]
     username, password = cloud["username"].strip(), cloud["password"]
     serial = cloud.get("serial") or ""

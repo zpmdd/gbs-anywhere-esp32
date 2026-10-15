@@ -1,0 +1,31 @@
+name: ESP32-S3 CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: esp32-s3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Offline tests and ESP-IDF build
+        uses: espressif/esp-idf-ci-action@v1.2.0
+        with:
+          esp_idf_version: v5.5
+          target: esp32s3
+          command: >-
+            apt-get update &&
+            apt-get install --no-install-recommends -y nodejs gcc libc6-dev &&
+            sh tools/check.sh &&
+            idf.py build

@@ -1,4 +1,6 @@
-# Experimental ESP32-S3 bridge
+# gbs-anywhere ESP32-S3 companion (experimental)
+
+[![ESP32-S3 CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
 
 Run E65/E80 Generic WiFi feedback and La Marzocco cloud polling on a USB-powered
 ESP32-S3, without leaving a computer or NAS running. The grinder calculates the
@@ -10,9 +12,16 @@ This is a separate ESP-IDF C application. Its protocol and cloud authentication
 are ported from [PR15](https://github.com/Skamba/gbs-anywhere/pull/15) and
 [PR16 at 3b6ef9a](https://github.com/Skamba/gbs-anywhere/pull/16), with thanks to
 Skamba and erikp152. It is licensed under the repository's AGPL-3.0-or-later
-[license](../../LICENSE). ESP-IDF and its bundled libraries supply WiFi, TLS,
+[license](LICENSE). ESP-IDF and its bundled libraries supply WiFi, TLS,
 HTTP, JSON, cryptography, NVS and the USB console; no Rust runtime is required
-on the board. The desktop application and Docker build are unchanged.
+on the board. This companion repository is maintained separately from the
+[desktop application](https://github.com/Skamba/gbs-anywhere). It was split from
+[PR18](https://github.com/Skamba/gbs-anywhere/pull/18); see [NOTICE](NOTICE) for provenance.
+
+PR15 is not yet merged or released. Initial pairing currently requires its
+experimental branch, including fix `8f398c5` or later. Once that support is
+released, setup will point to the release and this C port will be checked against
+the merged flow. The current portable build has no hardware-validated release.
 
 ## Supported setup
 
@@ -30,6 +39,45 @@ on the board. The desktop application and Docker build are unchanged.
 There is no E64 server, manual shot-entry form, Half Decent Scale integration,
 new-pairing wizard, OTA update, Bluetooth or device-control page in this first
 version. A computer is needed once for initial pairing, provisioning and flashing.
+
+Clone this companion before following the setup or Docker migration steps:
+
+```sh
+git clone https://github.com/zpmdd/gbs-anywhere-esp32.git
+cd gbs-anywhere-esp32
+```
+
+## Migrating from Docker
+
+Keep the running ESP32 disconnected while pairing or preparing the desktop
+setup. Before exporting, **add and save exactly one La Marzocco cloud integration
+in the desktop app**. Integrations supplied only with `--la-marzocco-*` flags
+(or their environment-variable equivalents) are not saved in the settings file.
+An export without a saved integration causes `provision.py` to report
+`Exactly one La Marzocco integration is required`.
+
+After cloning this repository, stop the container and export both files into
+the ignored private directory. The usual Docker settings path is
+`/data/gbs-anywhere.json`; the default pairing file beside it is
+`/data/grinder-pairing.json`. Replace the container name or paths if customized:
+
+```sh
+umask 077
+mkdir -p .private/import
+docker stop gbs-anywhere
+docker cp gbs-anywhere:/data/gbs-anywhere.json .private/import/gbs-anywhere.json
+docker cp gbs-anywhere:/data/grinder-pairing.json .private/import/grinder-pairing.json
+chmod 600 .private/import/gbs-anywhere.json .private/import/grinder-pairing.json
+```
+
+`docker cp` works with a stopped container. Keep its data volume as a backup.
+The settings file contains credentials: do not commit or share either export.
+Pass these two paths as `--cloud-config` and `--pairing-file` in the setup below;
+the exported pairing identity is reused. Keep the container stopped while the
+ESP32 is active, and stop other clients on computers or a NAS too. A container
+restart policy may start it again when Docker or the host restarts, so confirm
+it remains stopped before each takeover. The local port check cannot discover
+another host.
 
 ## One-time setup
 
@@ -54,7 +102,6 @@ version. A computer is needed once for initial pairing, provisioning and flashin
 
    ```sh
    . "$HOME/esp/esp-idf/export.sh"
-   cd firmware/esp32-s3
    python tools/provision.py \
      --cloud-config /path/to/gbs-anywhere.json \
      --pairing-file /path/to/grinder-pairing.json \
@@ -111,8 +158,12 @@ Wait for WiFi, cloud and grinder to be connected before activating:
 python tools/serial_log.py --port /dev/ttyACM0 --command 'mode active'
 ```
 
-The helper checks the local desktop listener at port 8089 (`--desktop-port` can
-change it). This check cannot find services on another computer, another port,
+The helper checks local listeners at **80** (the usual Docker port) and **8089**
+(the usual desktop port). `--desktop-port 8888` adds another local port without
+removing those two checks. If any checked port is open, or its status cannot be
+determined, activation is refused before USB is opened. Any service on a checked
+port blocks activation, even if it is unrelated to gbs-anywhere; stop it before
+activating. This check cannot find services on another computer, an unlisted port,
 or a NAS: stopping all other clients remains your responsibility. The USB
 console also accepts `status`, `mode monitor`, and `mode active` directly.
 Mode is persisted. Wait for `status` to confirm the requested mode.
@@ -151,9 +202,16 @@ NVS images and flash backups. Private files are excluded from Git and created wi
 owner-only permissions on the supported POSIX host. The status page is unauthenticated
 and exposes coffee/device status to the local network; keep it on a trusted LAN.
 
-The precursor of this port completed one ESP32-S3 → La Marzocco cloud → E65W
-real-shot feedback cycle with the desktop service stopped and an operator-observed
-grind adjustment. That is not hardware validation of every change in this PR.
+The precursor of this port completed four ESP32-S3 → La Marzocco cloud → E65W
+real-shot feedback cycles with the desktop service stopped. The first has a
+complete serial/API trace and an operator-observed grind adjustment. Three
+subsequent cups were recovered from the grinder's database after the recorder
+had ended; each has one result attached to its own grind, and the operator saw
+adjustments for the first two of those cups. The third result was received and
+stored without a visible adjustment. Successful delivery does not guarantee
+motor movement: the grinder decides whether to adjust.
+
+That is not hardware validation of the exact portable build in this repository.
 The portable certificate provisioning, translated page and error-recovery changes
 need a new board run. Long-duration operation, real token expiry and all outage
 scenarios remain unverified.
@@ -167,3 +225,9 @@ library. `GBS_NODE` can select the Node executable.
 It does not contact a grinder or the vendor cloud. Worker/network failure paths
 are not yet covered by a full fake-service integration harness. This firmware is
 an experimental contribution, with a separate build from the desktop Rust CI.
+
+The [companion CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
+runs these offline checks and builds the ESP32-S3 application using Espressif's
+[ESP-IDF CI action](https://github.com/espressif/esp-idf-ci-action) with ESP-IDF 5.5.
+It does not flash hardware or publish a firmware release. Build success is not
+hardware acceptance.

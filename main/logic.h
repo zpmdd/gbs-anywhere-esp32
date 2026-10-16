@@ -5,6 +5,23 @@
 
 #define GBS_SEEN_CAP 32
 typedef struct {
+    bool ok;
+    uint32_t failures, recoveries;
+    int64_t last_ok_ms, last_failure_ms, recovered_ms;
+    int http_status;
+    char operation[24], transport[40], api_status[80];
+    char error[192], last_error[192];
+} gbs_health_t;
+
+void gbs_health_update(gbs_health_t *health, bool ok, const char *operation,
+                       int http_status, const char *transport, const char *api_status,
+                       int64_t now_ms);
+unsigned gbs_retry_seconds(uint32_t failures);
+cJSON *gbs_health_json(const gbs_health_t *health);
+bool gbs_job_error(const char *status);
+bool gbs_answer_gone(bool accepted, bool listed);
+
+typedef struct {
     char uuid[37];
     char dose_json[128];
     uint32_t group;

@@ -2,10 +2,14 @@
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>gbs-anywhere · ESP32-S3</title>
 <style>
-:root{color-scheme:light dark;--bg:#f7f5f1;--fg:#2d302c;--card:#fff;--line:#deddd7;--muted:#656b63;--error:#a53623}
-@media(prefers-color-scheme:dark){:root{--bg:#171a17;--fg:#eceee9;--card:#232823;--line:#414941;--muted:#b5bdb1;--error:#ffab96}}
-*{box-sizing:border-box}body{font:16px/1.6 system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:24px auto;padding:0 16px;max-width:480px}h1{font-size:24px}section{background:var(--card);padding:16px;border:1px solid var(--line);border-radius:12px;margin:16px 0}h2{font-size:18px;margin:0 0 12px}dl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}dt{color:var(--muted);overflow-wrap:anywhere}dd{margin:0;text-align:right;overflow-wrap:anywhere}#issue{color:var(--error);overflow-wrap:anywhere}small,footer{color:var(--muted);font-size:13px}a{color:inherit}
+:root{color-scheme:light dark;--bg:#f7f5f1;--fg:#2d302c;--card:#fff;--line:#deddd7;--muted:#656b63;--error:#a53623;--good:#176640;--good-bg:#e4f3e9;--warn:#845000;--warn-bg:#fff1cc;--bad-bg:#ffe8e2;--info:#205b99;--info-bg:#e5effb}
+@media(prefers-color-scheme:dark){:root{--bg:#171a17;--fg:#eceee9;--card:#232823;--line:#414941;--muted:#b5bdb1;--error:#ffab96;--good:#9ce2b6;--good-bg:#213d2c;--warn:#ffd48a;--warn-bg:#42351e;--bad-bg:#482c27;--info:#a9cdff;--info-bg:#26394e}}
+*{box-sizing:border-box}body{font:16px/1.6 system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:24px auto;padding:0 16px;max-width:560px}h1{font-size:24px}section{background:var(--card);padding:16px;border:1px solid var(--line);border-radius:12px;margin:16px 0}h2{font-size:18px;margin:0 0 12px}dl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}dt{color:var(--muted);overflow-wrap:anywhere}dd{margin:0;text-align:right;overflow-wrap:anywhere}#issue{color:var(--error);overflow-wrap:anywhere}small,footer{color:var(--muted);font-size:13px}a{color:inherit}
 .language{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.language label{color:var(--muted)}select{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;max-width:100%}select:focus-visible,a:focus-visible{outline:2px solid currentColor;outline-offset:3px}.diagnostic{color:var(--error);overflow-wrap:anywhere}.diagnostic code{font-size:13px}
+
+.badge{display:inline-block;border-radius:20px;padding:2px 10px;font-size:14px;font-weight:600;background:var(--line);color:var(--muted)}.badge::before{content:"●";font-size:10px;margin-right:7px}
+[data-tone="good"]{color:var(--good);background:var(--good-bg)}[data-tone="warn"]{color:var(--warn);background:var(--warn-bg)}[data-tone="bad"]{color:var(--error);background:var(--bad-bg)}[data-tone="info"]{color:var(--info);background:var(--info-bg)}
+#summary{padding:14px 16px;border-radius:12px;border:1px solid currentColor;font-weight:600}.diagnostic{padding-top:10px;border-top:1px solid var(--line)}.diagnostic p{margin:4px 0}.diagnostic[data-tone]{background:transparent}details summary{cursor:pointer;font-weight:600}details p{margin:12px 0 4px}pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)}.stamp{font-size:13px;color:var(--muted)}#lastResult{font-size:19px;font-weight:600}#version{overflow-wrap:anywhere}
 </style>
 <h1>gbs-anywhere <small>ESP32-S3</small></h1>
 <div class="language"><label for="language" data-i18n="language">Language</label><select id="language">
@@ -22,20 +26,31 @@
 <p id="summary" role="status">Reading status…</p>
 <section><h2 data-i18n="connection">Connection</h2><dl>
 <dt data-i18n="mode">Mode</dt><dd id="mode">—</dd>
-<dt data-i18n="grinder">Grinder</dt><dd id="grinder">—</dd>
-<dt data-i18n="cloud">La Marzocco cloud</dt><dd id="cloud">—</dd>
-<dt data-i18n="currentTask">Current task</dt><dd id="phase">—</dd>
+<dt data-i18n="wifi">WiFi</dt><dd><span class="badge" id="wifi">—</span></dd>
+<dt data-i18n="grinder">Grinder</dt><dd><span class="badge" id="grinder">—</span></dd>
+<dt data-i18n="cloud">La Marzocco cloud</dt><dd><span class="badge" id="cloud">—</span></dd>
+<dt data-i18n="storage">Storage</dt><dd><span class="badge" id="storage">—</span></dd>
+<dt data-i18n="currentTask">Current task</dt><dd><span class="badge" id="phase">—</span></dd>
 </dl>
-<p id="diagnostic" class="diagnostic" role="status" hidden><span data-i18n="diagnostics">Diagnostics</span>: <code id="issue"></code></p>
+<div id="diagnostic" class="diagnostic" role="status" hidden><p id="issueHelp"></p><details><summary data-i18n="diagnostics">Diagnostics</summary><pre id="issue"></pre></details></div>
 </section>
 <section><h2 data-i18n="coffee">Coffee</h2><dl>
+<dt data-i18n="lastDelivered">Last delivered result</dt><dd id="lastResult">—</dd>
 <dt data-i18n="latestCoffee">Latest cloud coffee</dt><dd id="coffee">—</dd>
+<dt data-i18n="lastCloudUpdate">Cloud coffee time</dt><dd id="coffeeAge" class="stamp">—</dd>
 <dt data-i18n="resultsDelivered">Results delivered</dt><dd id="successes">—</dd>
 <dt data-i18n="lastOutcome">Last outcome</dt><dd id="outcome">—</dd>
 <dt data-i18n="targetTime">Target time</dt><dd id="target">—</dd>
+<dt data-i18n="targetWeight">Target beverage weight</dt><dd id="targetWeight">—</dd>
+<dt data-i18n="remaining">Time remaining</dt><dd id="remaining">—</dd>
 </dl>
 </section>
+<section><details><summary data-i18n="details">Connection details</summary>
+<p data-i18n="grinder">Grinder</p><pre id="grinderDetail"></pre>
+<p data-i18n="cloud">La Marzocco cloud</p><pre id="cloudDetail"></pre>
+</details></section>
 <section><h2 data-i18n="device">Device</h2><dl>
+<dt data-i18n="firmware">Firmware</dt><dd id="version">—</dd>
 <dt data-i18n="uptime">Uptime</dt><dd id="uptime">—</dd>
 <dt data-i18n="freeInternal">Free internal memory</dt><dd id="heap">—</dd>
 <dt data-i18n="freePsram">Free PSRAM</dt><dd id="psram">—</dd>
@@ -91,7 +106,34 @@
     "delivery_unknown": "Delivery unconfirmed; not retried",
     "job_disappeared": "Task no longer available",
     "stopped_by_mode_change": "Stopped by mode change",
-    "interrupted_by_restart": "Interrupted by restart"
+    "interrupted_by_restart": "Interrupted by restart",
+    "healthy": "Healthy",
+    "unknown": "Unknown",
+    "wifi": "WiFi",
+    "storage": "Storage",
+    "readySummary": "Ready for a GbS grind",
+    "waitingSummary": "Waiting for extraction and the cloud result",
+    "sendingSummary": "Sending the measured result",
+    "reconnectSummary": "Reconnecting — please wait for Ready",
+    "attentionSummary": "Attention required",
+    "pairing_required": "Pairing needs attention",
+    "grinder_waiting": "Waiting for grinder",
+    "cloud_waiting": "Waiting for cloud",
+    "grinderHelp": "The grinder may be off, starting or unavailable. Reconnecting automatically; wait for Ready before grinding.",
+    "cloudHelp": "Cloud data is unavailable. Retrying automatically; check internet access or the cloud account if this continues.",
+    "pairingHelp": "The grinder repeatedly refused this pairing. Check Generic WiFi and the saved pairing; nothing has been erased.",
+    "storageHelp": "Task storage failed. Feedback is stopped to avoid duplicate results.",
+    "taskHelp": "This concerns the current or previous task. Check the outcome below; a connected grinder does not mean this result was delivered.",
+    "lastDelivered": "Last delivered result",
+    "targetWeight": "Target beverage weight",
+    "remaining": "Time remaining",
+    "lastCloudUpdate": "Cloud coffee time",
+    "details": "Connection details",
+    "lastReply": "Last successful reply",
+    "lastFailure": "Last failure",
+    "recovered": "Recovered",
+    "noErrors": "No errors recorded",
+    "firmware": "Firmware"
   },
   "de": {
     "language": "Sprache",
@@ -139,7 +181,34 @@
     "delivery_unknown": "Übertragung unbestätigt; kein erneuter Versuch",
     "job_disappeared": "Aufgabe nicht mehr verfügbar",
     "stopped_by_mode_change": "Durch Moduswechsel gestoppt",
-    "interrupted_by_restart": "Durch Neustart unterbrochen"
+    "interrupted_by_restart": "Durch Neustart unterbrochen",
+    "healthy": "In Ordnung",
+    "unknown": "Unbekannt",
+    "wifi": "WLAN",
+    "storage": "Speicher",
+    "readySummary": "Bereit für einen GbS-Mahlvorgang",
+    "waitingSummary": "Warte auf Bezug und Cloud-Ergebnis",
+    "sendingSummary": "Messwerte werden gesendet",
+    "reconnectSummary": "Verbindung wird hergestellt — bitte auf Bereit warten",
+    "attentionSummary": "Prüfung erforderlich",
+    "pairing_required": "Kopplung prüfen",
+    "grinder_waiting": "Warte auf die Mühle",
+    "cloud_waiting": "Warte auf die Cloud",
+    "grinderHelp": "Die Mühle ist möglicherweise aus oder startet. Automatische Neuverbindung; vor dem Mahlen auf Bereit warten.",
+    "cloudHelp": "Cloud-Daten fehlen. Automatischer Neuversuch; bei anhaltenden Problemen Internet und Cloud-Konto prüfen.",
+    "pairingHelp": "Die Mühle hat die Kopplung mehrfach abgelehnt. Generic WiFi und gespeicherte Kopplung prüfen; es wurde nichts gelöscht.",
+    "storageHelp": "Aufgabenspeicher fehlgeschlagen. Rückmeldung ist zum Schutz vor Duplikaten gestoppt.",
+    "taskHelp": "Dies betrifft die aktuelle oder vorige Aufgabe. Das Ergebnis unten prüfen; verbunden bedeutet nicht zugestellt.",
+    "lastDelivered": "Zuletzt zugestelltes Ergebnis",
+    "targetWeight": "Zielgewicht des Getränks",
+    "remaining": "Verbleibende Zeit",
+    "lastCloudUpdate": "Zeit des Cloud-Bezugs",
+    "details": "Verbindungsdetails",
+    "lastReply": "Letzte erfolgreiche Antwort",
+    "lastFailure": "Letzter Fehler",
+    "recovered": "Wieder verbunden",
+    "noErrors": "Keine Fehler aufgezeichnet",
+    "firmware": "Firmware"
   },
   "fr": {
     "language": "Langue",
@@ -187,7 +256,34 @@
     "delivery_unknown": "Envoi non confirmé ; pas de nouvel essai",
     "job_disappeared": "Tâche indisponible",
     "stopped_by_mode_change": "Arrêt suite au changement de mode",
-    "interrupted_by_restart": "Interruption suite au redémarrage"
+    "interrupted_by_restart": "Interruption suite au redémarrage",
+    "healthy": "Normal",
+    "unknown": "Inconnu",
+    "wifi": "WiFi",
+    "storage": "Stockage",
+    "readySummary": "Prêt pour une mouture GbS",
+    "waitingSummary": "En attente de l’extraction et du résultat cloud",
+    "sendingSummary": "Envoi du résultat mesuré",
+    "reconnectSummary": "Reconnexion — attendez l’état Prêt",
+    "attentionSummary": "Vérification nécessaire",
+    "pairing_required": "Vérifier l’appairage",
+    "grinder_waiting": "En attente du moulin",
+    "cloud_waiting": "En attente du cloud",
+    "grinderHelp": "Le moulin peut être éteint ou en cours de démarrage. Reconnexion automatique ; attendez Prêt avant de moudre.",
+    "cloudHelp": "Données cloud indisponibles. Nouvel essai automatique ; vérifiez internet ou le compte si cela persiste.",
+    "pairingHelp": "Le moulin a refusé plusieurs fois cet appairage. Vérifiez Generic WiFi et l’appairage enregistré ; rien n’a été effacé.",
+    "storageHelp": "Échec du stockage des tâches. Envoi suspendu pour éviter les doublons.",
+    "taskHelp": "Cela concerne la tâche actuelle ou précédente. Vérifiez le résultat ci-dessous ; connecté ne signifie pas livré.",
+    "lastDelivered": "Dernier résultat transmis",
+    "targetWeight": "Poids cible en tasse",
+    "remaining": "Temps restant",
+    "lastCloudUpdate": "Heure du café cloud",
+    "details": "Détails de connexion",
+    "lastReply": "Dernière réponse réussie",
+    "lastFailure": "Dernière erreur",
+    "recovered": "Rétabli",
+    "noErrors": "Aucune erreur enregistrée",
+    "firmware": "Micrologiciel"
   },
   "it": {
     "language": "Lingua",
@@ -235,7 +331,34 @@
     "delivery_unknown": "Invio non confermato; nessun nuovo tentativo",
     "job_disappeared": "Attività non più disponibile",
     "stopped_by_mode_change": "Interrotto dal cambio di modalità",
-    "interrupted_by_restart": "Interrotto dal riavvio"
+    "interrupted_by_restart": "Interrotto dal riavvio",
+    "healthy": "Regolare",
+    "unknown": "Sconosciuto",
+    "wifi": "WiFi",
+    "storage": "Memoria",
+    "readySummary": "Pronto per una macinatura GbS",
+    "waitingSummary": "In attesa dell’estrazione e del risultato cloud",
+    "sendingSummary": "Invio del risultato misurato",
+    "reconnectSummary": "Riconnessione — attendi Pronto",
+    "attentionSummary": "Verifica necessaria",
+    "pairing_required": "Verificare l’abbinamento",
+    "grinder_waiting": "In attesa del macinacaffè",
+    "cloud_waiting": "In attesa del cloud",
+    "grinderHelp": "Il macinacaffè potrebbe essere spento o in avvio. Riconnessione automatica; attendi Pronto prima di macinare.",
+    "cloudHelp": "Dati cloud non disponibili. Nuovo tentativo automatico; se persiste, controlla internet o l’account.",
+    "pairingHelp": "Il macinacaffè ha rifiutato più volte l’abbinamento. Controlla Generic WiFi e l’abbinamento salvato; nulla è stato cancellato.",
+    "storageHelp": "Errore nella memoria delle attività. Invio fermato per evitare risultati duplicati.",
+    "taskHelp": "Riguarda l’attività attuale o precedente. Verifica l’esito sotto; connesso non significa consegnato.",
+    "lastDelivered": "Ultimo risultato consegnato",
+    "targetWeight": "Peso bevanda desiderato",
+    "remaining": "Tempo rimanente",
+    "lastCloudUpdate": "Ora del caffè cloud",
+    "details": "Dettagli connessione",
+    "lastReply": "Ultima risposta riuscita",
+    "lastFailure": "Ultimo errore",
+    "recovered": "Ripristinato",
+    "noErrors": "Nessun errore registrato",
+    "firmware": "Firmware"
   },
   "ja": {
     "language": "言語",
@@ -283,7 +406,34 @@
     "delivery_unknown": "送信を確認できません。再送していません",
     "job_disappeared": "タスクは利用できません",
     "stopped_by_mode_change": "モード変更により停止",
-    "interrupted_by_restart": "再起動により中断"
+    "interrupted_by_restart": "再起動により中断",
+    "healthy": "正常",
+    "unknown": "不明",
+    "wifi": "WiFi",
+    "storage": "保存領域",
+    "readySummary": "GbS の挽豆を開始できます",
+    "waitingSummary": "抽出とクラウドの結果を待っています",
+    "sendingSummary": "測定結果を送信中",
+    "reconnectSummary": "再接続中 — 準備完了をお待ちください",
+    "attentionSummary": "確認が必要です",
+    "pairing_required": "ペアリングの確認が必要",
+    "grinder_waiting": "グラインダーを待機中",
+    "cloud_waiting": "クラウドを待機中",
+    "grinderHelp": "グラインダーが電源オフまたは起動中の可能性があります。自動再接続します。準備完了後に挽いてください。",
+    "cloudHelp": "クラウドデータを取得できません。自動再試行します。続く場合はインターネットやアカウントを確認してください。",
+    "pairingHelp": "グラインダーがペアリングを繰り返し拒否しました。Generic WiFi と保存済みペアリングを確認してください。情報は削除していません。",
+    "storageHelp": "タスクの保存に失敗しました。重複送信を防ぐため連動を停止しています。",
+    "taskHelp": "現在または直前のタスクに関する問題です。下の結果を確認してください。接続済みでも送信成功とは限りません。",
+    "lastDelivered": "最後に送信できた結果",
+    "targetWeight": "目標抽出重量",
+    "remaining": "残り時間",
+    "lastCloudUpdate": "クラウドの抽出日時",
+    "details": "接続の詳細",
+    "lastReply": "最後に成功した応答",
+    "lastFailure": "前回のエラー",
+    "recovered": "復旧日時",
+    "noErrors": "エラー記録なし",
+    "firmware": "ファームウェア"
   },
   "ko": {
     "language": "언어",
@@ -331,7 +481,34 @@
     "delivery_unknown": "전송 확인 불가. 재전송하지 않음",
     "job_disappeared": "작업을 더 이상 사용할 수 없음",
     "stopped_by_mode_change": "모드 변경으로 중지됨",
-    "interrupted_by_restart": "재시작으로 중단됨"
+    "interrupted_by_restart": "재시작으로 중단됨",
+    "healthy": "정상",
+    "unknown": "알 수 없음",
+    "wifi": "WiFi",
+    "storage": "저장소",
+    "readySummary": "GbS 분쇄 준비 완료",
+    "waitingSummary": "추출 및 클라우드 결과를 기다리는 중",
+    "sendingSummary": "측정 결과 전송 중",
+    "reconnectSummary": "재연결 중 — 준비 완료를 기다려 주세요",
+    "attentionSummary": "확인이 필요합니다",
+    "pairing_required": "페어링 확인 필요",
+    "grinder_waiting": "그라인더 대기 중",
+    "cloud_waiting": "클라우드 대기 중",
+    "grinderHelp": "그라인더가 꺼져 있거나 시작 중일 수 있습니다. 자동으로 재연결합니다. 준비 완료 후 분쇄하세요.",
+    "cloudHelp": "클라우드 데이터를 받을 수 없습니다. 자동 재시도합니다. 계속되면 인터넷이나 계정을 확인하세요.",
+    "pairingHelp": "그라인더가 페어링을 반복해서 거부했습니다. Generic WiFi와 저장된 페어링을 확인하세요. 삭제한 정보는 없습니다.",
+    "storageHelp": "작업 저장에 실패했습니다. 중복 결과를 막기 위해 전송을 중지했습니다.",
+    "taskHelp": "현재 또는 이전 작업에 관한 문제입니다. 아래 결과를 확인하세요. 연결됨이 전송 성공을 뜻하지는 않습니다.",
+    "lastDelivered": "마지막 전송 성공 결과",
+    "targetWeight": "목표 음료 무게",
+    "remaining": "남은 시간",
+    "lastCloudUpdate": "클라우드 커피 시간",
+    "details": "연결 상세",
+    "lastReply": "마지막 성공 응답",
+    "lastFailure": "마지막 오류",
+    "recovered": "복구 시간",
+    "noErrors": "기록된 오류 없음",
+    "firmware": "펌웨어"
   },
   "zh-CN": {
     "language": "语言",
@@ -379,7 +556,34 @@
     "delivery_unknown": "发送结果未确认，未重试",
     "job_disappeared": "任务已不可用",
     "stopped_by_mode_change": "因模式切换停止",
-    "interrupted_by_restart": "因设备重启中断"
+    "interrupted_by_restart": "因设备重启中断",
+    "healthy": "正常",
+    "unknown": "未知",
+    "wifi": "WiFi",
+    "storage": "任务存储",
+    "readySummary": "已就绪，可以使用 GbS 配方磨粉",
+    "waitingSummary": "等待萃取完成和云端结果",
+    "sendingSummary": "正在回传实测结果",
+    "reconnectSummary": "正在恢复连接，请等待“已就绪”",
+    "attentionSummary": "需要检查，请查看下方说明",
+    "pairing_required": "需要检查配对",
+    "grinder_waiting": "等待磨豆机上线",
+    "cloud_waiting": "等待云端连接",
+    "grinderHelp": "磨豆机可能已关机、正在启动或暂时无法访问。S3 会自动重连，请等“已就绪”后磨粉。",
+    "cloudHelp": "暂时无法获取云端数据，正在自动重试。若持续出现，请检查网络或云端账号。",
+    "pairingHelp": "磨豆机连续拒绝了当前配对。请检查 Generic WiFi 和保存的配对信息；S3 未清除配对。",
+    "storageHelp": "任务记录保存失败，已暂停回传以避免重复发送结果。",
+    "taskHelp": "这条信息涉及当前或上一杯任务。请核对下方处理结果；连接正常不代表该杯已送达。",
+    "lastDelivered": "最近成功回传",
+    "targetWeight": "目标杯中液重",
+    "remaining": "等待剩余时间",
+    "lastCloudUpdate": "云端萃取时间",
+    "details": "连接诊断详情",
+    "lastReply": "最近成功响应",
+    "lastFailure": "上次失败",
+    "recovered": "已恢复于",
+    "noErrors": "尚无错误记录",
+    "firmware": "固件版本"
   },
   "zh-TW": {
     "language": "語言",
@@ -427,7 +631,34 @@
     "delivery_unknown": "傳送結果未確認，未重試",
     "job_disappeared": "任務已無法使用",
     "stopped_by_mode_change": "因模式切換停止",
-    "interrupted_by_restart": "因裝置重啟中斷"
+    "interrupted_by_restart": "因裝置重啟中斷",
+    "healthy": "正常",
+    "unknown": "未知",
+    "wifi": "WiFi",
+    "storage": "任務儲存",
+    "readySummary": "已就緒，可使用 GbS 配方磨粉",
+    "waitingSummary": "等待萃取完成和雲端結果",
+    "sendingSummary": "正在回傳實測結果",
+    "reconnectSummary": "正在恢復連線，請等待「已就緒」",
+    "attentionSummary": "需要檢查，請查看下方說明",
+    "pairing_required": "需要檢查配對",
+    "grinder_waiting": "等待磨豆機上線",
+    "cloud_waiting": "等待雲端連線",
+    "grinderHelp": "磨豆機可能已關機、正在啟動或暫時無法存取。S3 會自動重新連線，請等「已就緒」後磨粉。",
+    "cloudHelp": "暫時無法取得雲端資料，正在自動重試。若持續出現，請檢查網路或雲端帳號。",
+    "pairingHelp": "磨豆機連續拒絕目前配對。請檢查 Generic WiFi 和已儲存的配對資訊；S3 未清除配對。",
+    "storageHelp": "任務記錄儲存失敗，已暫停回傳以避免重複傳送結果。",
+    "taskHelp": "這則資訊涉及目前或上一杯任務。請核對下方處理結果；連線正常不代表該杯已送達。",
+    "lastDelivered": "最近成功回傳",
+    "targetWeight": "目標杯中液重",
+    "remaining": "等待剩餘時間",
+    "lastCloudUpdate": "雲端萃取時間",
+    "details": "連線診斷詳情",
+    "lastReply": "最近成功回應",
+    "lastFailure": "上次失敗",
+    "recovered": "已恢復於",
+    "noErrors": "尚無錯誤記錄",
+    "firmware": "韌體版本"
   }
 }
 </script>
@@ -437,6 +668,7 @@ const picker = document.getElementById('language');
 const storageKey = 'gbs-esp32-language';
 const text = (id, value) => { document.getElementById(id).textContent = value; };
 let state = null, failed = false;
+const tone = (id, value) => { document.getElementById(id).dataset.tone = value; };
 
 function browserLanguage(languages) {
   for (const language of languages) {
@@ -459,13 +691,45 @@ function render() {
     ...(unit ? {style: 'unit', unit, unitDisplay: 'short'} : {}),
     minimumFractionDigits: digits, maximumFractionDigits: digits
   }).format(value) : '—';
-  text('summary', failed ? m.unreachable : !state || !state.mode ? m.reading : state.mode === 'active' ? m.activeSummary : m.monitorSummary);
+  const initializing = !state || !state.mode;
+  const disconnected = state && (!state.wifi || !state.grinder || !state.cloud);
+  const attention = state && (state.storage === false || state.pairing_required || (state.issue && state.issue_source === 'task'));
+  const busy = state && ['waiting_for_coffee', 'sending'].includes(state.phase);
+  const summary = failed ? m.unreachable : initializing ? m.reading : attention ? m.attentionSummary :
+    disconnected ? m.reconnectSummary : state.mode === 'monitor' ? m.monitorSummary :
+    state.phase === 'sending' ? m.sendingSummary : busy ? m.waitingSummary : m.readySummary;
+  text('summary', summary);
+  tone('summary', failed ? 'bad' : initializing ? 'neutral' : attention ? 'bad' : disconnected ? 'warn' :
+    busy || state.mode === 'monitor' ? 'info' : 'good');
   if (!state) return;
   text('mode', state.mode === 'active' ? m.active : state.mode === 'monitor' ? m.monitor : '—');
-  for (const id of ['grinder', 'cloud']) text(id, typeof state[id] === 'boolean' ? (state[id] ? m.connected : m.disconnected) : '—');
-  text('phase', m[state.phase] || state.phase || '—');
+  for (const id of ['wifi', 'grinder', 'cloud', 'storage']) {
+    const known = !failed && typeof state[id] === 'boolean';
+    text(id, !known ? m.unknown : state[id] ? (id === 'storage' ? m.healthy : m.connected) : m.disconnected);
+    tone(id, !known ? 'neutral' : state[id] ? 'good' : id === 'storage' ? 'bad' : 'warn');
+  }
+  text('phase', failed ? m.unknown : m[state.phase] || state.phase || '—');
+  tone('phase', failed ? 'neutral' : attention ? 'bad' : disconnected ? 'warn' : busy ? 'info' : 'good');
   text('issue', state.issue || '');
-  document.getElementById('diagnostic').hidden = !state.issue;
+  const help = state.pairing_required ? m.pairingHelp : state.issue_source === 'storage' ? m.storageHelp :
+    state.issue_source === 'cloud' ? m.cloudHelp : state.issue_source === 'grinder' ? m.grinderHelp : m.taskHelp;
+  text('issueHelp', help);
+  tone('diagnostic', attention ? 'bad' : 'warn');
+  document.getElementById('diagnostic').hidden = failed || !state.issue;
+  const stamp = value => value > 0 ? new Intl.DateTimeFormat(locale, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'}).format(new Date(value)) : '—';
+  for (const id of ['grinder', 'cloud']) {
+    const link = state.connections?.[id];
+    text(id + 'Detail', !link ? '—' : [
+      `${m.lastReply}: ${stamp(link.last_ok_ms)}`,
+      link.last_error ? `${m.lastFailure}: ${stamp(link.last_failure_ms)}\n${link.last_error}` : m.noErrors,
+      link.recovered_ms ? `${m.recovered}: ${stamp(link.recovered_ms)}` : ''
+    ].filter(Boolean).join('\n'));
+  }
+  text('lastResult', state.successes ? `${format(state.last_success_seconds, 'second', 1)} · ${format(state.last_success_grams, 'gram', 1)}` : m.none);
+  text('coffeeAge', stamp(state.latest_coffee_ms));
+  text('targetWeight', state.target_grams ? format(state.target_grams, 'gram', 1) : '—');
+  text('remaining', state.phase === 'waiting_for_coffee' ? format(state.job_remaining_s, 'second') : '—');
+  text('version', state.firmware || '—');
   text('coffee', state.latest_coffee_ms ? `${format(state.latest_seconds, 'second', 1)} · ${format(state.latest_grams, 'gram', 1)}` : m.none);
   text('successes', format(state.successes));
   text('outcome', m[state.last_outcome] || state.last_outcome || m.none);
@@ -487,14 +751,17 @@ window.addEventListener('languagechange', render);
 render();
 
 async function refresh() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch('/api/state', {cache: 'no-store'});
+    const response = await fetch('/api/state', {cache: 'no-store', signal: controller.signal});
     if (!response.ok) throw Error(response.status);
     const next = await response.json();
     if (!next || typeof next !== 'object' || Array.isArray(next)) throw Error('Invalid status');
     state = next;
     failed = false;
   } catch (_) { failed = true; }
+  finally { clearTimeout(timer); }
   render();
   setTimeout(refresh, 3000);
 }

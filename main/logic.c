@@ -5,6 +5,65 @@
 #include <stdio.h>
 #include <string.h>
 
+void gbs_health_update(gbs_health_t *h, bool ok, const char *operation,
+                       int http_status, const char *transport, const char *api_status,
+                       int64_t now_ms)
+{
+    snprintf(h->operation, sizeof(h->operation), "%s", operation);
+    snprintf(h->transport, sizeof(h->transport), "%s", transport);
+    snprintf(h->api_status, sizeof(h->api_status), "%s", api_status);
+    h->http_status = http_status;
+    h->ok = ok;
+    if (ok) {
+        if (h->failures) { ++h->recoveries; h->recovered_ms = now_ms; }
+        h->failures = 0;
+        h->last_ok_ms = now_ms;
+        h->error[0] = 0;
+    } else {
+        if (h->failures < UINT32_MAX) ++h->failures;
+        h->last_failure_ms = now_ms;
+        snprintf(h->error, sizeof(h->error), "%.23s: HTTP %d, %.39s%s%.79s", operation,
+                 http_status, transport, api_status[0] ? ", " : "", api_status);
+        strcpy(h->last_error, h->error);
+    }
+}
+
+unsigned gbs_retry_seconds(uint32_t failures)
+{
+    // Daily power-on must be noticed before an unaccepted brew job can expire.
+    return failures >= 3 ? 5 : failures ? 1U << failures : 2;
+}
+
+cJSON *gbs_health_json(const gbs_health_t *h)
+{
+    cJSON *j = cJSON_CreateObject();
+    if (!j) return NULL;
+    cJSON_AddBoolToObject(j, "ok", h->ok);
+    cJSON_AddNumberToObject(j, "failures", h->failures);
+    cJSON_AddNumberToObject(j, "recoveries", h->recoveries);
+    cJSON_AddNumberToObject(j, "last_ok_ms", h->last_ok_ms);
+    cJSON_AddNumberToObject(j, "last_failure_ms", h->last_failure_ms);
+    cJSON_AddNumberToObject(j, "recovered_ms", h->recovered_ms);
+    cJSON_AddNumberToObject(j, "http_status", h->http_status);
+    cJSON_AddStringToObject(j, "operation", h->operation);
+    cJSON_AddStringToObject(j, "transport", h->transport);
+    cJSON_AddStringToObject(j, "api_status", h->api_status);
+    cJSON_AddStringToObject(j, "error", h->error);
+    cJSON_AddStringToObject(j, "last_error", h->last_error);
+    return j;
+}
+
+bool gbs_job_error(const char *status)
+{
+    return status && (!strcmp(status, "ClientErrorBrewJobNotExisting") ||
+                      !strcmp(status, "ClientErrorOngoingJobNotExisting"));
+}
+
+bool gbs_answer_gone(bool accepted, bool listed)
+{
+    return !accepted && !listed;
+}
+
 bool gbs_reply_valid(int http_status, const char *status)
 {
     if (!status || !status[0]) return false;

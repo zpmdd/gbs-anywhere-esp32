@@ -23,6 +23,7 @@
 #define MAX_RESPONSE (128 * 1024)
 static const char *TAG = "gbs_net";
 gbs_config_t gbs_config;
+gbs_request_info_t gbs_grinder_request, gbs_cloud_request;
 static mbedtls_pk_context installation_key;
 static mbedtls_entropy_context entropy;
 static mbedtls_ctr_drbg_context random_context;
@@ -244,8 +245,13 @@ static esp_err_t cloud_request(const char *path, bool registration, const char *
     char url[256];
     if (snprintf(url, sizeof(url), CLOUD "%s", path) >= sizeof(url)) return ESP_ERR_INVALID_SIZE;
     esp_err_t err = request(url, false, registration, bearer, body, status, reply);
+    // Only operation names are published; paths can contain a machine identifier.
+    const char *operation = !strncmp(path, "things/", 7) ? "coffee" : path;
+    snprintf(gbs_cloud_request.operation, sizeof(gbs_cloud_request.operation), "%s", operation);
+    gbs_cloud_request.http_status = *status;
+    gbs_cloud_request.transport = err;
     if (err != ESP_OK || *status < 200 || *status >= 300)
-        ESP_LOGW(TAG, "cloud %s HTTP=%d transport=%s", path, *status, esp_err_to_name(err));
+        ESP_LOGD(TAG, "cloud %s HTTP=%d transport=%s", operation, *status, esp_err_to_name(err));
     return err;
 }
 
@@ -343,7 +349,11 @@ esp_err_t gbs_grinder(const char *endpoint, const cJSON *body, cJSON **reply, ch
     strcpy(status, "TransportError");
     esp_err_t err = request(url, true, false, NULL, body, &http_status, reply);
     if (err == ESP_OK && !string_field(*reply, "status", status, 80, false)) err = ESP_ERR_INVALID_RESPONSE;
-    ESP_LOGI(TAG, "grinder %s HTTP=%d status=%s transport=%s", endpoint, http_status, status, esp_err_to_name(err));
     if (err == ESP_OK && !gbs_reply_valid(http_status, status)) err = ESP_ERR_INVALID_RESPONSE;
+    snprintf(gbs_grinder_request.operation, sizeof(gbs_grinder_request.operation), "%s", endpoint);
+    gbs_grinder_request.http_status = http_status;
+    gbs_grinder_request.transport = err;
+    if (strcmp(endpoint, "brewJobs"))
+        ESP_LOGI(TAG, "grinder %s HTTP=%d status=%s transport=%s", endpoint, http_status, status, esp_err_to_name(err));
     return err;
 }

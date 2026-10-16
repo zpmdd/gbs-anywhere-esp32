@@ -16,7 +16,7 @@ for (const dictionary of Object.values(messages)) {
 
 async function page({languages = ['en-US'], saved = null, blocked = false} = {}) {
   const nodes = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(match => [match[1], {
-    textContent: '', value: '', hidden: false, events: {},
+    textContent: '', value: '', hidden: false, events: {}, dataset: {},
     addEventListener(name, callback) { this.events[name] = callback; }
   }]));
   nodes.translations.textContent = translations;
@@ -25,7 +25,7 @@ async function page({languages = ['en-US'], saved = null, blocked = false} = {})
     return {dataset: {i18n: match[1]}, textContent: ''};
   });
   const document = {documentElement: {}, getElementById: id => nodes[id], querySelectorAll: () => labels};
-  const model = {mode: 'active', phase: 'waiting_for_coffee', grinder: true, cloud: false,
+  const model = {mode: 'active', phase: 'waiting_for_coffee', wifi: true, storage: true, grinder: true, cloud: false,
     last_outcome: 'success', latest_coffee_ms: 1, latest_seconds: 30.5, latest_grams: 36,
     target_seconds: 30, successes: 1, uptime_s: 600, free_internal: 102400, free_psram: 1048576};
   let stored = saved, online = true, calls = 0;
@@ -41,7 +41,7 @@ async function page({languages = ['en-US'], saved = null, blocked = false} = {})
       calls++;
       return {ok: online, status: 503, async json() { return model; }};
     },
-    setTimeout() {}
+    AbortController, setTimeout() {}, clearTimeout() {}
   });
   vm.runInContext(script, context);
   const refresh = () => vm.runInContext('refresh()', context);
@@ -86,9 +86,35 @@ async function page({languages = ['en-US'], saved = null, blocked = false} = {})
   assert.equal(p.nodes.outcome.textContent, 'new_diagnostic_code');
   assert.equal(p.nodes.issue.textContent, p.model.issue);
   assert.equal(p.nodes.diagnostic.hidden, false);
+  p.model.issue_source = 'grinder';
+  p.model.grinder = false;
+  p.model.connections = {grinder: {last_ok_ms: 1000, last_failure_ms: 2000,
+    last_error: 'brewJobs: HTTP 0, ESP_ERR_TIMEOUT, TransportError', recovered_ms: 0}};
+  await p.refresh();
+  assert.equal(p.nodes.grinder.dataset.tone, 'warn');
+  assert.equal(p.nodes.summary.dataset.tone, 'warn');
+  assert.equal(p.nodes.issueHelp.textContent, messages['zh-CN'].grinderHelp);
+  p.model.grinder = p.model.cloud = true;
+  p.model.issue = '';
+  p.model.issue_source = '';
+  p.model.connections.grinder.recovered_ms = 3000;
+  p.model.phase = 'ready';
+  await p.refresh();
+  assert.equal(p.nodes.grinder.dataset.tone, 'good');
+  assert.equal(p.nodes.summary.dataset.tone, 'good');
+  assert.equal(p.nodes.diagnostic.hidden, true);
+  assert.ok(p.nodes.grinderDetail.textContent.includes('ESP_ERR_TIMEOUT'));
+  assert.ok(p.nodes.grinderDetail.textContent.includes(messages['zh-CN'].recovered));
+  p.model.issue = 'brewJobs: HTTP 403'; p.model.issue_source = 'grinder';
+  p.model.pairing_required = true;
+  await p.refresh();
+  assert.equal(p.nodes.summary.dataset.tone, 'bad');
+  assert.equal(p.nodes.issueHelp.textContent, messages['zh-CN'].pairingHelp);
   p.online(false);
   await p.refresh();
   assert.equal(p.nodes.summary.textContent, messages['zh-CN'].unreachable);
+  assert.equal(p.nodes.grinder.dataset.tone, 'neutral');
+  assert.equal(p.nodes.grinder.textContent, messages['zh-CN'].unknown);
   p.online(true);
   Object.keys(p.model).forEach(key => delete p.model[key]);
   p.model.phase = 'booting';

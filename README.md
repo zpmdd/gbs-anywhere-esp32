@@ -10,7 +10,7 @@ Not affiliated with Mahlkönig or Hemro.
 
 This is a separate ESP-IDF C application. Its protocol and cloud authentication
 are ported from [PR15](https://github.com/Skamba/gbs-anywhere/pull/15) and
-[PR16 at 3b6ef9a](https://github.com/Skamba/gbs-anywhere/pull/16), with thanks to
+[PR16 at ba00c92](https://github.com/Skamba/gbs-anywhere/pull/16), with thanks to
 Skamba and erikp152. It is licensed under the repository's AGPL-3.0-or-later
 [license](LICENSE). ESP-IDF and its bundled libraries supply WiFi, TLS,
 HTTP, JSON, cryptography, NVS and the USB console; no Rust runtime is required
@@ -21,7 +21,8 @@ on the board. This companion repository is maintained separately from the
 PR15 is not yet merged or released. Initial pairing currently requires its
 experimental branch, including fix `8f398c5` or later. Once that support is
 released, setup will point to the release and this C port will be checked against
-the merged flow. The current portable build has no hardware-validated release.
+the merged flow. The 0.2.0 source has been checked against PR15 `8f398c5` and
+PR16 `ba00c92`; see [the comparison](docs/UPSTREAM.md). This remains experimental.
 
 ## Supported setup
 
@@ -148,9 +149,22 @@ They report connection, memory and shot status, but never return credentials.
 The page supports English, German, French, Italian, Japanese, Korean, Simplified
 Chinese and Traditional Chinese. It follows the browser's language preferences;
 the language selector overrides this and remembers the choice in that browser.
-Numbers, units, task states and outcomes are localized. Raw diagnostic strings
-and the JSON/USB interface remain unchanged. Translations are embedded in the
+Numbers, units, task states and outcomes are localized. Raw diagnostic strings remain available alongside the localized explanations.
+The JSON/USB interface preserves existing fields and adds per-link diagnostics. Translations are embedded in the
 firmware, so there is no external translation service or runtime dependency.
+The summary and connection badges use both text and color: green means ready or
+healthy, amber means waiting/reconnecting, blue means a shot is in progress or the
+bridge is in monitor mode, and red means attention is required. A failed page
+request replaces cached connection badges with Unknown. The page also shows the
+last delivered measurement, cloud coffee timestamp and remaining shot timeout.
+
+Grinder and cloud errors are tracked independently. A successful response clears
+that link's current error, while Connection details retains its last error,
+failure time and recovery time for this boot. Task-delivery errors remain separate:
+a recovered connection does not claim that an earlier result was delivered. HTTP
+status, operation and ESP-IDF error are retained without credentials or cloud
+response bodies. Diagnostics are in RAM and reset on an S3 restart.
+
 Monitor mode reads the grinder/cloud without accepting tasks or reporting results.
 Wait for WiFi, cloud and grinder to be connected before activating:
 
@@ -167,6 +181,14 @@ activating. This check cannot find services on another computer, an unlisted por
 or a NAS: stopping all other clients remains your responsibility. The USB
 console also accepts `status`, `mode monitor`, and `mode active` directly.
 Mode is persisted. Wait for `status` to confirm the requested mode.
+
+After the grinder is switched on each day, wait for the green Ready summary
+before grinding. It can be mechanically ready before its network API responds.
+Ordinary connection failures retry after 2, 4, then at most 5 seconds, instead of
+increasing to a minute while the grinder is off. These are waits between requests,
+not a guaranteed recovery time: request timeouts and cloud calls add latency.
+Three consecutive pairing refusals instead show an action-required message and
+check once a minute. The saved pairing is never erased or recreated automatically.
 
 For each cup, grind with the GbS recipe, then pull the shot. The bridge queries
 jobs about every two seconds and cloud coffee every three seconds while waiting
@@ -190,7 +212,9 @@ replaying it. NVS failures disable further result delivery.
 A relisted current job is accepted again. A newer job cancels the old one before
 being taken. An unanswered brew times out after 180 seconds. Explicit
 `ClientErrorOngoingJobNotExisting` replies permit reaccepting and resending the
-same event. An ambiguous `brewDone` transport failure becomes `delivery_unknown`
+same event while that task remains listed. If it is no longer listed and no
+acceptance is known, delivery ends as expired. A lost accept response is reconciled
+by the next successful task list before reporting. An ambiguous `brewDone` transport failure becomes `delivery_unknown`
 and is not automatically replayed. These choices differ from the desktop's
 recipe-weight fallback and broader result retry behavior.
 
@@ -211,10 +235,11 @@ adjustments for the first two of those cups. The third result was received and
 stored without a visible adjustment. Successful delivery does not guarantee
 motor movement: the grinder decides whether to adjust.
 
-That is not hardware validation of the exact portable build in this repository.
-The portable certificate provisioning, translated page and error-recovery changes
-need a new board run. Long-duration operation, real token expiry and all outage
-scenarios remain unverified.
+The exact 0.2.0 build has passed a board upgrade, normal-boot recovery and live
+status-page check while preserving configuration and task records. Precursor
+coffee results do not establish its real-coffee feedback.
+See [the validation record](docs/UPSTREAM.md#validation) for the current boundary.
+Long-duration operation, real token expiry and all outage scenarios remain unverified.
 
 `tools/check.sh` runs the pure C protocol/coffee/journal tests with ASan/UBSan,
 upstream installation/proof vectors, malformed configuration tests, actual NVS
@@ -222,8 +247,10 @@ image generation with synthetic credentials/certificate, and serial-helper tests
 It also checks all eight UI dictionaries, language fallback/persistence, blocked
 browser storage, localized units and startup/offline states with Node's standard
 library. `GBS_NODE` can select the Node executable.
-It does not contact a grinder or the vendor cloud. Worker/network failure paths
-are not yet covered by a full fake-service integration harness. This firmware is
+It does not contact a grinder or the vendor cloud. The actual C worker is also compiled against in-memory services to test daily
+power-on, startup baselines, task reacceptance, lost accept replies, ambiguous
+result delivery, expired tasks, pairing refusals and NVS failure. This does not
+exercise real HTTP/TLS sockets or prove grinder firmware behavior. This firmware is
 an experimental contribution, with a separate build from the desktop Rust CI.
 
 The [companion CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)

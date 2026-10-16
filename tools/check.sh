@@ -12,6 +12,11 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
   "$gbs_root/main/logic.c" "$gbs_root/tests/test_logic.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_logic"
 "$gbs_root/build-host/test_logic"
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+  -I "$gbs_root/tests/stubs" -I "$gbs_root/main" -I "$gbs_idf/components/json/cJSON" \
+  "$gbs_root/main/logic.c" "$gbs_root/tests/test_worker.c" \
+  "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_worker"
+"$gbs_root/build-host/test_worker"
 "$gbs_python" "$gbs_root/tests/test_provision.py"
 "$gbs_python" "$gbs_root/tests/test_serial_log.py"
 "${GBS_NODE:-node}" "$gbs_root/tests/test_ui.cjs"

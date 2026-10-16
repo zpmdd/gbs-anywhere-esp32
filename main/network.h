@@ -13,6 +13,12 @@ typedef struct {
 } gbs_config_t;
 
 extern gbs_config_t gbs_config;
+typedef struct {
+    char operation[24];
+    int http_status;
+    esp_err_t transport;
+} gbs_request_info_t;
+extern gbs_request_info_t gbs_grinder_request, gbs_cloud_request;
 esp_err_t gbs_load_config(void);
 esp_err_t gbs_crypto_init(void);
 void gbs_uuid(char output[37]);

@@ -108,6 +108,32 @@ static void proof(void)
     for (int i = 4; i < 32; ++i) assert(folded[i] == 0);
 }
 
+static void health(void)
+{
+    gbs_health_t grinder = {0}, cloud = {0};
+    gbs_health_update(&grinder, false, "brewJobs", 0, "ESP_ERR_TIMEOUT", "TransportError", 1000);
+    gbs_health_update(&cloud, false, "coffee", 503, "ESP_ERR_INVALID_RESPONSE", "", 1100);
+    assert(grinder.failures == 1 && !grinder.ok && strstr(grinder.error, "ESP_ERR_TIMEOUT"));
+    gbs_health_update(&grinder, true, "brewJobs", 200, "ESP_OK", "Ok", 2000);
+    assert(grinder.ok && !grinder.error[0] && grinder.failures == 0);
+    assert(grinder.recoveries == 1 && grinder.recovered_ms == 2000);
+    assert(strstr(grinder.last_error, "ESP_ERR_TIMEOUT") && grinder.last_failure_ms == 1000);
+    assert(!cloud.ok && cloud.error[0]); // Recovery of one link must not hide the other's failure.
+    gbs_health_update(&grinder, true, "brewJobs", 200, "ESP_OK", "Ok", 3000);
+    assert(grinder.recoveries == 1 && grinder.last_ok_ms == 3000);
+    cJSON *j = gbs_health_json(&grinder);
+    assert(j && !cJSON_GetObjectItem(j, "error")->valuestring[0]);
+    assert(cJSON_GetObjectItem(j, "last_error")->valuestring[0]); cJSON_Delete(j);
+    assert(gbs_retry_seconds(0) == 2 && gbs_retry_seconds(1) == 2);
+    assert(gbs_retry_seconds(2) == 4);
+    assert(gbs_retry_seconds(3) == 5 && gbs_retry_seconds(UINT32_MAX) == 5);
+    assert(gbs_job_error("ClientErrorOngoingJobNotExisting"));
+    assert(!gbs_job_error("ClientErrorPairingIdNotExisting"));
+    assert(!gbs_job_error(NULL));
+    assert(gbs_answer_gone(false, false));
+    assert(!gbs_answer_gone(true, false) && !gbs_answer_gone(false, true));
+}
+
 int main(void)
 {
     assert(gbs_reply_valid(200, "Ok"));
@@ -117,6 +143,6 @@ int main(void)
     assert(!gbs_reply_valid(503, "ServerError"));
     assert(!gbs_reply_valid(200, ""));
     assert(!gbs_reply_valid(200, NULL));
-    jobs(); coffee(); results(); dedup(); proof();
+    jobs(); coffee(); results(); dedup(); proof(); health();
     puts("PASS: job schema, measured coffee selection, stale/invalid rejection, feedback schema, persistent dedup, proof fold");
 }

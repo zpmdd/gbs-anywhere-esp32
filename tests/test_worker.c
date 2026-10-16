@@ -63,6 +63,7 @@ static void reset(void)
     atomic_store(&desired_active, true); atomic_store(&wifi_online, true);
     baseline_jobs = have_job = pending = accepted = canceled = false;
     listed_job = ongoing = fail_poll = fail_accept_reply = fail_done_reply = fail_storage = false;
+    next_jobs = job_deadline_us = answer_deadline_us = 0;
     clock_us = 1000000; accepts = pairing_refusals = 0; accept_calls = done_calls = http_refusal = 0;
     issue[0] = storage_issue[0] = 0;
     fake_coffee = (gbs_coffee_t){.time_ms = 1799999990000LL, .duration_ms = 30000, .mass_mg = 30000, .usable = true};

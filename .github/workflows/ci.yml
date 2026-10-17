@@ -33,4 +33,4 @@ jobs:
             ctest --test-dir build-simulator --output-on-failure &&
             idf.py -B build-headless -DGBS_TOUCHSCREEN=OFF build &&
             idf.py -B build-touchscreen -DGBS_TOUCHSCREEN=ON
-            '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.touchscreen' build
+            "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.touchscreen" build

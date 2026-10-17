@@ -140,6 +140,34 @@ live telemetry.
   and sustained memory/network load remain untested. Hosted CI evidence is tracked
   separately from this local visual review in [development progress](docs/PROGRESS.md).
 
+## Daily controls follow-up, 2026-10-18
+
+- BBW, prebrew, power and smart-standby pages reuse the approved Noto/Inter
+  typography, RGB565 palette, rings, compact headers and 44 px actions. The
+  home/navigation design is unchanged; no bottom navigation was added.
+- Exports: `.private/daily-controls-20261018/screens/`, with three six-screen
+  review sheets in that directory's parent. The public
+  [daily-controls overview](docs/images/daily-controls-preview.png) contains
+  unscaled 240 x 280 framebuffer captures and labels, not concept artwork.
+- Visual review corrected time-parameter icons, power-status spacing and disabled
+  confirmation contrast. Pending numeric controls label the requested value and
+  retain the current confirmed value separately. Confirmations and concurrent
+  edits remain distinguishable from success.
+- All 32 routes render. Native tests cover BBW modes/doses, prebrew precision and
+  limits, explicit power/standby confirmations, duplicate locking, related-field
+  conflicts, stale/unavailable controls and partial/unknown results. Visible-label
+  bounds are checked on the new editor routes. A direct LVGL swipe reaches the
+  offscreen power row without opening the row under the initial contact.
+- CUA pointer checks observed BBW and prebrew edit → pending → confirmed with
+  synthetic data. CUA drag-to-scroll still sometimes opened a row instead of
+  scrolling after the simulator's motion events were preserved. Its cause is not
+  established; that automation path remains unaccepted. This does not replace
+  the separately required physical-touch validation.
+- Production Hub contract tests with ASan/UBSan and both ESP-IDF profiles passed
+  locally. New controls use one POST and verify the fresh readback, including
+  fields that must be preserved. These checks do not validate a live Hub or the
+  machine's physical response. No existing device was contacted or modified.
+
 ## Implementation checklist
 
 - [x] Align typography, colors, layout and standard interface symbols.

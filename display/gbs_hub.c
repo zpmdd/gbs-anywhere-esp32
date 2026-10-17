@@ -17,6 +17,10 @@ static double number(const cJSON *j,const char *key,double low,double high)
     const cJSON *v=item(j,key);
     return cJSON_IsNumber(v)&&isfinite(v->valuedouble)&&v->valuedouble>=low&&v->valuedouble<=high?v->valuedouble:NAN;
 }
+static bool prebrew_time(double value)
+{
+    return isfinite(value)&&value>=0&&value<=10&&fabs(value*10-round(value*10))<=0.000001;
+}
 static bool text(const cJSON *j,const char *key,char *out,size_t size,bool multiline)
 {
     const cJSON *v=item(j,key);
@@ -66,12 +70,27 @@ static bool capability(const cJSON *j,const char *name)
 {
     return yes(item(j,name),"available");
 }
+static const char *const bbw_modes[]={"Continuous","Dose1","Dose2","PulsesType"};
+static const char *const prebrew_modes[]={"Disabled","PreBrewing","PreInfusion"};
+static const char *const machine_modes[]={"StandBy","BrewingMode","EcoMode"};
+static const char *const standby_modes[]={"PowerOn","LastBrewing"};
+static unsigned mode(const cJSON *j,const char *key,const char *const *names,unsigned count)
+{
+    for(unsigned i=0;i<count;++i) if(equal(j,key,names[i])) return i;
+    return GBS_UI_VALUE_UNKNOWN;
+}
 static unsigned capabilities(const cJSON *j)
 {
     return ((yes(j,"supportsSmartPresetDecisionValidation")&&capability(j,"brewByWeightDose1")&&capability(j,"brewByWeightMode"))?1u<<GBS_ACTION_WEIGHT:0)|
         (capability(j,"coffeeTemperature")?1u<<GBS_ACTION_COFFEE:0)|
         (capability(j,"steamLevel")?1u<<GBS_ACTION_STEAM:0)|
-        (capability(j,"steamEnabled")?1u<<GBS_ACTION_STEAM_ENABLED:0);
+        (capability(j,"steamEnabled")?1u<<GBS_ACTION_STEAM_ENABLED:0)|
+        (capability(j,"brewByWeightDose1")?1u<<GBS_ACTION_DOSE1:0)|
+        (capability(j,"brewByWeightDose2")?1u<<GBS_ACTION_DOSE2:0)|
+        (capability(j,"brewByWeightMode")?1u<<GBS_ACTION_BBW_MODE:0)|
+        (capability(j,"prebrew")?((1u<<GBS_ACTION_PREBREW_MODE)|(1u<<GBS_ACTION_PREBREW_ON)|(1u<<GBS_ACTION_PREBREW_OFF)):0)|
+        (capability(j,"power")?1u<<GBS_ACTION_POWER:0)|
+        (capability(j,"smartStandby")?((1u<<GBS_ACTION_STANDBY_ENABLED)|(1u<<GBS_ACTION_STANDBY_MINUTES)|(1u<<GBS_ACTION_STANDBY_MODE)):0);
 }
 static bool binding(const cJSON *j,const gbs_hub_config_t *config,uint32_t *generation)
 {
@@ -109,9 +128,27 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
         if(!isfinite(next.steam_target)&&isfinite(level)&&floor(level)==level) next.steam_target=targets[(unsigned)level-1];
         next.steam_enabled_known=cJSON_IsBool(item(j,"steamBoilerEnabled")); next.steam_enabled=yes(j,"steamBoilerEnabled");
         next.dose1=number(j,"brewByWeightDose1",0,200); next.dose2=number(j,"brewByWeightDose2",0,200);
-        next.dose_mode=equal(j,"brewByWeightMode","Dose1")?1:equal(j,"brewByWeightMode","Dose2")?2:0;
+        next.dose_mode=mode(j,"brewByWeightMode",bbw_modes,4);
         next.weight=next.dose_mode==1?next.dose1:next.dose_mode==2?next.dose2:NAN;
-        if(!isfinite(next.dose1)||!isfinite(next.dose2)||!equal(j,"cloudCommandReadiness","ready")) writable&=~(1u<<GBS_ACTION_WEIGHT);
+        const cJSON *prebrew=item(j,"prebrew"),*standby=item(j,"smartStandby");
+        next.prebrew_mode=mode(prebrew,"mode",prebrew_modes,3);
+        next.prebrew_on=number(prebrew,"onTime",0,10); next.prebrew_off=number(prebrew,"offTime",0,10);
+        if(!prebrew_time(next.prebrew_on)) next.prebrew_on=NAN;
+        if(!prebrew_time(next.prebrew_off)) next.prebrew_off=NAN;
+        next.machine_mode=mode(j,"machineMode",machine_modes,3);
+        next.standby_enabled_known=cJSON_IsBool(item(standby,"enabled")); next.standby_enabled=yes(standby,"enabled");
+        next.standby_minutes=number(standby,"minutes",1,240);
+        next.standby_mode=mode(standby,"mode",standby_modes,2);
+        if(!isfinite(next.dose1)||!isfinite(next.dose2)||next.dose_mode>3||
+            floor(next.dose1)!=next.dose1||floor(next.dose2)!=next.dose2||!equal(j,"cloudCommandReadiness","ready"))
+            writable&=~((1u<<GBS_ACTION_WEIGHT)|(1u<<GBS_ACTION_DOSE1)|(1u<<GBS_ACTION_DOSE2)|(1u<<GBS_ACTION_BBW_MODE));
+        if(next.prebrew_mode>2||!equal(j,"cloudCommandReadiness","ready"))
+            writable&=~((1u<<GBS_ACTION_PREBREW_MODE)|(1u<<GBS_ACTION_PREBREW_ON)|(1u<<GBS_ACTION_PREBREW_OFF));
+        if(!isfinite(next.prebrew_on)||!isfinite(next.prebrew_off))
+            writable&=~((1u<<GBS_ACTION_PREBREW_ON)|(1u<<GBS_ACTION_PREBREW_OFF));
+        if(next.machine_mode>2) writable&=~(1u<<GBS_ACTION_POWER);
+        if(!next.standby_enabled_known||next.standby_mode>1||!isfinite(next.standby_minutes)||floor(next.standby_minutes)!=next.standby_minutes)
+            writable&=~((1u<<GBS_ACTION_STANDBY_ENABLED)|(1u<<GBS_ACTION_STANDBY_MINUTES)|(1u<<GBS_ACTION_STANDBY_MODE));
         next.writable=writable;
         next.revision=2166136261u;
         for(const unsigned char *p=(const unsigned char *)io->reply;*p;++p) next.revision=(next.revision^*p)*16777619u;
@@ -124,7 +161,7 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
 bool gbs_hub_prepare(gbs_ui_action_t action,double value,const gbs_ui_machine_t *m,const char *id,
                      char *path,size_t path_size,char *body,size_t body_size)
 {
-    if((unsigned)action>GBS_ACTION_STEAM_ENABLED||!uuid(id)||!m->available||m->stale||!isfinite(value)||!(m->writable&(1u<<action))) return false;
+    if(!gbs_ui_machine_action(action)||!uuid(id)||!m->available||m->stale||!isfinite(value)||!(m->writable&(1u<<action))) return false;
     const char *route=NULL; char payload[96];
     if(action==GBS_ACTION_WEIGHT) {
         if(value<0||value>200||value!=floor(value)||!isfinite(m->dose1)||!isfinite(m->dose2)) return false;
@@ -141,6 +178,31 @@ bool gbs_hub_prepare(gbs_ui_action_t action,double value,const gbs_ui_machine_t 
     } else if(action==GBS_ACTION_STEAM_ENABLED) {
         if(!m->steam_enabled_known||(value!=0&&value!=1)) return false;
         route="/controls/steam/enabled"; snprintf(payload,sizeof(payload),"\"enabled\":%s",value?"true":"false");
+    } else if(action==GBS_ACTION_DOSE1||action==GBS_ACTION_DOSE2) {
+        if(value<0||value>200||value!=floor(value)||!isfinite(m->dose1)||!isfinite(m->dose2)||m->dose_mode>3) return false;
+        route="/controls/bbw/dose";
+        snprintf(payload,sizeof(payload),"\"dose\":\"dose%d\",\"grams\":%.0f",action==GBS_ACTION_DOSE1?1:2,value);
+    } else if(action==GBS_ACTION_BBW_MODE) {
+        if(value<0||value>3||value!=floor(value)||!isfinite(m->dose1)||!isfinite(m->dose2)||m->dose_mode>3) return false;
+        route="/controls/bbw/mode"; snprintf(payload,sizeof(payload),"\"mode\":\"%s\"",bbw_modes[(unsigned)value]);
+    } else if(action==GBS_ACTION_PREBREW_MODE) {
+        if(value<0||value>2||value!=floor(value)||m->prebrew_mode>2) return false;
+        route="/controls/prebrew"; snprintf(payload,sizeof(payload),"\"field\":\"mode\",\"value\":\"%s\"",prebrew_modes[(unsigned)value]);
+    } else if(action==GBS_ACTION_PREBREW_ON||action==GBS_ACTION_PREBREW_OFF) {
+        if(!prebrew_time(value)||m->prebrew_mode>2||!prebrew_time(m->prebrew_on)||!prebrew_time(m->prebrew_off)) return false;
+        route="/controls/prebrew";
+        snprintf(payload,sizeof(payload),"\"field\":\"%s\",\"value\":%.1f",action==GBS_ACTION_PREBREW_ON?"onTime":"offTime",value);
+    } else if(action==GBS_ACTION_POWER) {
+        if((value!=0&&value!=1)||m->machine_mode>2) return false;
+        route="/controls/power"; snprintf(payload,sizeof(payload),"\"enabled\":%s,\"confirm\":true",value?"true":"false");
+    } else if(action>=GBS_ACTION_STANDBY_ENABLED&&action<=GBS_ACTION_STANDBY_MODE) {
+        if(!m->standby_enabled_known||m->standby_mode>1||!isfinite(m->standby_minutes)||m->standby_minutes<1||m->standby_minutes>240||floor(m->standby_minutes)!=m->standby_minutes) return false;
+        if(action==GBS_ACTION_STANDBY_MINUTES?(value<1||value>240||value!=floor(value)):(value!=0&&value!=1)) return false;
+        route="/controls/smart-standby";
+        snprintf(payload,sizeof(payload),"\"enabled\":%s,\"minutes\":%.0f,\"mode\":\"%s\",\"confirm\":true",
+            (action==GBS_ACTION_STANDBY_ENABLED?value!=0:m->standby_enabled)?"true":"false",
+            action==GBS_ACTION_STANDBY_MINUTES?value:m->standby_minutes,
+            standby_modes[action==GBS_ACTION_STANDBY_MODE?(unsigned)value:m->standby_mode]);
     } else return false;
     if(strlen(route)>=path_size) return false;
     strcpy(path,route);
@@ -160,13 +222,6 @@ gbs_ui_control_t gbs_hub_result(const char *json,const char *id)
     cJSON_Delete(j); return result;
 }
 static bool same(double a,double b) { return (isnan(a)&&isnan(b))||(isfinite(a)&&isfinite(b)&&fabs(a-b)<0.01); }
-static bool unchanged(gbs_ui_action_t a,const gbs_ui_machine_t *before,const gbs_ui_machine_t *after)
-{
-    if(a==GBS_ACTION_WEIGHT) return before->dose_mode==after->dose_mode&&same(before->dose1,after->dose1)&&same(before->dose2,after->dose2);
-    if(a==GBS_ACTION_COFFEE) return same(before->coffee_target,after->coffee_target);
-    if(a==GBS_ACTION_STEAM) return same(before->steam_target,after->steam_target);
-    return before->steam_enabled_known&&after->steam_enabled_known&&before->steam_enabled==after->steam_enabled;
-}
 static bool matches(gbs_ui_action_t a,double value,const gbs_ui_machine_t *before,const gbs_ui_machine_t *after)
 {
     if(!after->available||after->stale) return false;
@@ -175,16 +230,27 @@ static bool matches(gbs_ui_action_t a,double value,const gbs_ui_machine_t *befor
         return after->dose_mode==mode&&same(after->weight,value)&&same(before->dose2,after->dose2)&&
             (before->dose1!=value&&before->dose2!=value?true:same(before->dose1,after->dose1));
     }
-    if(a==GBS_ACTION_COFFEE) return same(after->coffee_target,value);
-    if(a==GBS_ACTION_STEAM) return same(after->steam_target,value);
-    return after->steam_enabled_known&&after->steam_enabled==(value!=0);
+    gbs_ui_machine_t expected=*before;
+    switch(a) {
+    case GBS_ACTION_DOSE1: expected.dose1=value; break;
+    case GBS_ACTION_DOSE2: expected.dose2=value; break;
+    case GBS_ACTION_BBW_MODE: expected.dose_mode=(unsigned)value; break;
+    case GBS_ACTION_PREBREW_MODE: expected.prebrew_mode=(unsigned)value; break;
+    case GBS_ACTION_PREBREW_ON: expected.prebrew_on=value; break;
+    case GBS_ACTION_PREBREW_OFF: expected.prebrew_off=value; break;
+    case GBS_ACTION_STANDBY_ENABLED: expected.standby_enabled=value!=0; break;
+    case GBS_ACTION_STANDBY_MINUTES: expected.standby_minutes=value; break;
+    case GBS_ACTION_STANDBY_MODE: expected.standby_mode=(unsigned)value; break;
+    default: return same(gbs_ui_action_value(a,after),value);
+    }
+    return gbs_ui_action_unchanged(a,&expected,after);
 }
 gbs_ui_control_t gbs_hub_execute(const gbs_hub_config_t *config,const gbs_hub_io_t *io,
                                 gbs_ui_action_t action,double value,const char *id,
                                 int64_t deadline,gbs_ui_machine_t *machine)
 {
     gbs_ui_machine_t before=*machine;
-    if(!gbs_hub_refresh(config,io,deadline,machine)||!unchanged(action,&before,machine)) return GBS_UI_CONTROL_FAILED;
+    if(!gbs_hub_refresh(config,io,deadline,machine)||!gbs_ui_action_unchanged(action,&before,machine)) return GBS_UI_CONTROL_FAILED;
     char path[96],body[256];
     if(io->now(io->context)>=deadline||!gbs_hub_prepare(action,value,machine,id,path,sizeof(path),body,sizeof(body))) return GBS_UI_CONTROL_FAILED;
     int status=io->exchange(io->context,path,body,io->reply,io->reply_size,deadline);

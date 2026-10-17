@@ -19,11 +19,12 @@ The firmware reads the existing grinder/cloud worker state and supports
 monitor/active mode, local brightness and idle dimming. An optional authenticated
 HTTPS v2 client now reads coffee/steam current and target temperatures from an
 existing LamaBuddy Hub, and submits smart weight presets, coffee temperature,
-steam level and steam enable controls. This is a client of the separate Hub;
-the screen does not embed its BLE/Cloud implementation. Without an imported Hub
+steam, BBW dose/mode, prebrew, power and smart-standby controls. This is a client
+of the separate Hub; the screen does not embed its BLE/Cloud implementation. Without an imported Hub
 trust record, machine values remain unavailable and writes stay disabled.
 Missing measured temperatures remain dashes, even when targets are known.
-Advanced BBW editing, prebrew, power, standby and schedule remain unavailable.
+Power and smart-standby changes require an explicit confirmation screen.
+Schedules, multi-cup history and independent idle timers remain unavailable.
 The Mac simulator supplies synthetic data and acknowledgments; it never contacts
 devices or cloud services. There is no OTA or new pairing workflow.
 
@@ -73,8 +74,10 @@ Each refresh reads binding, capabilities and state, then rechecks the binding
 generation. Polling runs every five seconds; a local snapshot older than fifteen
 seconds is stale. Current temperatures use only the Hub's measured boiler fields;
 the Hub remains responsible for the freshness of its fused BLE/Cloud cache.
-Controls are enabled per capability, and smart weights also require Cloud command
-readiness and Hub-side smart-preset validation support.
+Controls are enabled per capability. BBW and prebrew additionally require Cloud
+command readiness; smart weights also require Hub-side smart-preset validation
+support. Power and standby retain the Hub's transport/capability decisions.
+Missing or unknown modes do not become writable defaults.
 
 | Control | Existing Hub route and behavior |
 | --- | --- |
@@ -82,16 +85,24 @@ readiness and Hub-side smart-preset validation support.
 | Coffee target | `/controls/coffee-temperature`, 80–100 °C in 0.5 °C steps. |
 | Steam level | `/controls/steam-level`, levels 1/2/3 map to 126/128/131 °C targets. |
 | Steam boiler switch | `/controls/steam/enabled`; the switch retains the confirmed state while pending or rejected. |
+| BBW Dose 1 / Dose 2 | `/controls/bbw/dose`, 0–200 g in whole grams. Editing a dose preserves the other dose and mode; it does not select that dose. |
+| BBW mode | `/controls/bbw/mode`, `Continuous`, `Dose1`, `Dose2` or `PulsesType`; both stored doses are preserved. |
+| Prebrew | `/controls/prebrew`, one `field` at a time: `mode` (`Disabled`, `PreBrewing`, `PreInfusion`), `onTime` or `offTime` (0–10 s in 0.1 s steps). Other prebrew fields are preserved. |
+| Machine power | `/controls/power`, `enabled` plus `confirm: true`. Standby and heating are explicit choices; `EcoMode` is displayed as a separate readback state. |
+| Smart standby | `/controls/smart-standby`, `enabled`, 1–240 whole `minutes`, `mode` (`PowerOn` or `LastBrewing`) and `confirm: true`. Each editor changes one value and preserves the other two. |
 
 Each command gets a UUID and one POST. Before submission the client refreshes
-state and rejects a changed relevant setting. It follows the original UUID via
+state and rejects a changed relevant setting. The UI's edit snapshot is carried
+through the queued request; BBW, prebrew and standby compare the whole related
+group, including fields the user did not edit. It follows the original UUID via
 `/diagnostics/commands?id=...`; a lost POST response is never retried. A completed
 successful result must also match a fresh state read before the UI says confirmed.
 Partial application and unknown outcomes remain distinct. A stale callback cannot
 complete a newer UI request. The UI wait ends after 30 seconds with an unknown
 outcome; this is not a promise that remote execution was canceled. HTTP operations
 use at most a three-second socket timeout and never start after the wait deadline.
-Only weight operations carry the Hub's supported eight-second `clientTtlMs`.
+Only smart weight selection carries the Hub's supported eight-second `clientTtlMs`;
+explicit dose and mode editors use the ordinary Hub commands without that field.
 The existing v2 surface enum has no touchscreen value, so requests use `diagnostic`.
 
 ## Local native preview
@@ -122,9 +133,12 @@ This writes BMP captures of every route and critical state. The self-test also
 checks coordinate-based navigation, fast taps, duplicate-submit locking,
 confirmed-only selection, draft conflicts, disabled unavailable controls, bounded
 confirmation waits, late result isolation, steam-switch rollback and cloud-error
-colors. `tools/check.sh` additionally runs the production Hub contract against an
-in-memory fake, including lost responses, identity/binding changes and readback
-mismatches, without sockets or device access.
+colors. The 32 routes include BBW, prebrew, power and standby editors. Their tests
+cover explicit confirmations, related-field conflicts, preserved values, limits,
+stale/unknown modes and swiping to offscreen machine settings. `tools/check.sh`
+additionally runs the production Hub contract against an in-memory fake, including
+lost responses, identity/binding changes, missing capabilities, partial results
+and readback mismatches, without sockets or device access.
 
 ## Firmware builds
 

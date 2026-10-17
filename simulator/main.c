@@ -51,13 +51,42 @@ static void pointer_event(int x, int y, bool down)
     lv_indev_read_timer_cb(input.read_timer);
 }
 
-static bool submit(gbs_ui_action_t action, double value, uint32_t request_id, void *context)
+static bool submit(gbs_ui_action_t action, double value, uint32_t request_id, const gbs_ui_machine_t *expected, void *context)
 {
     (void)context;
     if (reject_submit) return false;
     if (action == GBS_ACTION_BRIGHTNESS || action == GBS_ACTION_DIM) return true;
+    if(gbs_ui_machine_action(action)&&(!expected||!gbs_ui_action_unchanged(action,expected,&machine))) return false;
     ++requests; command = action; requested = value; command_id=request_id; pending = true; submitted_at = SDL_GetTicks();
     return true;
+}
+
+static void finish_requested(void)
+{
+    switch(command) {
+    case GBS_ACTION_WEIGHT:
+        machine.dose_mode=machine.dose1==requested?1:machine.dose2==requested?2:1;
+        if(machine.dose1!=requested&&machine.dose2!=requested) machine.dose1=requested;
+        break;
+    case GBS_ACTION_COFFEE: machine.coffee_target=requested; break;
+    case GBS_ACTION_STEAM: machine.steam_target=requested; break;
+    case GBS_ACTION_STEAM_ENABLED: machine.steam_enabled=requested!=0; break;
+    case GBS_ACTION_DOSE1: machine.dose1=requested; break;
+    case GBS_ACTION_DOSE2: machine.dose2=requested; break;
+    case GBS_ACTION_BBW_MODE: machine.dose_mode=(unsigned)requested; break;
+    case GBS_ACTION_PREBREW_MODE: machine.prebrew_mode=(unsigned)requested; break;
+    case GBS_ACTION_PREBREW_ON: machine.prebrew_on=requested; break;
+    case GBS_ACTION_PREBREW_OFF: machine.prebrew_off=requested; break;
+    case GBS_ACTION_POWER: machine.machine_mode=(unsigned)requested; break;
+    case GBS_ACTION_STANDBY_ENABLED: machine.standby_enabled=requested!=0; break;
+    case GBS_ACTION_STANDBY_MINUTES: machine.standby_minutes=requested; break;
+    case GBS_ACTION_STANDBY_MODE: machine.standby_mode=(unsigned)requested; break;
+    case GBS_ACTION_MODE: bridge.active=requested!=0; break;
+    default: assert(false);
+    }
+    machine.weight=machine.dose_mode==1?machine.dose1:machine.dose_mode==2?machine.dose2:NAN;
+    pending=false; ++machine.revision; gbs_ui_set_machine(&machine); gbs_ui_set_bridge(&bridge);
+    gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
 }
 
 static void scene(unsigned n)
@@ -68,7 +97,9 @@ static void scene(unsigned n)
     strcpy(bridge.phase, "ready");
     machine = (gbs_ui_machine_t){.coffee=93, .coffee_target=93, .steam=128, .steam_target=128,
         .weight=30, .dose1=30, .dose2=40, .dose_mode=1, .available=true, .writable=GBS_UI_MACHINE_ACTIONS,
-        .steam_enabled=true, .steam_enabled_known=true, .revision=++sequence};
+        .steam_enabled=true, .steam_enabled_known=true, .revision=++sequence,
+        .prebrew_mode=1,.prebrew_on=2.5,.prebrew_off=3.5,.machine_mode=1,
+        .standby_enabled=true,.standby_enabled_known=true,.standby_minutes=30,.standby_mode=0};
     if (n == 0) machine = (gbs_ui_machine_t){.coffee=NAN, .coffee_target=NAN, .steam=NAN, .steam_target=NAN, .weight=NAN};
     if (n == 2 || n == 3 || n == 7 || n == 8) {
         bridge.job = true; bridge.target_grams = 30; bridge.target_seconds = 35;
@@ -175,6 +206,123 @@ static void save_screen(const char *directory, const char *name)
     assert(surface); assert(SDL_SaveBMP(surface,path)==0); SDL_FreeSurface(surface);
 }
 
+static void visible_labels(lv_obj_t *root)
+{
+    if(lv_obj_check_type(root,&lv_label_class)&&lv_label_get_text(root)[0]) {
+        lv_area_t area; lv_obj_get_coords(root,&area);
+        assert(area.x1>=0&&area.x2<WIDTH&&area.y1>=0&&area.y2<HEIGHT);
+    }
+    for(unsigned i=0;i<lv_obj_get_child_cnt(root);++i) visible_labels(lv_obj_get_child(root,i));
+}
+
+static void daily_control_regressions(const char *directory)
+{
+    gbs_ui_init(submit,NULL); scene(1); pending=false;
+    gbs_ui_show(GBS_PAGE_MACHINE);
+    pointer_event(120,245,true);
+    for(int y=245;y>=65;y-=10) { pointer_event(120,y,true); lv_tick_inc(20); lv_timer_handler(); }
+    pointer_event(120,65,false); lv_tick_inc(200); lv_timer_handler(); paint();
+    assert(gbs_ui_page()==GBS_PAGE_MACHINE);
+    lv_obj_t *power_row=find_text(lv_scr_act(),"机器电源"); assert(power_row);
+    lv_area_t position; lv_obj_get_coords(power_row,&position);
+    assert(position.y1>=44&&position.y2<HEIGHT);
+    tap((position.x1+position.x2)/2,(position.y1+position.y2)/2); assert(gbs_ui_page()==GBS_PAGE_POWER);
+    gbs_ui_show(GBS_PAGE_BBW); paint(); visible_labels(lv_scr_act());
+    if(directory) save_screen(directory,"bbw-summary");
+    tap(110,138); assert(gbs_ui_page()==GBS_PAGE_DOSE2);
+    tap(193,204); assert(find_text(lv_scr_act(),"应用 41g"));
+    if(directory) save_screen(directory,"bbw-dose-edit");
+    unsigned count=requests; tap(120,254);
+    assert(requests==count+1&&command==GBS_ACTION_DOSE2&&requested==41&&machine.dose2==40);
+    if(directory) save_screen(directory,"bbw-dose-pending");
+    tap(120,254); assert(requests==count+1);
+    finish_requested(); assert(machine.dose1==30&&machine.dose2==41&&machine.dose_mode==1);
+    if(directory) save_screen(directory,"bbw-dose-confirmed");
+    gbs_ui_show(GBS_PAGE_BBW_MODE); tap(100,194); assert(find_text(lv_scr_act(),"脉冲模式"));
+    if(directory) save_screen(directory,"bbw-modes");
+    tap(120,254); assert(command==GBS_ACTION_BBW_MODE&&requested==3); finish_requested();
+    assert(isnan(machine.weight)&&machine.dose_mode==3);
+
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_DOSE1); tap(193,204);
+    machine.dose2=50; ++machine.revision; gbs_ui_set_machine(&machine);
+    assert(find_text(lv_scr_act(),"设置已变化，请返回")); count=requests; tap(120,254); assert(requests==count);
+    if(directory) save_screen(directory,"bbw-conflict");
+    tap(22,22); click("继续编辑"); tap(22,22); click("放弃修改");
+    gbs_ui_show(GBS_PAGE_DOSE1); tap(193,204);
+    machine.dose2=60; // A newer backend snapshot must not bypass the UI's edit baseline.
+    count=requests; tap(120,254); assert(requests==count&&!pending);
+
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_PREBREW);
+    if(directory) save_screen(directory,"prebrew-summary");
+    tap(110,78); assert(gbs_ui_page()==GBS_PAGE_PREBREW_MODE); tap(100,179);
+    if(directory) save_screen(directory,"prebrew-modes");
+    tap(120,254); assert(command==GBS_ACTION_PREBREW_MODE&&requested==2); finish_requested();
+    assert(machine.prebrew_on==2.5&&machine.prebrew_off==3.5);
+    gbs_ui_show(GBS_PAGE_PREBREW_ON); tap(193,204);
+    assert(find_text(lv_scr_act(),"应用 2.6s"));
+    if(directory) save_screen(directory,"prebrew-time");
+    tap(120,254); assert(command==GBS_ACTION_PREBREW_ON&&requested==2.6); finish_requested();
+    assert(machine.prebrew_off==3.5&&machine.prebrew_mode==2);
+    gbs_ui_show(GBS_PAGE_PREBREW_OFF); tap(47,204); tap(120,254);
+    assert(command==GBS_ACTION_PREBREW_OFF&&requested==3.4); finish_requested();
+    assert(machine.prebrew_on==2.6);
+    machine.prebrew_on=10; gbs_ui_set_machine(&machine); gbs_ui_show(GBS_PAGE_PREBREW_ON);
+    count=requests; tap(193,204); tap(120,254); assert(requests==count);
+    machine.prebrew_on=0; gbs_ui_set_machine(&machine); gbs_ui_show(GBS_PAGE_PREBREW_ON);
+    tap(47,204); tap(120,254); assert(requests==count);
+
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_POWER);
+    if(directory) save_screen(directory,"power");
+    count=requests; tap(110,160); tap(120,254);
+    assert(requests==count&&find_text(lv_scr_act(),"确认机器设置"));
+    if(directory) save_screen(directory,"power-confirm");
+    click("返回编辑"); assert(requests==count&&gbs_ui_page()==GBS_PAGE_POWER);
+    tap(120,254); click("确认应用");
+    assert(requests==count+1&&command==GBS_ACTION_POWER&&requested==0&&machine.machine_mode==1);
+    assert(find_text(lv_scr_act(),"加热开启"));
+    if(directory) save_screen(directory,"power-pending");
+    tap(110,160); tap(120,254); assert(requests==count+1); finish_requested();
+    assert(find_text(lv_scr_act(),"待机中"));
+    if(directory) save_screen(directory,"power-confirmed");
+    tap(110,206); tap(120,254); click("确认应用"); finish_requested(); assert(machine.machine_mode==1);
+
+    gbs_ui_show(GBS_PAGE_STANDBY);
+    if(directory) save_screen(directory,"standby-summary");
+    const gbs_ui_page_t pages[]={GBS_PAGE_STANDBY_ENABLED,GBS_PAGE_STANDBY_MINUTES,GBS_PAGE_STANDBY_MODE};
+    const gbs_ui_action_t actions[]={GBS_ACTION_STANDBY_ENABLED,GBS_ACTION_STANDBY_MINUTES,GBS_ACTION_STANDBY_MODE};
+    for(unsigned i=0;i<3;++i) {
+        gbs_ui_show(pages[i]); if(i==1) tap(193,204); else tap(110,i==0?78:128);
+        count=requests; tap(120,254); assert(requests==count&&find_text(lv_scr_act(),"确认机器设置"));
+        if(directory&&i==1) save_screen(directory,"standby-confirm");
+        click("确认应用"); assert(requests==count+1&&command==actions[i]); finish_requested();
+    }
+    assert(!machine.standby_enabled&&machine.standby_minutes==31&&machine.standby_mode==1);
+    gbs_ui_show(GBS_PAGE_STANDBY_MINUTES); tap(193,204); tap(120,254);
+    machine.standby_mode=0; ++machine.revision; gbs_ui_set_machine(&machine);
+    count=requests; assert(find_text(lv_scr_act(),"设置已变化，请返回")); tap(176,254); assert(requests==count);
+    if(directory) save_screen(directory,"standby-conflict");
+
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_PREBREW_ON); tap(193,204); tap(120,254);
+    gbs_ui_control_result(command_id,GBS_UI_CONTROL_PARTIAL); pending=false;
+    assert(machine.prebrew_on==2.5&&find_text(lv_scr_act(),"部分应用"));
+    if(directory) save_screen(directory,"prebrew-partial");
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_POWER); tap(110,160); tap(120,254); click("确认应用");
+    count=requests; gbs_ui_tick(45000); pending=false;
+    assert(requests==count&&machine.machine_mode==1&&find_text(lv_scr_act(),"结果未确认"));
+    if(directory) save_screen(directory,"power-unknown");
+    machine.stale=true; gbs_ui_set_machine(&machine); tap(110,160); tap(120,254); assert(requests==count);
+    if(directory) save_screen(directory,"power-stale");
+    machine.stale=false; machine.writable=0; gbs_ui_set_machine(&machine);
+    gbs_ui_show(GBS_PAGE_PREBREW_MODE); tap(110,180); tap(120,254); assert(requests==count);
+    if(directory) save_screen(directory,"prebrew-unavailable");
+
+    gbs_ui_init(submit,NULL); scene(1);
+    for(unsigned i=GBS_PAGE_DOSE1;i<GBS_PAGE_COUNT;++i) {
+        gbs_ui_show((gbs_ui_page_t)i); paint(); visible_labels(lv_scr_act());
+    }
+    puts("daily UI: BBW/prebrew/power/standby navigation, preserved values, confirmation, conflicts, limits and unavailable states passed");
+}
+
 static void self_test(const char *directory)
 {
     scene(1);
@@ -190,7 +338,7 @@ static void self_test(const char *directory)
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN); pending=false;
     scene(5); assert(find_text(lv_scr_act(),"请检查设置"));
     gbs_ui_show(GBS_PAGE_WEIGHT); tap(193,204);
-    machine.weight=40; ++machine.revision; gbs_ui_set_machine(&machine);
+    machine.weight=machine.dose1=40; ++machine.revision; gbs_ui_set_machine(&machine);
     assert(find_text(lv_scr_act(),"设置已变化，请返回"));
     tap(22,22); assert(find_text(lv_scr_act(),"放弃这次修改？"));
     click("继续编辑"); assert(gbs_ui_page()==GBS_PAGE_WEIGHT);
@@ -214,7 +362,7 @@ static void self_test(const char *directory)
         gbs_ui_show(GBS_PAGE_MACHINE); save_screen(directory,"machine");
         gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_WEIGHT); tap(193,204); tap(193,204);
         save_screen(directory,"quick-edit"); tap(120,253); save_screen(directory,"quick-pending");
-        machine.weight=32; ++machine.revision; gbs_ui_set_machine(&machine); gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
+        machine.weight=machine.dose1=32; ++machine.revision; gbs_ui_set_machine(&machine); gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
         pending=false; save_screen(directory,"quick-confirmed");
         gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_COFFEE); tap(193,204); save_screen(directory,"boiler");
         machine.steam_target=126; gbs_ui_set_machine(&machine); gbs_ui_show(GBS_PAGE_STEAM); tap(120,210);
@@ -225,6 +373,7 @@ static void self_test(const char *directory)
         scene(6); gbs_ui_show(GBS_PAGE_RECORD); save_screen(directory,"record");
     }
     control_regressions(directory);
+    daily_control_regressions(directory);
     puts("native UI: navigation, confirmation timeout, stale/rejected steam controls, link colors and all pages passed");
 }
 
@@ -248,7 +397,7 @@ int main(int argc,char **argv)
         SDL_Event e;
         while(SDL_PollEvent(&e)) {
             if(e.type==SDL_QUIT) running=false;
-            if(e.type==SDL_MOUSEMOTION) { pointer.x=e.motion.x/SCALE; pointer.y=e.motion.y/SCALE; }
+            if(e.type==SDL_MOUSEMOTION) pointer_event(e.motion.x/SCALE,e.motion.y/SCALE,pressed);
             if(e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP) {
                 pointer_event(e.button.x/SCALE,e.button.y/SCALE,e.type==SDL_MOUSEBUTTONDOWN);
             }
@@ -262,13 +411,7 @@ int main(int argc,char **argv)
             pending=false;
             if(scenario==4) gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN);
             else {
-                if(command==GBS_ACTION_WEIGHT) machine.weight=requested;
-                if(command==GBS_ACTION_COFFEE) machine.coffee_target=requested;
-                if(command==GBS_ACTION_STEAM) machine.steam_target=requested;
-                if(command==GBS_ACTION_STEAM_ENABLED) machine.steam_enabled=requested!=0;
-                if(command==GBS_ACTION_MODE) bridge.active=requested!=0;
-                ++machine.revision; gbs_ui_set_machine(&machine); gbs_ui_set_bridge(&bridge);
-                gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
+                finish_requested();
             }
         }
         gbs_ui_tick(10000+now-scene_start); lv_timer_handler(); SDL_Delay(10);

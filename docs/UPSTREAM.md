@@ -22,6 +22,12 @@ check fetched both remotes again: companion main remained `b4c1e51`, and upstrea
 main remained `c60eade2`; no additional protocol port was needed. The development
 state and remaining acceptance work are tracked in [PROGRESS.md](PROGRESS.md).
 
+The daily-controls publication check fetched both remotes on 2026-10-18.
+Companion main remained `b4c1e51`; upstream main remained `c60eade2`, with no new
+commits since the previous review. BBW, prebrew, power and standby reuse existing
+LamaBuddy Hub v2 capabilities and do not change the grinder/cloud worker or the
+`3adf778` protocol baseline. The unrelated repository histories stay separate.
+
 ## Changes relevant to this companion
 
 - PR15 leaves a grinder silent for three minutes after an unanswered
@@ -92,6 +98,8 @@ does not advance the protocol baseline or inherit earlier hardware acceptance.
   steam switches and cloud-error colors. Hub contract tests cover measured versus
   target values, guarded presets, preserved doses, binding changes, authentication
   failures, missing telemetry, partial/unknown results and no-repeat POST behavior.
+  Daily-control tests also cover BBW/prebrew/standby groups, input bounds, unknown
+  modes, explicit power/standby confirmations and preserved-field readback.
   Provisioning tests verify Hub certificate identity/signature and private NVS
   generation without contacting an existing Hub, grinder or vendor cloud.
 - ESP-IDF 5.5 builds the S3 image. Browser checks use synthetic states locally.

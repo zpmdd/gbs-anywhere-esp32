@@ -99,3 +99,48 @@ bool gbs_ui_touch(bool down, bool blank, bool *wake_gesture)
     if (*wake_gesture) { if (!down) *wake_gesture = false; return false; }
     return down;
 }
+
+bool gbs_ui_machine_action(gbs_ui_action_t action)
+{
+    return (unsigned)action < GBS_ACTION_COUNT && (GBS_UI_MACHINE_ACTIONS & (1u << action));
+}
+
+double gbs_ui_action_value(gbs_ui_action_t action, const gbs_ui_machine_t *m)
+{
+    if (!m->available) return NAN;
+    switch (action) {
+    case GBS_ACTION_WEIGHT: return m->weight;
+    case GBS_ACTION_COFFEE: return m->coffee_target;
+    case GBS_ACTION_STEAM: return m->steam_target;
+    case GBS_ACTION_STEAM_ENABLED: return m->steam_enabled_known ? m->steam_enabled : NAN;
+    case GBS_ACTION_DOSE1: return m->dose1;
+    case GBS_ACTION_DOSE2: return m->dose2;
+    case GBS_ACTION_BBW_MODE: return m->dose_mode <= 3 ? m->dose_mode : NAN;
+    case GBS_ACTION_PREBREW_MODE: return m->prebrew_mode <= 2 ? m->prebrew_mode : NAN;
+    case GBS_ACTION_PREBREW_ON: return m->prebrew_on;
+    case GBS_ACTION_PREBREW_OFF: return m->prebrew_off;
+    case GBS_ACTION_POWER: return m->machine_mode <= 2 ? m->machine_mode : NAN;
+    case GBS_ACTION_STANDBY_ENABLED: return m->standby_enabled_known ? m->standby_enabled : NAN;
+    case GBS_ACTION_STANDBY_MINUTES: return m->standby_minutes;
+    case GBS_ACTION_STANDBY_MODE: return m->standby_mode <= 1 ? m->standby_mode : NAN;
+    default: return NAN;
+    }
+}
+
+static bool same(double a, double b)
+{
+    return (isnan(a) && isnan(b)) || (isfinite(a) && isfinite(b) && fabs(a - b) < 0.01);
+}
+
+bool gbs_ui_action_unchanged(gbs_ui_action_t action, const gbs_ui_machine_t *before,
+                            const gbs_ui_machine_t *after)
+{
+    if (action == GBS_ACTION_WEIGHT || (action >= GBS_ACTION_DOSE1 && action <= GBS_ACTION_BBW_MODE))
+        return before->dose_mode == after->dose_mode && same(before->dose1, after->dose1) && same(before->dose2, after->dose2);
+    if (action >= GBS_ACTION_PREBREW_MODE && action <= GBS_ACTION_PREBREW_OFF)
+        return before->prebrew_mode == after->prebrew_mode && same(before->prebrew_on, after->prebrew_on) && same(before->prebrew_off, after->prebrew_off);
+    if (action >= GBS_ACTION_STANDBY_ENABLED && action <= GBS_ACTION_STANDBY_MODE)
+        return before->standby_enabled_known == after->standby_enabled_known && before->standby_enabled == after->standby_enabled &&
+            before->standby_mode == after->standby_mode && same(before->standby_minutes, after->standby_minutes);
+    return gbs_ui_machine_action(action) && same(gbs_ui_action_value(action, before), gbs_ui_action_value(action, after));
+}

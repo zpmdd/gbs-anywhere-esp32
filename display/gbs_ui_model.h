@@ -21,21 +21,33 @@ typedef enum {
 } gbs_ui_stage_t;
 
 typedef enum { GBS_ACTION_WEIGHT, GBS_ACTION_COFFEE, GBS_ACTION_STEAM,
-    GBS_ACTION_MODE, GBS_ACTION_BRIGHTNESS, GBS_ACTION_DIM, GBS_ACTION_STEAM_ENABLED } gbs_ui_action_t;
-#define GBS_UI_MACHINE_ACTIONS ((1u << GBS_ACTION_WEIGHT) | (1u << GBS_ACTION_COFFEE) | \
-    (1u << GBS_ACTION_STEAM) | (1u << GBS_ACTION_STEAM_ENABLED))
+    GBS_ACTION_MODE, GBS_ACTION_BRIGHTNESS, GBS_ACTION_DIM, GBS_ACTION_STEAM_ENABLED,
+    GBS_ACTION_DOSE1, GBS_ACTION_DOSE2, GBS_ACTION_BBW_MODE,
+    GBS_ACTION_PREBREW_MODE, GBS_ACTION_PREBREW_ON, GBS_ACTION_PREBREW_OFF,
+    GBS_ACTION_POWER, GBS_ACTION_STANDBY_ENABLED, GBS_ACTION_STANDBY_MINUTES,
+    GBS_ACTION_STANDBY_MODE, GBS_ACTION_COUNT } gbs_ui_action_t;
+#define GBS_UI_MACHINE_ACTIONS (((1u << GBS_ACTION_COUNT) - 1) & \
+    ~((1u << GBS_ACTION_MODE) | (1u << GBS_ACTION_BRIGHTNESS) | (1u << GBS_ACTION_DIM)))
+#define GBS_UI_VALUE_UNKNOWN 255u
 #define GBS_UI_CONTROL_WAIT_MS 30000
 #define GBS_UI_MACHINE_FRESH_MS 15000
 
 // Values are measured snapshots, never copied from targets. NAN means unavailable.
 typedef struct {
     double coffee, coffee_target, steam, steam_target, weight;
-    double dose1, dose2;
-    unsigned dose_mode;
+    double dose1, dose2, prebrew_on, prebrew_off, standby_minutes;
+    // Mode indexes follow the explicit Hub strings; unknown is never a default.
+    unsigned dose_mode, prebrew_mode, machine_mode, standby_mode;
     bool available, stale, steam_enabled, steam_enabled_known;
+    bool standby_enabled, standby_enabled_known;
     uint32_t revision, writable;
     int64_t observed_ms;
 } gbs_ui_machine_t;
+
+bool gbs_ui_machine_action(gbs_ui_action_t action);
+double gbs_ui_action_value(gbs_ui_action_t action, const gbs_ui_machine_t *machine);
+bool gbs_ui_action_unchanged(gbs_ui_action_t action, const gbs_ui_machine_t *before,
+                            const gbs_ui_machine_t *after);
 
 typedef enum {
     GBS_UI_CONTROL_IDLE, GBS_UI_CONTROL_PENDING, GBS_UI_CONTROL_CONFIRMED,

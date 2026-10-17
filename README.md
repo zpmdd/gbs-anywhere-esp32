@@ -46,8 +46,9 @@ page. A computer is needed once for initial pairing, provisioning and flashing.
 An optional [native touchscreen preview](docs/TOUCHSCREEN.md) adds a 240 x 280
 LVGL interface and an offline Mac/SDL simulator. It is a separate experimental
 16 MB build profile with an optional HTTPS v2 connection to an existing LamaBuddy
-Hub for dual temperatures, smart weight presets and steam controls. Its code and
-synthetic contracts are locally validated; live Hub and physical display
+Hub for dual temperatures, smart weight presets, steam, BBW editing, prebrew,
+power and smart standby. Its code and synthetic contracts are locally validated;
+live Hub and physical display
 acceptance remain pending. The 8 MB headless build remains the default.
 See [development progress and remaining work](docs/PROGRESS.md) for implemented
 features, validation evidence, hardware gates and the later feature backlog.

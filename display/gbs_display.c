@@ -56,11 +56,11 @@ static void read_touch(lv_indev_drv_t *driver, lv_indev_data_t *data)
     data->state=visible?LV_INDEV_STATE_PRESSED:LV_INDEV_STATE_RELEASED;
 }
 
-static bool submit(gbs_ui_action_t action,double value,uint32_t request_id,void *context)
+static bool submit(gbs_ui_action_t action,double value,uint32_t request_id,const gbs_ui_machine_t *expected,void *context)
 {
     (void)context;
     if(action==GBS_ACTION_MODE) { request_mode(value!=0); return true; }
-    if(action!=GBS_ACTION_BRIGHTNESS&&action!=GBS_ACTION_DIM) return gbs_hub_submit(action,value,request_id);
+    if(action!=GBS_ACTION_BRIGHTNESS&&action!=GBS_ACTION_DIM) return gbs_hub_submit(action,value,request_id,expected);
     nvs_handle_t nvs;
     esp_err_t err=nvs_open("gbs_display",NVS_READWRITE,&nvs);
     if(err!=ESP_OK) return false;

@@ -9,9 +9,13 @@ typedef enum {
     GBS_PAGE_STANDBY, GBS_PAGE_CLEANING, GBS_PAGE_SCHEDULE, GBS_PAGE_COFFEES,
     GBS_PAGE_MODE, GBS_PAGE_CONNECTIONS, GBS_PAGE_CONNECTION,
     GBS_PAGE_DIAGNOSTICS, GBS_PAGE_DISPLAY, GBS_PAGE_ABOUT, GBS_PAGE_SETUP,
+    GBS_PAGE_DOSE1, GBS_PAGE_DOSE2, GBS_PAGE_BBW_MODE,
+    GBS_PAGE_PREBREW_MODE, GBS_PAGE_PREBREW_ON, GBS_PAGE_PREBREW_OFF,
+    GBS_PAGE_STANDBY_ENABLED, GBS_PAGE_STANDBY_MINUTES, GBS_PAGE_STANDBY_MODE,
     GBS_PAGE_COUNT
 } gbs_ui_page_t;
-typedef bool (*gbs_ui_submit_t)(gbs_ui_action_t action, double value, uint32_t request_id, void *context);
+typedef bool (*gbs_ui_submit_t)(gbs_ui_action_t action, double value, uint32_t request_id,
+                                const gbs_ui_machine_t *expected, void *context);
 
 void gbs_ui_init(gbs_ui_submit_t submit, void *context);
 void gbs_ui_set_bridge(const gbs_ui_bridge_t *bridge);

@@ -121,14 +121,15 @@ static void task(void *unused)
         ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(250));
     }
 }
-bool gbs_hub_submit(gbs_ui_action_t action,double value,uint32_t request_id)
+bool gbs_hub_submit(gbs_ui_action_t action,double value,uint32_t request_id,const gbs_ui_machine_t *expected)
 {
-    if(!hub.task||!request_id||(unsigned)action>GBS_ACTION_STEAM_ENABLED||!isfinite(value)) return false;
+    if(!hub.task||!request_id||!expected||!gbs_ui_machine_action(action)||!isfinite(value)) return false;
     if(xSemaphoreTake(hub.mutex,pdMS_TO_TICKS(10))!=pdTRUE) return false;
     bool allowed=!hub.busy&&hub.machine.available&&!hub.machine.stale&&
-        now(NULL)-hub.machine.observed_ms<GBS_UI_MACHINE_FRESH_MS&&(hub.machine.writable&(1u<<action));
+        now(NULL)-hub.machine.observed_ms<GBS_UI_MACHINE_FRESH_MS&&(hub.machine.writable&(1u<<action))&&
+        gbs_ui_action_unchanged(action,expected,&hub.machine);
     if(allowed) {
-        hub.action=action; hub.value=value; hub.request_id=request_id; hub.submitted_machine=hub.machine;
+        hub.action=action; hub.value=value; hub.request_id=request_id; hub.submitted_machine=*expected;
         hub.deadline=now(NULL)+GBS_UI_CONTROL_WAIT_MS; hub.busy=hub.queued=true;
     }
     xSemaphoreGive(hub.mutex);

@@ -19,7 +19,7 @@ chars=''.join(sorted(set(c for c in (out/'gbs_ui.c').read_text() if ord(c)>127))
 for size, bold in [(10,False),(12,False),(14,False),(12,True),(14,True),(16,True),(20,True)]:
     subprocess.run(['npx','--yes','lv_font_conv@1.5.3','--font',str(assets/('NotoSansCJKsc-Bold.otf' if bold else 'NotoSansCJKsc-Regular.otf')),'--range','0x20-0x7e','--symbols',chars,'--size',str(size),'--bpp','4','--format','lvgl','--no-compress','--lv-include','lvgl.h','--lv-fallback','lv_font_montserrat_14','-o',str(out/'fonts'/(f'gbs_font_{size}_bold.c' if bold else f'gbs_font_{size}.c'))],check=True)
 for size in [16,20,24,28,32,34,36,40]:
-    subprocess.run(['npx','--yes','lv_font_conv@1.5.3','--font',str(assets/('InterDisplay-ExtraBold.ttf' if size>=28 else 'InterDisplay-Bold.ttf')),'--symbols','0123456789.:°%sg—+-','--size',str(size),'--bpp','4','--format','lvgl','--no-compress','--lv-include','lvgl.h','-o',str(out/'fonts'/f'gbs_number_{size}.c')],check=True)
+    subprocess.run(['npx','--yes','lv_font_conv@1.5.3','--font',str(assets/('InterDisplay-ExtraBold.ttf' if size>=28 else 'InterDisplay-Bold.ttf')),'--symbols','0123456789.:°%sg—+- /C','--size',str(size),'--bpp','4','--format','lvgl','--no-compress','--lv-include','lvgl.h','-o',str(out/'fonts'/f'gbs_number_{size}.c')],check=True)
 names=['droplet','cloud-rain','link','settings','chevron-left','chevron-right','weight','check','alert-circle','help-circle','coffee','temperature','device-desktop','list-details','wifi','bluetooth','cloud','blender','circle-dotted','plus','minus','sun','power','clock','calendar','circle-check-filled']
 header=['#pragma once','#include "lvgl.h"','typedef enum {']
 for n in names: header.append('    GBS_ICON_'+n.replace('-','_').upper()+',')

@@ -44,7 +44,35 @@ typedef struct {
     int64_t observed_ms;
 } gbs_ui_machine_t;
 
+typedef enum { GBS_DATA_SCHEDULE, GBS_DATA_HISTORY, GBS_DATA_COUNT } gbs_ui_data_kind_t;
+typedef enum { GBS_DATA_IDLE, GBS_DATA_LOADING, GBS_DATA_READY, GBS_DATA_STALE,
+    GBS_DATA_UNAVAILABLE, GBS_DATA_UNSUPPORTED, GBS_DATA_ERROR } gbs_ui_data_state_t;
+enum { GBS_SCHEDULE_LIMIT=64, GBS_HISTORY_LIMIT=32 };
+typedef struct {
+    char id[129];
+    uint16_t on_minutes, off_minutes;
+    uint8_t days;
+    bool enabled, steam;
+} gbs_ui_schedule_t;
+typedef struct {
+    char time[21]; // Normalized UTC, YYYY-MM-DDTHH:MM:SSZ.
+    double seconds, dose, temperature; // Dose is a setting, never measured weight.
+    unsigned mode;
+} gbs_ui_coffee_t;
+typedef struct {
+    gbs_ui_data_kind_t kind;
+    gbs_ui_data_state_t state;
+    uint32_t revision, binding_generation;
+    unsigned count, total;
+    bool valid, editable;
+    union {
+        gbs_ui_schedule_t schedules[GBS_SCHEDULE_LIMIT];
+        gbs_ui_coffee_t coffees[GBS_HISTORY_LIMIT];
+    } items;
+} gbs_ui_data_t;
+
 bool gbs_ui_machine_action(gbs_ui_action_t action);
+bool gbs_ui_schedule_equal(const gbs_ui_schedule_t *a, const gbs_ui_schedule_t *b);
 double gbs_ui_action_value(gbs_ui_action_t action, const gbs_ui_machine_t *machine);
 bool gbs_ui_action_unchanged(gbs_ui_action_t action, const gbs_ui_machine_t *before,
                             const gbs_ui_machine_t *after);

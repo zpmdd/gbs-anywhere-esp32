@@ -1,0 +1,15 @@
+{
+  "raw": {
+    "serialNumber": "SYNTHETIC-MACHINE",
+    "smartWakeUpSleepSupported": true,
+    "smartWakeUpSleep": {
+      "smartStandByEnabled": true,
+      "schedules": [
+        {"id":"weekday","enabled":true,"onTimeMinutes":420,"offTimeMinutes":570,"steamBoiler":true,"days":["Monday","Tuesday","Wednesday","Thursday","Friday"]},
+        {"id":"weekend","enabled":true,"onTimeMinutes":510,"offTimeMinutes":660,"steamBoiler":false,"days":["Saturday","Sunday"]},
+        {"id":"evening","enabled":false,"onTimeMinutes":1080,"offTimeMinutes":1170,"steamBoiler":false,"days":["Friday"]},
+        {"id":"overnight","enabled":true,"onTimeMinutes":1380,"offTimeMinutes":60,"steamBoiler":true,"days":["Saturday"]}
+      ]
+    }
+  }
+}

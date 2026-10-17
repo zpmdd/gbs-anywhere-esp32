@@ -28,6 +28,28 @@ commits since the previous review. BBW, prebrew, power and standby reuse existin
 LamaBuddy Hub v2 capabilities and do not change the grinder/cloud worker or the
 `3adf778` protocol baseline. The unrelated repository histories stay separate.
 
+## Schedule/history review, 2026-10-18
+
+Fetched main at `b8f7dc28c0c00585ebe3cd574bcde5f783e412e5` after PR22 (tabs),
+PR23 (settings) and PR24 (history) merged. Compared `src/protocol/machine.rs`,
+`src/server/wifi_grinder.rs`, `control_api.rs` and the new settings/history code
+against `c60eade2`:
+
+| Upstream change | Companion decision |
+| --- | --- |
+| Editable shot window and grinder address, with worker owner guards | Keep the bounded 180-second shot window and imported endpoint/identity. The embedded worker is single-owner and has no runtime endpoint replacement API. |
+| `brew_job` distinguishes E65/E80 jobs from E64/manual brews for history | The companion handles E65/E80 job IDs and persists a 32-task journal. Its new cup list reads Hub Cloud statistics and does not claim grinder delivery. |
+| `reached()` moves into `post()` so any HTTP response clears unreachable state | Keep the companion's distinct protocol/authentication errors and existing capped reconnect policy. A transport response alone does not clear its semantic error. |
+| History/settings endpoints and event-age/boot identifiers | Desktop API additions are not copied into the native firmware. Existing Hub APIs supply the requested schedule and coffee data. |
+| New abort constants and history bookkeeping | Existing pending-result preservation, replacement and refusal regression coverage remains applicable; no new wire-format change was found. |
+
+The protocol baseline remains `3adf778`; this is a reviewed divergence, not a
+merge of unrelated repository histories. The native display work and separate
+Hub schedule extension do not change the grinder result-delivery worker.
+The publication check fetched both remotes again on 2026-10-18: companion main
+remains `b4c1e51`, upstream main remains `b8f7dc28`, and there are no additional
+upstream commits beyond this review.
+
 ## Changes relevant to this companion
 
 - PR15 leaves a grinder silent for three minutes after an unanswered

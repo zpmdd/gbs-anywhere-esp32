@@ -69,6 +69,16 @@ static bool submit(gbs_ui_action_t action,double value,uint32_t request_id,const
     nvs_close(nvs); return err==ESP_OK;
 }
 
+static bool read_data(gbs_ui_data_kind_t kind,void *context)
+{
+    (void)context; return gbs_hub_request_data(kind);
+}
+
+static bool submit_schedule(const gbs_ui_schedule_t *expected,const gbs_ui_schedule_t *requested,uint32_t request_id,void *context)
+{
+    (void)context; return gbs_hub_submit_schedule(expected,requested,request_id);
+}
+
 static void task(void *unused)
 {
     (void)unused;
@@ -80,6 +90,10 @@ static void task(void *unused)
     static lv_indev_drv_t input;
     lv_indev_drv_init(&input); input.type=LV_INDEV_TYPE_POINTER; input.read_cb=read_touch; lv_indev_drv_register(&input);
     gbs_ui_init(submit,NULL);
+    gbs_ui_set_reader(read_data);
+    gbs_ui_set_schedule_submit(submit_schedule);
+    gbs_ui_data_t *data=heap_caps_calloc(GBS_DATA_COUNT,sizeof(*data),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    ESP_ERROR_CHECK(data?ESP_OK:ESP_ERR_NO_MEM);
     nvs_handle_t nvs; uint8_t brightness=75,dim=1;
     if(nvs_open("gbs_display",NVS_READONLY,&nvs)==ESP_OK) {
         nvs_get_u8(nvs,"brightness",&brightness); nvs_get_u8(nvs,"dim",&dim); nvs_close(nvs);
@@ -108,6 +122,8 @@ static void task(void *unused)
                 gbs_ui_set_machine(&machine);
                 if(request_id) gbs_ui_control_result(request_id,result);
             }
+            for(unsigned i=0;i<GBS_DATA_COUNT;++i)
+                if(gbs_hub_read_data(i,&data[i])) gbs_ui_set_data(&data[i]);
             gbs_ui_tick(now); next_render=now+250;
         }
         lv_timer_handler();

@@ -14,6 +14,7 @@ static uint32_t pixels[WIDTH * HEIGHT];
 static bool pressed;
 static lv_point_t pointer;
 static lv_indev_drv_t input;
+static lv_indev_t *pointer_device;
 static gbs_ui_bridge_t bridge;
 static gbs_ui_machine_t machine;
 static gbs_ui_action_t command;
@@ -45,10 +46,74 @@ static void read_pointer(lv_indev_drv_t *driver, lv_indev_data_t *data)
 
 static void pointer_event(int x, int y, bool down)
 {
+    if(!down&&pressed&&(pointer.x!=x||pointer.y!=y)) {
+        pointer.x=x; pointer.y=y;
+        lv_indev_read_timer_cb(input.read_timer);
+    }
     pointer.x=x; pointer.y=y; pressed=down;
     lv_obj_update_layout(lv_scr_act());
     // SDL can deliver down and up in one poll; preserve both for LVGL.
     lv_indev_read_timer_cb(input.read_timer);
+}
+
+static void window_pointer(int x,int y,bool down)
+{
+    pointer_event(x/SCALE,y/SCALE,down);
+}
+
+static void mouse_event(const SDL_Event *e)
+{
+    if(e->type==SDL_MOUSEMOTION&&pressed) window_pointer(e->motion.x,e->motion.y,true);
+    if((e->type==SDL_MOUSEBUTTONDOWN||e->type==SDL_MOUSEBUTTONUP)&&e->button.button==SDL_BUTTON_LEFT)
+        window_pointer(e->button.x,e->button.y,e->type==SDL_MOUSEBUTTONDOWN);
+}
+
+static bool data_pending[GBS_DATA_COUNT];
+static uint32_t data_started[GBS_DATA_COUNT];
+static unsigned data_requests;
+static bool schedule_pending;
+static gbs_ui_schedule_t saved_plan, requested_plan;
+static bool read_data(gbs_ui_data_kind_t kind,void *context)
+{
+    (void)context; data_pending[kind]=true; data_started[kind]=SDL_GetTicks(); ++data_requests; return true;
+}
+static gbs_ui_data_t sample_data(gbs_ui_data_kind_t kind)
+{
+    gbs_ui_data_t data={.kind=kind,.state=GBS_DATA_READY,.valid=true,.count=kind==GBS_DATA_SCHEDULE?4:5};
+    data.total=data.count; data.editable=kind==GBS_DATA_SCHEDULE;
+    if(kind==GBS_DATA_SCHEDULE) {
+        data.items.schedules[0]=(gbs_ui_schedule_t){.on_minutes=420,.off_minutes=570,.days=31,.enabled=true,.steam=true};
+        data.items.schedules[1]=(gbs_ui_schedule_t){.on_minutes=510,.off_minutes=660,.days=96,.enabled=true};
+        data.items.schedules[2]=(gbs_ui_schedule_t){.on_minutes=1080,.off_minutes=1170,.days=16};
+        data.items.schedules[3]=(gbs_ui_schedule_t){.on_minutes=1380,.off_minutes=60,.days=32,.enabled=true,.steam=true};
+        for(unsigned i=0;i<data.count;++i) snprintf(data.items.schedules[i].id,sizeof(data.items.schedules[i].id),"synthetic-plan-%u",i);
+        if(saved_plan.id[0]) data.items.schedules[0]=saved_plan;
+    } else {
+        const char *times[]={"2026-10-18T01:18:20Z","2026-10-18T01:02:00Z","2026-10-17T01:10:00Z","2026-10-16T09:20:00Z","2026-10-16T01:10:00Z"};
+        for(unsigned i=0;i<data.count;++i) {
+            gbs_ui_coffee_t *coffee=&data.items.coffees[i];
+            snprintf(coffee->time,sizeof(coffee->time),"%s",times[i]);
+            coffee->seconds=31.2-i*0.7; coffee->temperature=93; coffee->dose=30; coffee->mode=1;
+        }
+        data.items.coffees[3].seconds=data.items.coffees[3].dose=data.items.coffees[3].temperature=NAN;
+    }
+    return data;
+}
+static void finish_data(gbs_ui_data_kind_t kind)
+{
+    gbs_ui_data_t data=sample_data(kind); data_pending[kind]=false; gbs_ui_set_data(&data);
+}
+
+static bool submit_schedule(const gbs_ui_schedule_t *expected,const gbs_ui_schedule_t *plan,uint32_t id,void *context)
+{
+    (void)context;
+    if(pending||!expected||!plan||!id||reject_submit) return false;
+    requested_plan=*plan; command_id=id; pending=schedule_pending=true; submitted_at=SDL_GetTicks(); ++requests; return true;
+}
+static void finish_schedule(void)
+{
+    saved_plan=requested_plan; pending=schedule_pending=false;
+    gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
 }
 
 static bool submit(gbs_ui_action_t action, double value, uint32_t request_id, const gbs_ui_machine_t *expected, void *context)
@@ -135,9 +200,26 @@ static void tap(int x, int y)
     lv_tick_inc(100); lv_timer_handler();
 }
 
+static bool self_testing;
+static void check_glyphs(lv_obj_t *root)
+{
+    if(lv_obj_check_type(root,&lv_label_class)) {
+        const char *text=lv_label_get_text(root); const lv_font_t *font=lv_obj_get_style_text_font(root,0);
+        uint32_t offset=0,letter;
+        while((letter=_lv_txt_encoded_next(text,&offset))) {
+            if(letter<32) continue;
+            lv_font_glyph_dsc_t glyph;
+            if(!lv_font_get_glyph_dsc(font,&glyph,letter,0)||glyph.is_placeholder) {
+                fprintf(stderr,"Missing glyph U+%04x in %s\n",letter,text); assert(false);
+            }
+        }
+    }
+    for(unsigned i=0;i<lv_obj_get_child_cnt(root);++i) check_glyphs(lv_obj_get_child(root,i));
+}
 static void paint(void)
 {
     lv_obj_update_layout(lv_scr_act()); lv_refr_now(NULL);
+    if(self_testing) check_glyphs(lv_scr_act());
 }
 
 static lv_obj_t *find_switch(lv_obj_t *root)
@@ -323,6 +405,89 @@ static void daily_control_regressions(const char *directory)
     puts("daily UI: BBW/prebrew/power/standby navigation, preserved values, confirmation, conflicts, limits and unavailable states passed");
 }
 
+static void collection_regressions(const char *directory)
+{
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_set_reader(read_data);
+    unsigned before=requests,reads=data_requests;
+    gbs_ui_show(GBS_PAGE_SCHEDULE); assert(data_requests==reads+1);
+    tap(211,22); assert(data_requests==reads+1);
+    if(directory) save_screen(directory,"schedule-loading");
+    finish_data(GBS_DATA_SCHEDULE);
+    assert(find_text(lv_scr_act(),"07:00 - 09:30"));
+    if(directory) save_screen(directory,"schedule");
+    tap(120,92); assert(gbs_ui_page()==GBS_PAGE_SCHEDULE_DETAIL);
+    if(directory) save_screen(directory,"schedule-detail");
+    tap(22,22); tap(207,255); assert(find_text(lv_scr_act(),"23:00 - 01:00"));
+    tap(32,255); assert(find_text(lv_scr_act(),"07:00 - 09:30"));
+    gbs_ui_show(GBS_PAGE_COFFEES); finish_data(GBS_DATA_HISTORY);
+    if(directory) save_screen(directory,"history");
+    tap(120,92); assert(gbs_ui_page()==GBS_PAGE_COFFEE_DETAIL&&find_text(lv_scr_act(),"31.2 s"));
+    if(directory) save_screen(directory,"history-detail");
+    tap(22,22); tap(207,255); tap(120,92); assert(gbs_ui_page()==GBS_PAGE_COFFEE_DETAIL&&find_text(lv_scr_act(),"—"));
+    if(directory) save_screen(directory,"history-missing-values");
+    tap(22,22);
+    gbs_ui_data_t data=sample_data(GBS_DATA_HISTORY); data.state=GBS_DATA_STALE; gbs_ui_set_data(&data);
+    if(directory) save_screen(directory,"history-stale");
+    data.count=data.total=0; data.state=GBS_DATA_READY; gbs_ui_set_data(&data);
+    assert(find_text(lv_scr_act(),"暂无出杯记录"));
+    if(directory) save_screen(directory,"history-empty");
+    data.valid=false; data.state=GBS_DATA_ERROR; gbs_ui_set_data(&data);
+    if(directory) save_screen(directory,"history-error");
+    assert(requests==before);
+    puts("collections UI: on-demand refresh, pagination, details, missing metrics and stale/error/empty states passed");
+}
+
+static void schedule_edit_regressions(const char *directory)
+{
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_set_reader(read_data); gbs_ui_set_schedule_submit(submit_schedule);
+    gbs_ui_show(GBS_PAGE_SCHEDULE); finish_data(GBS_DATA_SCHEDULE); tap(120,92); click("编辑计划");
+    assert(gbs_ui_page()==GBS_PAGE_SCHEDULE_EDIT); unsigned before=requests;
+    tap(60,75); assert(gbs_ui_page()==GBS_PAGE_SCHEDULE_ON); tap(90,190); tap(206,190);
+    if(directory) save_screen(directory,"schedule-time-edit");
+    click("完成"); assert(gbs_ui_page()==GBS_PAGE_SCHEDULE_EDIT);
+    tap(120,132); assert(gbs_ui_page()==GBS_PAGE_SCHEDULE_DAYS); tap(38,179);
+    if(directory) save_screen(directory,"schedule-days-edit");
+    click("完成"); tap(177,187); assert(requests==before);
+    if(directory) save_screen(directory,"schedule-edit");
+    click("保存计划"); assert(find_text(lv_scr_act(),"确认保存")&&requests==before);
+    if(directory) save_screen(directory,"schedule-confirm");
+    click("确认保存"); assert(requests==before+1&&pending&&requested_plan.on_minutes==481&&!requested_plan.steam);
+    if(directory) save_screen(directory,"schedule-saving");
+    finish_schedule(); assert(find_text(lv_scr_act(),"已确认保存"));
+    if(directory) save_screen(directory,"schedule-saved");
+    click("返回计划"); finish_data(GBS_DATA_SCHEDULE); tap(120,92); click("编辑计划"); tap(64,188);
+    click("保存计划"); click("确认保存"); gbs_ui_tick(45000); pending=schedule_pending=false;
+    assert(find_text(lv_scr_act(),"结果未确认")&&requests==before+2);
+    if(directory) save_screen(directory,"schedule-unknown");
+    click("返回计划"); finish_data(GBS_DATA_SCHEDULE); tap(120,92); click("编辑计划"); tap(64,188);
+    tap(22,22); assert(find_text(lv_scr_act(),"放弃这次修改？")); click("放弃修改");
+    assert(gbs_ui_page()==GBS_PAGE_SCHEDULE_DETAIL);
+    click("编辑计划"); tap(64,188);
+    gbs_ui_data_t changed=sample_data(GBS_DATA_SCHEDULE); ++changed.items.schedules[0].off_minutes;
+    gbs_ui_set_data(&changed); assert(find_text(lv_scr_act(),"计划已变化，请重新打开"));
+    click("保存计划"); assert(requests==before+2&&!find_text(lv_scr_act(),"确认保存"));
+    if(directory) save_screen(directory,"schedule-conflict");
+    memset(&saved_plan,0,sizeof(saved_plan));
+    puts("schedule editor: draft-only time/day/toggle edits, explicit confirmation, save readback, conflict, timeout and discard passed");
+}
+
+static void pointer_regressions(void)
+{
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_MACHINE);
+    SDL_Event e={0}; e.type=SDL_MOUSEBUTTONDOWN; e.button.button=SDL_BUTTON_LEFT; e.button.x=360; e.button.y=735;
+    mouse_event(&e);
+    // Coalesced delivery may carry the entire drag in its release position.
+    e.type=SDL_MOUSEBUTTONUP; e.button.y=195; mouse_event(&e); paint();
+    assert(gbs_ui_page()==GBS_PAGE_MACHINE);
+    lv_obj_t *power=find_text(lv_scr_act(),"机器电源"); assert(power);
+    lv_area_t bounds; lv_obj_get_coords(power,&bounds); assert(bounds.y1>44&&bounds.y2<280);
+    tap(120,(bounds.y1+bounds.y2)/2); assert(gbs_ui_page()==GBS_PAGE_POWER);
+    gbs_ui_show(GBS_PAGE_MACHINE);
+    e.type=SDL_MOUSEBUTTONDOWN; e.button.button=SDL_BUTTON_RIGHT; e.button.x=360; e.button.y=195; mouse_event(&e);
+    e.type=SDL_MOUSEBUTTONUP; mouse_event(&e); assert(gbs_ui_page()==GBS_PAGE_MACHINE);
+    puts("pointer: coalesced drag release does not click a row; subsequent tap and left-button filtering passed");
+}
+
 static void self_test(const char *directory)
 {
     scene(1);
@@ -374,12 +539,16 @@ static void self_test(const char *directory)
     }
     control_regressions(directory);
     daily_control_regressions(directory);
+    pointer_regressions();
+    collection_regressions(directory);
+    schedule_edit_regressions(directory);
     puts("native UI: navigation, confirmation timeout, stale/rejected steam controls, link colors and all pages passed");
 }
 
 int main(int argc,char **argv)
 {
     bool test=argc>1 && !strcmp(argv[1],"--self-test");
+    self_testing=test;
     SDL_SetMainReady(); assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_TIMER)==0);
     SDL_Window *window=SDL_CreateWindow("GbS Touch - SYNTHETIC DATA - 0: unavailable, 1-8: scenarios",SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,WIDTH*SCALE,HEIGHT*SCALE,test?SDL_WINDOW_HIDDEN:SDL_WINDOW_SHOWN);
@@ -389,17 +558,23 @@ int main(int argc,char **argv)
     static lv_color_t buffer[WIDTH*24]; static lv_disp_draw_buf_t draw; static lv_disp_drv_t display;
     lv_disp_draw_buf_init(&draw,buffer,NULL,WIDTH*24); lv_disp_drv_init(&display);
     display.hor_res=WIDTH; display.ver_res=HEIGHT; display.flush_cb=flush; display.draw_buf=&draw; lv_disp_drv_register(&display);
-    lv_indev_drv_init(&input); input.type=LV_INDEV_TYPE_POINTER; input.read_cb=read_pointer; lv_indev_drv_register(&input);
+    lv_indev_drv_init(&input); input.type=LV_INDEV_TYPE_POINTER; input.read_cb=read_pointer; pointer_device=lv_indev_drv_register(&input);
     gbs_ui_init(submit,NULL); scene(1);
+    gbs_ui_set_reader(read_data); gbs_ui_set_schedule_submit(submit_schedule);
     if(test) { self_test(argc>2?argv[2]:NULL); SDL_Quit(); return 0; }
+    bool native_pointer=false;
+#ifdef __APPLE__
+    bool gbs_cocoa_input(SDL_Window *,void (*)(int,int,bool));
+    native_pointer=gbs_cocoa_input(window,window_pointer);
+#endif
     uint32_t last=SDL_GetTicks(),scene_start=last; bool running=true;
     while(running) {
         SDL_Event e;
         while(SDL_PollEvent(&e)) {
             if(e.type==SDL_QUIT) running=false;
-            if(e.type==SDL_MOUSEMOTION) pointer_event(e.motion.x/SCALE,e.motion.y/SCALE,pressed);
-            if(e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP) {
-                pointer_event(e.button.x/SCALE,e.button.y/SCALE,e.type==SDL_MOUSEBUTTONDOWN);
+            if(!native_pointer) mouse_event(&e);
+            if(e.type==SDL_WINDOWEVENT&&e.window.event==SDL_WINDOWEVENT_FOCUS_LOST) {
+                lv_indev_reset(pointer_device,NULL); pressed=false;
             }
             if(e.type==SDL_KEYDOWN) {
                 if(e.key.keysym.sym==SDLK_ESCAPE) gbs_ui_show(GBS_PAGE_HOME);
@@ -410,11 +585,16 @@ int main(int argc,char **argv)
         if(pending&&now-submitted_at>1500) {
             pending=false;
             if(scenario==4) gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN);
-            else {
-                finish_requested();
-            }
+            else if(schedule_pending) finish_schedule();
+            else finish_requested();
         }
+        for(unsigned i=0;i<GBS_DATA_COUNT;++i)
+            if(data_pending[i]&&now-data_started[i]>700) finish_data(i);
         gbs_ui_tick(10000+now-scene_start); lv_timer_handler(); SDL_Delay(10);
     }
+#ifdef __APPLE__
+    void gbs_cocoa_input_stop(void);
+    gbs_cocoa_input_stop();
+#endif
     SDL_Quit(); return 0;
 }

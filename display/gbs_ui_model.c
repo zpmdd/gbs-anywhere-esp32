@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 
+bool gbs_ui_schedule_equal(const gbs_ui_schedule_t *a,const gbs_ui_schedule_t *b)
+{
+    return !strcmp(a->id,b->id)&&a->on_minutes==b->on_minutes&&a->off_minutes==b->off_minutes&&
+        a->enabled==b->enabled&&a->steam==b->steam&&a->days==b->days;
+}
+
 static bool flag(const cJSON *j, const char *name)
 {
     return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, name));

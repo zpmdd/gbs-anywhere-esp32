@@ -168,6 +168,32 @@ live telemetry.
   fields that must be preserved. These checks do not validate a live Hub or the
   machine's physical response. No existing device was contacted or modified.
 
+## Schedule/history and pointer follow-up, 2026-10-18
+
+- Resolved the earlier CUA drag failure: AppKit delivered drag coordinates that
+  SDL2 omitted, followed by an SDL release at an old coordinate. The simulator
+  now reads its own window's native pointer events and delivers final movement
+  before release. Native CUA reproduced the original gesture without opening a
+  row; the following tap opened Schedule. This is simulator evidence only.
+- Added list/detail/refresh, time/day/toggle draft editing, explicit confirmation,
+  pending/confirmed/unknown/conflict states and multi-cup history. The overview
+  at [schedule/history preview](docs/images/schedule-history-preview.png) uses
+  native 240 x 280 framebuffer exports with synthetic data.
+- Visual comparison found missing numeric-font spaces, slashes and `C`; the
+  subset and generator now include them. Render-time glyph assertions prevent
+  placeholder boxes from silently passing. The Noto/Inter fonts, colors, compact
+  headers, 44 px actions and existing home/navigation layout are retained.
+- All 38 routes render. Native regressions cover paging, refresh coalescing,
+  missing metrics, empty/error/stale states, draft-only changes, confirmation,
+  exact save feedback, concurrent changes, timeout, discard and subsequent taps.
+- Final native CUA checks passed Schedule → Edit → Confirm → Pending → Confirmed
+  and History → Next page → Missing-value detail. No real machine data or writes
+  were used. The separate Hub parser, transaction, cache-race and coordinator
+  tests cover the wire contract; synthetic UI success is not a live Hub claim.
+- Both companion profiles and the separate Hub firmware build passed locally.
+  Physical panel/touch, real TLS/vendor readback, timezone behavior and sustained
+  resource use remain unverified. No current device was contacted or modified.
+
 ## Implementation checklist
 
 - [x] Align typography, colors, layout and standard interface symbols.

@@ -5,7 +5,43 @@ The native touchscreen and optional LamaBuddy Hub client are implemented and
 locally validated. They remain experimental and have not been deployed to an
 existing device or released as a hardware-accepted version.
 
-## Completed in this development round
+## Latest development publication: drag input, schedules and multi-cup history
+
+- Fixed the Mac simulator's coalesced drag/release path. Its AppKit adapter
+  reads the simulator window's actual pointer coordinates before LVGL handles
+  release; other platforms retain SDL input. Native CUA dragging now scrolls
+  without opening the touched row, and the following tap opens the intended row.
+- Added schedule list/detail/refresh plus existing-plan editing: start/end time,
+  weekdays, enabled state and steam. Drafts require an explicit confirmation.
+  Capability, machine binding and the expected plan are checked before one POST;
+  only exact Hub readback becomes confirmed. Conflicts and unknown outcomes stay
+  visible, and stale plans cannot be edited.
+- Extended the separate LamaBuddy ESP32-S3 Hub with
+  `POST /controls/schedule` and `scheduleEdit`. It reuses its authenticated API,
+  bounded coordinator, UUID deduplication and Cloud command adapter. A fresh
+  vendor read checks the original plan; a second read verifies the result. The
+  schedule cache discards any read that started before the edit completed.
+  The matching Hub source is isolated on `codex/hub-schedule-edit`, commit
+  `7b00f00a`, based on its committed HTTPS/v2 foundation `b16ff1c9`. Other pending
+  parent-workspace changes are excluded. That branch also includes the required
+  local machine-binding endpoint and fixes v2 status for commands without a
+  total deadline, so accepted/polled/completed schedule results remain readable.
+  The display requires that matching Hub extension for editing.
+- Added multi-cup list/detail/refresh using `/machine/statistics?days=7`:
+  newest-first, three rows per page, at most the latest 32 returned records.
+  UTC timestamps, missing metrics, old data, empty results and failures have
+  explicit presentations. The Cloud dose setting is never presented as measured
+  cup weight or a confirmed grinder result.
+- Preserved the approved palette, Noto/Inter fonts, compact header and navigation.
+  Fixed missing space, slash and temperature-unit glyphs in numeric fonts and
+  added a rendered-label glyph check to the simulator regression suite.
+- Published development sources on the two feature branches. Local validation
+  and source publication do not establish hardware acceptance. No existing
+  device, pairing, vendor Cloud session or live Hub was contacted or changed.
+
+![Schedule and history pages rendered with synthetic data](images/schedule-history-preview.png)
+
+## Implemented baseline and additions
 
 | Area | Implemented behavior |
 | --- | --- |
@@ -33,12 +69,13 @@ The preview is compiled LVGL output with synthetic data. See the
 
 | Check | Status and limit |
 | --- | --- |
-| Host C tests | Passed with ASan/UBSan: protocol, production worker, display model and production Hub contract using in-memory services. All ten added actions cover one-POST behavior, lost replies, capability rejection, concurrent changes, partial/unknown results and preserved-field readback. |
+| Host C tests | Passed with ASan/UBSan: protocol, production worker, display model and production Hub contract using in-memory services. Daily actions and schedule edits cover one-POST behavior, lost replies, capability rejection, concurrent changes, partial/unknown results and preserved-field readback. |
 | Provisioning and helpers | 11 provisioning tests and 8 serial-helper tests passed. Real NVS image generation uses synthetic credentials/certificates in temporary directories. |
 | Web status UI | Eight locales, startup/offline states and storage restrictions passed. |
-| Native UI | All 32 routes render; navigation, list swipe, draft conflicts, duplicate locking, timeout, late-result, steam-switch and daily-control regressions passed. The original 18 design comparisons remain the baseline; new controls reuse their fonts, palette and widgets. |
-| Native application | Local pointer interaction observed BBW and prebrew requests keeping their old confirmed values while pending, then showing confirmed synthetic feedback. CUA drag-to-scroll still sometimes activates a row; direct LVGL swipe regression passes. This automation path remains a follow-up, not physical-touch evidence. |
-| Firmware builds | Both ESP-IDF 5.5.4 profiles passed. The headless ELF contains neither Hub client nor LVGL symbols. |
+| Native UI | All 38 routes render; navigation, list swipe, draft conflicts, duplicate locking, timeout, late-result, steam-switch and daily-control regressions passed. The original 18 design comparisons remain the baseline; schedule/history pages reuse their fonts, palette and widgets. The new suite covers refresh, paging, details, schedule draft/confirmation/conflict/timeout and missing glyphs. |
+| Native application | Native CUA passed drag-to-scroll followed by a correct row tap, schedule edit/confirmation/pending/confirmed feedback, and history pagination/detail with missing metrics. All data was synthetic; this is not physical-touch or live-Hub evidence. |
+| Hub extension | The isolated committed baseline passed production schedule parser/transaction/cache/binding tests with ASan/UBSan, 27 coordinator cases (including v2 status across 11 non-deadline command kinds), 8 control cases, the slow-read validator and 6 HTTPS/identity contract groups. The original workspace also passed its broader existing regressions after the scoped fixes. |
+| Firmware builds | Both ESP-IDF 5.5.4 companion profiles and the isolated Hub build passed. Application-partition free space is 74% headless, 56% touchscreen and 27% Hub. The headless ELF contains neither Hub client nor LVGL symbols. |
 | Hosted CI | The workflow includes offline tests, the native self-test and both firmware profiles. Use the [branch workflow results](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml?query=branch%3Acodex%2Fnative-touchscreen) for commit-specific evidence; local success alone does not establish CI success. |
 | Hardware / release | Pending. No flashing, pairing, existing Hub requests, machine writes or real shots were performed for this development round. |
 
@@ -51,7 +88,8 @@ The preview is compiled LVGL output with synthetic data. See the
 2. **Live Hub acceptance, after explicit authorization.** Validate trusted TLS
    and serial binding, then measured/target temperature freshness. Check presets,
    preserved doses/modes, prebrew, power, standby, coffee temperature and steam
-   controls with real readback;
+   controls with real readback; then validate schedule edits, machine timezone,
+   delayed readback and multi-cup history against the matching Hub extension;
    exercise rejected, partial, unknown and concurrent-change outcomes.
 3. **Reliability and coexistence.** Observe task-stack/heap margins and prolonged
    operation with display, Hub traffic and the existing grinder/cloud worker.
@@ -61,32 +99,35 @@ The preview is compiled LVGL output with synthetic data. See the
 4. **Review and release.** Keep the work on the development branch until review
    and applicable CI/hardware gates pass. Record exact firmware revision and
    results before calling it released or hardware accepted. No firmware release
-   or main-branch merge is part of this publication step.
+   or main-branch merge is part of this local development round.
 
 These hardware-dependent items are deferred while the instruction to leave
 existing devices untouched remains in effect.
 
 The local feature backlog is separate from those acceptance gates:
 
-1. Schedules and multi-cup history, using existing Hub capabilities where available.
+1. Schedule creation/deletion, if requested; this round edits existing plans only.
 2. Independent idle dim/blank timers; the current two rows share one fixed policy.
 3. On-device setup and OTA, with an explicit storage/update design before implementation.
-4. Reproducible CUA-to-SDL drag automation; a native pointer drag sometimes opens a
-   row even though the LVGL swipe regression passes. Do not count that automation
-   path as accepted until it has been reproduced and resolved.
+4. Optional history timezone preference; current Cloud records are explicitly UTC.
 
-Schedule, setup and update guidance pages are not completed editing workflows.
-Future controls should continue to reuse Hub capabilities and command semantics
-rather than introducing another machine-control implementation.
+Setup and update guidance pages are not completed editing workflows. Future
+controls should continue to reuse Hub capabilities and command semantics.
 
 ## Upstream synchronization
 
-The publication check fetched both `origin` and `upstream` on 2026-10-18.
-Companion main was `b4c1e51`; Skamba upstream main remained
-`c60eade2cb1f39a4f2123aa7c9bd5f4e4acba759`. There were no new changes since the
-previous upstream check. Protocol behavior remains based on `3adf778`; the
-intervening PR21 changes do not require a protocol port.
+The local check fetched both `origin` and `upstream` on 2026-10-18.
+Companion main remains `b4c1e51`; Skamba upstream main is
+`b8f7dc28c0c00585ebe3cd574bcde5f783e412e5` (PR22 tabs, PR23 settings, PR24 history).
+The new protocol/worker changes were reviewed: configurable timeout, worker-owner
+checks, history attribution and HTTP reachability bookkeeping. This companion
+keeps its fixed bounded timeout, imported identity, single worker and persistent
+journal; there is no runtime endpoint replacement or E64 manual-brew path to port.
+The protocol behavior baseline remains `3adf778`.
 
-Keep the companion and upstream Rust histories separate. Review new upstream
-changes, port relevant fixes with regression tests, and update
-[UPSTREAM.md](UPSTREAM.md). Publication does not deploy firmware or alter pairing.
+Keep the companion and upstream Rust histories separate. Port relevant fixes
+with regression tests and record decisions in [UPSTREAM.md](UPSTREAM.md).
+This round is published as development source on `codex/native-touchscreen` and
+on the separate Hub branch above. It is not a firmware release or deployment.
+Hosted CI must be checked for the new companion commit; the Hub branch currently
+has local build/test evidence only.

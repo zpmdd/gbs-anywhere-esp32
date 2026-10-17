@@ -23,7 +23,9 @@ LV_FONT_DECLARE(gbs_number_40);
 enum { BG = 0x101610, SURFACE = 0x202420, LINE = 0x343734, TEXT = 0xf4f0e4,
        MUTED = 0xbabdb6, GOLD = 0xe3bb83, GREEN = 0x9fd2aa, WARN = 0xf0c178, RED = 0xeaa28d };
 enum { BACK = 100, MINUS, PLUS, APPLY, CONFIRM, DISCARD, KEEP,
-       MODE_MONITOR, MODE_ACTIVE, BRIGHTNESS, DIM, DISPLAY_SAVE, STEAM_TOGGLE, PRESET = 200, CHOICE = 400 };
+       MODE_MONITOR, MODE_ACTIVE, BRIGHTNESS, DIM, DISPLAY_SAVE, STEAM_TOGGLE,
+       DATA_REFRESH, DATA_PREVIOUS, DATA_NEXT, PLAN_ENABLED, PLAN_STEAM, PLAN_APPLY, PLAN_SEND,
+       HOUR_MINUS, HOUR_PLUS, MINUTE_MINUS, MINUTE_PLUS, PRESET = 200, CHOICE = 400, DATA_ROW = 500, PLAN_DAY = 600 };
 enum { F_COFFEE, F_COFFEE_TARGET, F_STEAM, F_STEAM_TARGET, F_WEIGHT, F_STAGE,
        F_DETAIL, F_TIME, F_TIMER_CAPTION, F_TARGET, F_RESULT, F_CONTROL,
        F_DRAFT, F_CONFLICT, F_WIFI, F_GRINDER, F_CLOUD, F_MEMORY, F_MODE,
@@ -39,6 +41,14 @@ static struct {
     gbs_ui_control_t control;
     gbs_ui_action_t action;
     gbs_ui_submit_t submit;
+    gbs_ui_read_t reader;
+    gbs_ui_data_t *data;
+    gbs_ui_schedule_submit_t schedule_submit;
+    bool schedule_submitted;
+    unsigned data_page[GBS_DATA_COUNT];
+    gbs_ui_schedule_t selected_schedule, schedule_draft;
+    gbs_ui_coffee_t selected_coffee;
+    bool selected_stale;
     void *context;
     int64_t now, submitted_ms, submitted_observation;
     lv_obj_t *fields[F_COUNT], *presets[4], *preset_faces[4], *apply, *body, *ring, *mode_radio[2];
@@ -47,11 +57,21 @@ static struct {
     lv_obj_t *connection_dots[4], *steam_toggle, *choices[4], *confirm_button;
 } ui;
 static uint32_t request_sequence;
+static gbs_ui_data_t *collections;
 static const int presets[] = {20, 30, 35, 40};
 static void render(void);
 static void refresh(void);
 static void event(lv_event_t *event);
 static void set(unsigned field_id, const char *text);
+static bool plan_editor(void) { return ui.page>=GBS_PAGE_SCHEDULE_EDIT&&ui.page<=GBS_PAGE_SCHEDULE_DAYS; }
+static bool data_page(void) { return ui.page==GBS_PAGE_SCHEDULE||ui.page==GBS_PAGE_COFFEES; }
+static gbs_ui_data_kind_t data_kind(void) { return ui.page==GBS_PAGE_SCHEDULE?GBS_DATA_SCHEDULE:GBS_DATA_HISTORY; }
+static void request_data(void)
+{
+    gbs_ui_data_t *data=&ui.data[data_kind()];
+    if(data->state==GBS_DATA_LOADING) return;
+    data->state=ui.reader&&ui.reader(data_kind(),ui.context)?GBS_DATA_LOADING:GBS_DATA_UNAVAILABLE;
+}
 
 static const struct parameter {
     gbs_ui_page_t page;
@@ -274,7 +294,9 @@ static double current_value(void)
 
 static void enter(gbs_ui_page_t page)
 {
-    ui.page = page; ui.dirty = ui.discard = ui.confirm = ui.conflict = false;
+    ui.page = page;
+    if(!plan_editor()) ui.dirty=ui.conflict=false;
+    ui.discard=ui.confirm=false;
     if (page == GBS_PAGE_MODE) ui.mode_draft = ui.bridge.active;
     if (page == GBS_PAGE_DISPLAY) { ui.brightness_draft = ui.brightness; ui.dim_draft = ui.dim; }
     if (editor()) {
@@ -283,6 +305,7 @@ static void enter(gbs_ui_page_t page)
         ui.edit_snapshot = ui.machine;
         ui.edit_revision = ui.machine.revision;
     }
+    if(data_page()&&ui.data[data_kind()].state==GBS_DATA_IDLE) request_data();
     render();
 }
 
@@ -296,6 +319,7 @@ void gbs_ui_show(gbs_ui_page_t page)
 static void back(void)
 {
     if (ui.discard || ui.confirm) { ui.discard = ui.confirm = false; render(); return; }
+    if(plan_editor()&&ui.page!=GBS_PAGE_SCHEDULE_EDIT) { enter(ui.depth?ui.stack[--ui.depth]:GBS_PAGE_SCHEDULE_EDIT); return; }
     if (ui.dirty) { ui.discard = true; render(); return; }
     enter(ui.depth ? ui.stack[--ui.depth] : GBS_PAGE_HOME);
 }
@@ -311,6 +335,7 @@ static void send(gbs_ui_action_t action, double value)
     ui.request_id = request_sequence; ui.action = action; ui.requested = value;
     const gbs_ui_machine_t *expected=editor()?&ui.edit_snapshot:&ui.machine;
     if (!ui.submit(action, value, ui.request_id, expected, ui.context)) { ui.control = GBS_UI_CONTROL_FAILED; ui.confirm=false; render(); return; }
+    ui.schedule_submitted=false;
     ui.control = GBS_UI_CONTROL_PENDING; ui.submitted_ms = ui.now; ui.submitted_observation = ui.bridge.observed_ms;
     ui.dirty = ui.confirm = false; render();
 }
@@ -318,8 +343,64 @@ static void send(gbs_ui_action_t action, double value)
 static void event(lv_event_t *e)
 {
     int a = (int)(intptr_t)lv_event_get_user_data(e);
+    if(a==GBS_PAGE_SCHEDULE_EDIT) {
+        if(ui.control==GBS_UI_CONTROL_PENDING||!ui.data[GBS_DATA_SCHEDULE].editable||ui.data[GBS_DATA_SCHEDULE].state!=GBS_DATA_READY||ui.selected_stale||!ui.selected_schedule.id[0]) return;
+        ui.schedule_draft=ui.selected_schedule; ui.schedule_submitted=false; ui.dirty=ui.conflict=false;
+    }
+    if(a==GBS_PAGE_SCHEDULE&&ui.schedule_submitted) {
+        ui.data[GBS_DATA_SCHEDULE].state=GBS_DATA_IDLE; ui.schedule_submitted=false;
+    }
     if (a < GBS_PAGE_COUNT) { gbs_ui_show((gbs_ui_page_t)a); return; }
     if (a == BACK) { back(); return; }
+    if(data_page()) {
+        gbs_ui_data_kind_t kind=data_kind(); gbs_ui_data_t *data=&ui.data[kind];
+        if(a==DATA_REFRESH) { request_data(); render(); return; }
+        if(a==DATA_PREVIOUS||a==DATA_NEXT) {
+            unsigned *page=&ui.data_page[kind];
+            if(a==DATA_PREVIOUS&&*page) --*page;
+            if(a==DATA_NEXT&&(*page+1)*3<data->count) ++*page;
+            render(); return;
+        }
+        if(a>=DATA_ROW&&a<DATA_ROW+3) {
+            unsigned index=ui.data_page[kind]*3+a-DATA_ROW;
+            if(!data->valid||index>=data->count) return;
+            ui.selected_stale=data->state!=GBS_DATA_READY;
+            if(kind==GBS_DATA_SCHEDULE) ui.selected_schedule=data->items.schedules[index];
+            else ui.selected_coffee=data->items.coffees[index];
+            gbs_ui_show(kind==GBS_DATA_SCHEDULE?GBS_PAGE_SCHEDULE_DETAIL:GBS_PAGE_COFFEE_DETAIL); return;
+        }
+    }
+    if(plan_editor()) {
+        bool writable=ui.data[GBS_DATA_SCHEDULE].editable&&ui.data[GBS_DATA_SCHEDULE].state==GBS_DATA_READY&&!ui.conflict;
+        if(a==PLAN_SEND) {
+            if(!ui.confirm||!writable||ui.control==GBS_UI_CONTROL_PENDING||!ui.schedule_submit) return;
+            if(!++request_sequence) ++request_sequence;
+            ui.request_id=request_sequence; ui.submitted_ms=ui.now;
+            ui.control=ui.schedule_submit(&ui.selected_schedule,&ui.schedule_draft,ui.request_id,ui.context)?GBS_UI_CONTROL_PENDING:GBS_UI_CONTROL_FAILED;
+            ui.action=GBS_ACTION_COUNT; ui.dirty=ui.confirm=false; ui.schedule_submitted=true; render(); return;
+        }
+        if(a==PLAN_APPLY) {
+            if(!writable||!ui.dirty||ui.control==GBS_UI_CONTROL_PENDING||
+                (ui.schedule_draft.enabled&&(!ui.schedule_draft.days||ui.schedule_draft.on_minutes==ui.schedule_draft.off_minutes))) return;
+            ui.confirm=true; render(); return;
+        }
+        if(a>=PLAN_ENABLED&&a<=MINUTE_PLUS) {
+            if(!writable||ui.control==GBS_UI_CONTROL_PENDING||ui.schedule_submitted) return;
+            if(a==PLAN_ENABLED) ui.schedule_draft.enabled=!ui.schedule_draft.enabled;
+            if(a==PLAN_STEAM) ui.schedule_draft.steam=!ui.schedule_draft.steam;
+            uint16_t *minutes=ui.page==GBS_PAGE_SCHEDULE_ON?&ui.schedule_draft.on_minutes:&ui.schedule_draft.off_minutes;
+            int hour=*minutes/60,minute=*minutes%60;
+            if(a==HOUR_MINUS) hour=(hour+23)%24;
+            if(a==HOUR_PLUS) hour=(hour+1)%24;
+            if(a==MINUTE_MINUS) minute=(minute+59)%60;
+            if(a==MINUTE_PLUS) minute=(minute+1)%60;
+            if(a>=HOUR_MINUS) *minutes=hour*60+minute;
+            ui.dirty=true; render(); return;
+        }
+        if(a>=PLAN_DAY&&a<PLAN_DAY+7&&writable&&ui.control!=GBS_UI_CONTROL_PENDING&&!ui.schedule_submitted) {
+            ui.schedule_draft.days^=1u<<(a-PLAN_DAY); ui.dirty=true; render(); return;
+        }
+    }
     if (a == DISCARD) { ui.dirty = ui.discard = false; back(); return; }
     if (a == KEEP) { ui.discard = false; render(); return; }
     if (a >= PRESET && a < PRESET + 4) { send(GBS_ACTION_WEIGHT, presets[a - PRESET]); return; }
@@ -577,6 +658,205 @@ static void linked_page(void)
     }
 }
 
+static const char *data_status(const gbs_ui_data_t *data)
+{
+    switch(data->state) {
+    case GBS_DATA_LOADING: return data->valid?"旧记录 · 刷新中":"正在读取";
+    case GBS_DATA_STALE: return "旧记录 · 请稍后刷新";
+    case GBS_DATA_UNAVAILABLE: return "暂时无法读取";
+    case GBS_DATA_UNSUPPORTED: return "机器不支持定时计划";
+    case GBS_DATA_ERROR: return "读取失败";
+    default: return data->kind==GBS_DATA_SCHEDULE?"计划时间 · 按机器设置":"云端记录 · UTC";
+    }
+}
+
+static void days_text(uint8_t days,char *out,size_t size)
+{
+    if(days==127) { snprintf(out,size,"每天"); return; }
+    if(days==31) { snprintf(out,size,"周一至周五"); return; }
+    if(days==96) { snprintf(out,size,"周六、周日"); return; }
+    if(!days) { snprintf(out,size,"未设置重复日期"); return; }
+    const char *names[]={"一","二","三","四","五","六","日"};
+    snprintf(out,size,"周");
+    for(unsigned i=0;i<7;++i) if(days&(1u<<i)) {
+        size_t used=strlen(out); snprintf(out+used,size-used," %s",names[i]);
+    }
+}
+
+static void collection_page(void)
+{
+    gbs_ui_data_kind_t kind=data_kind(); const gbs_ui_data_t *data=&ui.data[kind];
+    header(kind==GBS_DATA_SCHEDULE?"定时计划":"出杯记录",false);
+    lv_obj_t *refresh_button=button(lv_scr_act(),"刷新",188,0,48,44,DATA_REFRESH,false);
+    lv_obj_set_style_bg_opa(refresh_button,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(refresh_button,0,0);
+    if(data->state==GBS_DATA_LOADING) lv_obj_add_state(refresh_button,LV_STATE_DISABLED);
+    label(lv_scr_act(),data_status(data),12,46,216,&gbs_font_12,data->state==GBS_DATA_READY?MUTED:WARN);
+    if(!data->valid||!data->count) {
+        bool empty=data->valid&&data->state==GBS_DATA_READY;
+        icon(lv_scr_act(),kind==GBS_DATA_SCHEDULE?GBS_ICON_CALENDAR:GBS_ICON_COFFEE,99,88,42,GOLD);
+        centered(label(lv_scr_act(),empty?(kind==GBS_DATA_SCHEDULE?"暂无定时计划":"暂无出杯记录"):
+            data->state==GBS_DATA_LOADING?"正在读取":data->state==GBS_DATA_UNSUPPORTED?"尚不支持":"暂时无法显示",
+            12,145,216,&gbs_font_20_bold,TEXT));
+        centered(label(lv_scr_act(),kind==GBS_DATA_SCHEDULE?"在咖啡机应用中管理计划":"记录由咖啡机云端提供",
+            12,183,216,&gbs_font_12,MUTED));
+        if(data->state==GBS_DATA_LOADING) centered(label(lv_scr_act(),"请稍候，完成后自动显示",12,241,216,&gbs_font_12,MUTED));
+        else bottom("重新读取",DATA_REFRESH,false);
+        return;
+    }
+    char text[96]; unsigned first=ui.data_page[kind]*3;
+    for(unsigned row=0;row<3&&first+row<data->count;++row) {
+        lv_obj_t *card=button(lv_scr_act(),"",10,70+53*row,220,49,DATA_ROW+row,false);
+        if(kind==GBS_DATA_SCHEDULE) {
+            const gbs_ui_schedule_t *plan=&data->items.schedules[first+row];
+            snprintf(text,sizeof(text),"%02u:%02u - %02u:%02u",plan->on_minutes/60,plan->on_minutes%60,plan->off_minutes/60,plan->off_minutes%60);
+            label(card,text,10,5,166,&gbs_number_20,TEXT);
+            days_text(plan->days,text,sizeof(text)); label(card,text,10,30,166,&gbs_font_10,MUTED);
+            label(card,plan->enabled?"启用":"关闭",181,17,33,&gbs_font_10,plan->enabled?GREEN:MUTED);
+        } else {
+            const gbs_ui_coffee_t *coffee=&data->items.coffees[first+row];
+            snprintf(text,sizeof(text),"%.5s  %.5s",coffee->time+5,coffee->time+11);
+            label(card,text,10,6,138,&gbs_number_16,TEXT);
+            if(isfinite(coffee->temperature)) snprintf(text,sizeof(text),"目标 %.1f°C",coffee->temperature);
+            else snprintf(text,sizeof(text),"目标温度 —");
+            label(card,text,10,29,150,&gbs_font_10,MUTED);
+            if(isfinite(coffee->seconds)) snprintf(text,sizeof(text),"%.1fs",coffee->seconds);
+            else snprintf(text,sizeof(text),"—");
+            lv_obj_t *value=label(card,text,142,13,65,coffee->seconds>=1000?&gbs_font_12:coffee->seconds>=100?&gbs_number_16:&gbs_number_20,GOLD);
+            lv_obj_set_style_text_align(value,LV_TEXT_ALIGN_RIGHT,0);
+        }
+    }
+    lv_obj_t *previous=icon_button(lv_scr_act(),GBS_ICON_CHEVRON_LEFT,10,234,DATA_PREVIOUS);
+    lv_obj_t *next=icon_button(lv_scr_act(),GBS_ICON_CHEVRON_RIGHT,186,234,DATA_NEXT);
+    if(!ui.data_page[kind]) lv_obj_add_state(previous,LV_STATE_DISABLED);
+    if(first+3>=data->count) lv_obj_add_state(next,LV_STATE_DISABLED);
+    snprintf(text,sizeof(text),"%u / %u",ui.data_page[kind]+1,(data->count+2)/3);
+    centered(label(lv_scr_act(),text,57,232,126,&gbs_number_16,TEXT));
+    snprintf(text,sizeof(text),data->total>data->count?"最近 %u 条 / 共 %u 条":"共 %u 条",data->count,data->total);
+    centered(label(lv_scr_act(),text,53,254,134,&gbs_font_10,MUTED));
+}
+
+static void schedule_detail(void)
+{
+    const gbs_ui_schedule_t *plan=&ui.selected_schedule;
+    header("计划详情",false);
+    label(lv_scr_act(),ui.selected_stale?"旧记录 · 返回列表刷新":"计划时间 · 按机器设置",12,46,216,&gbs_font_12,ui.selected_stale?WARN:MUTED);
+    const unsigned minutes[]={plan->on_minutes,plan->off_minutes};
+    for(unsigned i=0;i<2;++i) {
+        lv_obj_t *card=box(lv_scr_act(),10+113*i,72,107,75,SURFACE);
+        centered(label(card,i?"结束":"开始",3,9,101,&gbs_font_12,MUTED));
+        char text[12]; snprintf(text,sizeof(text),"%02u:%02u",minutes[i]/60,minutes[i]%60);
+        centered(label(card,text,3,31,101,&gbs_number_28,TEXT));
+    }
+    char days[64]; days_text(plan->days,days,sizeof(days));
+    label(lv_scr_act(),days,12,160,216,&gbs_font_14_bold,TEXT);
+    rule(lv_scr_act(),12,185,216,1);
+    label(lv_scr_act(),"计划状态",12,197,126,&gbs_font_12,MUTED);
+    label(lv_scr_act(),plan->enabled?"启用":"关闭",174,197,54,&gbs_font_12_bold,plan->enabled?GREEN:MUTED);
+    label(lv_scr_act(),"蒸汽锅炉",12,221,126,&gbs_font_12,MUTED);
+    label(lv_scr_act(),plan->steam?"开启":"关闭",174,221,54,&gbs_font_12_bold,TEXT);
+    if(ui.data[GBS_DATA_SCHEDULE].editable&&!ui.selected_stale&&plan->id[0]) bottom("编辑计划",GBS_PAGE_SCHEDULE_EDIT,true);
+    else centered(label(lv_scr_act(),"当前只读 · 刷新后重试",12,253,216,&gbs_font_12,MUTED));
+}
+
+static void coffee_detail(void)
+{
+    const gbs_ui_coffee_t *coffee=&ui.selected_coffee; char text[96];
+    header("出杯详情",false);
+    snprintf(text,sizeof(text),"%.10s  %.8s UTC",coffee->time,coffee->time+11);
+    centered(label(lv_scr_act(),text,10,48,220,&gbs_font_10,MUTED));
+    lv_obj_t *card=box(lv_scr_act(),10,74,220,88,SURFACE);
+    centered(label(card,"萃取用时",10,10,200,&gbs_font_12,MUTED));
+    if(isfinite(coffee->seconds)) snprintf(text,sizeof(text),"%.1f s",coffee->seconds);
+    else snprintf(text,sizeof(text),"—");
+    centered(label(card,text,5,33,210,&gbs_number_36,TEXT));
+    label(lv_scr_act(),"目标温度",12,177,118,&gbs_font_12,MUTED);
+    if(isfinite(coffee->temperature)) snprintf(text,sizeof(text),"%.1f°C",coffee->temperature);
+    else snprintf(text,sizeof(text),"—");
+    label(lv_scr_act(),text,142,173,86,&gbs_number_20,TEXT);
+    label(lv_scr_act(),"设定剂量值",12,207,118,&gbs_font_12,MUTED);
+    if(isfinite(coffee->dose)) snprintf(text,sizeof(text),"%.1f",coffee->dose);
+    else snprintf(text,sizeof(text),"—");
+    label(lv_scr_act(),text,142,203,86,coffee->dose>=10000?&gbs_font_14:&gbs_number_20,TEXT);
+    snprintf(text,sizeof(text),"%s · %s",ui.selected_stale?"旧记录":"云端记录",choice_label(GBS_ACTION_BBW_MODE,coffee->mode));
+    centered(label(lv_scr_act(),text,10,238,220,&gbs_font_10,ui.selected_stale?WARN:MUTED));
+    centered(label(lv_scr_act(),"剂量值非实测重量 · 联动结果见记录",10,258,220,&gbs_font_10,MUTED));
+}
+
+static void plan_confirmation(void)
+{
+    const gbs_ui_schedule_t *plan=&ui.schedule_draft; char text[80];
+    header("确认定时计划",false);
+    icon(lv_scr_act(),GBS_ICON_CALENDAR,103,48,34,GOLD);
+    snprintf(text,sizeof(text),"%02u:%02u - %02u:%02u",plan->on_minutes/60,plan->on_minutes%60,plan->off_minutes/60,plan->off_minutes%60);
+    centered(label(lv_scr_act(),text,10,94,220,&gbs_number_28,TEXT));
+    days_text(plan->days,text,sizeof(text)); centered(label(lv_scr_act(),text,12,135,216,&gbs_font_14,TEXT));
+    snprintf(text,sizeof(text),"计划%s · 蒸汽%s",plan->enabled?"启用":"关闭",plan->steam?"开启":"关闭");
+    centered(label(lv_scr_act(),text,12,164,216,&gbs_font_12,MUTED));
+    centered(label(lv_scr_act(),"计划会在设定时间控制加热",12,195,216,&gbs_font_12,WARN));
+    button(lv_scr_act(),"返回编辑",12,232,104,44,BACK,false);
+    button(lv_scr_act(),"确认保存",124,232,104,44,PLAN_SEND,true);
+}
+
+static void schedule_editor(void)
+{
+    gbs_ui_schedule_t *plan=&ui.schedule_draft; char text[80];
+    if(ui.schedule_submitted) {
+        header("计划保存",false);
+        icon(lv_scr_act(),ui.control==GBS_UI_CONTROL_CONFIRMED?GBS_ICON_CIRCLE_CHECK_FILLED:GBS_ICON_CLOCK,96,62,48,
+            ui.control==GBS_UI_CONTROL_CONFIRMED?GREEN:GOLD);
+        const char *status=ui.control==GBS_UI_CONTROL_PENDING?"正在保存":ui.control==GBS_UI_CONTROL_CONFIRMED?"已确认保存":
+            ui.control==GBS_UI_CONTROL_FAILED?"保存未完成":"结果未确认";
+        centered(label(lv_scr_act(),status,10,128,220,&gbs_font_20_bold,TEXT));
+        centered(label(lv_scr_act(),ui.control==GBS_UI_CONTROL_CONFIRMED?"已读取并核对机器计划":
+            ui.control==GBS_UI_CONTROL_PENDING?"正在等待计划回读":"请先刷新计划再继续编辑",12,173,216,&gbs_font_12,MUTED));
+        bottom("返回计划",GBS_PAGE_SCHEDULE,false); return;
+    }
+    if(ui.page==GBS_PAGE_SCHEDULE_ON||ui.page==GBS_PAGE_SCHEDULE_OFF) {
+        unsigned minutes=ui.page==GBS_PAGE_SCHEDULE_ON?plan->on_minutes:plan->off_minutes;
+        header(ui.page==GBS_PAGE_SCHEDULE_ON?"开始时间":"结束时间",false);
+        centered(label(lv_scr_act(),"按机器设置的时间",12,52,216,&gbs_font_12,MUTED));
+        centered(label(lv_scr_act(),"小时",12,88,100,&gbs_font_12,MUTED));
+        centered(label(lv_scr_act(),"分钟",128,88,100,&gbs_font_12,MUTED));
+        snprintf(text,sizeof(text),"%02u",minutes/60); centered(label(lv_scr_act(),text,12,112,100,&gbs_number_40,TEXT));
+        snprintf(text,sizeof(text),"%02u",minutes%60); centered(label(lv_scr_act(),text,128,112,100,&gbs_number_40,TEXT));
+        centered(label(lv_scr_act(),":",109,112,22,&gbs_number_40,MUTED));
+        button(lv_scr_act(),"−",12,170,44,44,HOUR_MINUS,false); button(lv_scr_act(),"+",68,170,44,44,HOUR_PLUS,false);
+        button(lv_scr_act(),"−",128,170,44,44,MINUTE_MINUS,false); button(lv_scr_act(),"+",184,170,44,44,MINUTE_PLUS,false);
+        bottom("完成",BACK,true); return;
+    }
+    if(ui.page==GBS_PAGE_SCHEDULE_DAYS) {
+        header("重复星期",false);
+        centered(label(lv_scr_act(),"选择计划生效的日期",12,56,216,&gbs_font_12,MUTED));
+        const char *days[]={"周一","周二","周三","周四","周五","周六","周日"};
+        for(unsigned i=0;i<7;++i) button(lv_scr_act(),days[i],10+56*(i%4),94+61*(i/4),52,50,PLAN_DAY+i,(plan->days&(1u<<i))!=0);
+        bottom("完成",BACK,true); return;
+    }
+    header("编辑计划",false);
+    unsigned minutes[]={plan->on_minutes,plan->off_minutes};
+    for(unsigned i=0;i<2;++i) {
+        lv_obj_t *card=button(lv_scr_act(),"",10+113*i,48,107,55,i?GBS_PAGE_SCHEDULE_OFF:GBS_PAGE_SCHEDULE_ON,false);
+        label(card,i?"结束":"开始",10,5,87,&gbs_font_10,MUTED);
+        snprintf(text,sizeof(text),"%02u:%02u",minutes[i]/60,minutes[i]%60);
+        label(card,text,10,23,87,&gbs_number_24,TEXT);
+    }
+    lv_obj_t *days=button(lv_scr_act(),"",10,111,220,44,GBS_PAGE_SCHEDULE_DAYS,false);
+    days_text(plan->days,text,sizeof(text)); label(days,text,10,13,188,&gbs_font_12_bold,TEXT);
+    icon(days,GBS_ICON_CHEVRON_RIGHT,197,13,18,MUTED);
+    for(unsigned i=0;i<2;++i) {
+        bool enabled=i?plan->steam:plan->enabled;
+        lv_obj_t *card=button(lv_scr_act(),"",10+113*i,163,107,52,i?PLAN_STEAM:PLAN_ENABLED,false);
+        label(card,i?"蒸汽锅炉":"计划状态",10,5,87,&gbs_font_10,MUTED);
+        label(card,enabled?"开启":"关闭",10,25,87,&gbs_font_14_bold,enabled?GREEN:MUTED);
+    }
+    bool valid=!plan->enabled||(plan->days&&plan->on_minutes!=plan->off_minutes);
+    centered(label(lv_scr_act(),!valid?"请选择日期和不同的起止时间":ui.conflict?"计划已变化，请重新打开":"保存后按此计划运行",
+        10,218,220,&gbs_font_10,valid?MUTED:WARN));
+    bottom("保存计划",PLAN_APPLY,true);
+    lv_obj_t *save=lv_obj_get_child(lv_scr_act(),lv_obj_get_child_cnt(lv_scr_act())-1);
+    if(!ui.dirty||!valid||ui.conflict||!ui.data[GBS_DATA_SCHEDULE].editable||ui.data[GBS_DATA_SCHEDULE].state!=GBS_DATA_READY||ui.control==GBS_UI_CONTROL_PENDING)
+        lv_obj_add_state(save,LV_STATE_DISABLED);
+}
+
 static void render(void)
 {
     memset(ui.fields, 0, sizeof(ui.fields)); memset(ui.presets, 0, sizeof(ui.presets));
@@ -597,6 +877,7 @@ static void render(void)
         return;
     }
     if (ui.confirm) {
+        if(plan_editor()) { plan_confirmation(); return; }
         if(parameter()) {
             const struct parameter *p=parameter(); char text[128],selected[64];
             header("确认机器设置",false);
@@ -807,19 +1088,19 @@ static void render(void)
         header("配置与恢复", false);
         message("需要电脑完成配置", "使用项目的配对导入工具。\n身份拒绝时先停止其它客户端，再检查原有配对。\n账本异常请保留原数据。\n此页不清除身份或重新配对。");
         break;
-    case GBS_PAGE_COFFEES:
-        header("最近云端出杯", false);
-        field(screen, F_RESULT, 18, 82, 204, &lv_font_montserrat_28, TEXT);
-        label(screen, "仅展示最近一杯。\n云端记录不代表本次联动已接收。", 18, 149, 204, &gbs_font_14, MUTED);
-        break;
+    case GBS_PAGE_SCHEDULE: case GBS_PAGE_COFFEES:
+        collection_page(); break;
+    case GBS_PAGE_SCHEDULE_DETAIL:
+        schedule_detail(); break;
+    case GBS_PAGE_SCHEDULE_EDIT: case GBS_PAGE_SCHEDULE_ON: case GBS_PAGE_SCHEDULE_OFF: case GBS_PAGE_SCHEDULE_DAYS:
+        schedule_editor(); break;
+    case GBS_PAGE_COFFEE_DETAIL:
+        coffee_detail(); break;
     case GBS_PAGE_CLEANING:
         header("清洗引导", false);
         message("按照咖啡机说明操作", "开始前移开杯具，确认机器状态。\n当前屏幕不执行清洗命令，请在咖啡机上操作。");
         break;
-    default:
-        header("定时计划", false);
-        message("计划编辑暂未开放", "请使用现有咖啡机应用管理定时计划。");
-        break;
+    default: break;
     }
     refresh();
 }
@@ -872,12 +1153,7 @@ static void refresh(void)
     }
     else snprintf(text, sizeof(text), "%s", ui.bridge.active ? "联动模式" : "仅监测模式");
     set(F_TARGET, text);
-    if (ui.page == GBS_PAGE_COFFEES) {
-        if (ui.bridge.latest_grams > 0 && ui.bridge.latest_seconds > 0)
-            snprintf(text, sizeof(text), "%.1fs\n%.1fg", ui.bridge.latest_seconds, ui.bridge.latest_grams);
-        else strcpy(text, "—");
-        set(F_RESULT, text);
-    } else if (stage == GBS_UI_UNKNOWN && (ui.page == GBS_PAGE_LINK || ui.page == GBS_PAGE_TASK)) {
+    if (stage == GBS_UI_UNKNOWN && (ui.page == GBS_PAGE_LINK || ui.page == GBS_PAGE_TASK)) {
         value(F_RESULT, ui.bridge.unconfirmed_seconds > 0 ? ui.bridge.unconfirmed_seconds : NAN, "%.1f");
         value(F_SECOND_RESULT, ui.bridge.unconfirmed_grams > 0 ? ui.bridge.unconfirmed_grams : NAN, "%.1f");
     } else {
@@ -1004,9 +1280,28 @@ static void refresh(void)
 
 void gbs_ui_init(gbs_ui_submit_t submit, void *context)
 {
-    memset(&ui, 0, sizeof(ui)); ui.submit = submit; ui.context = context;
+    if(!collections) collections=lv_mem_alloc(sizeof(*collections)*GBS_DATA_COUNT);
+    LV_ASSERT_MALLOC(collections);
+    memset(collections,0,sizeof(*collections)*GBS_DATA_COUNT);
+    memset(&ui, 0, sizeof(ui)); ui.data=collections; ui.submit = submit; ui.context = context;
     ui.machine = (gbs_ui_machine_t){.coffee=NAN, .coffee_target=NAN, .steam=NAN, .steam_target=NAN, .weight=NAN};
     ui.brightness = 75; ui.dim = true; render();
+}
+void gbs_ui_set_reader(gbs_ui_read_t reader) { ui.reader=reader; }
+void gbs_ui_set_schedule_submit(gbs_ui_schedule_submit_t submit) { ui.schedule_submit=submit; }
+void gbs_ui_set_data(const gbs_ui_data_t *data)
+{
+    if(!data||data->kind>=GBS_DATA_COUNT||data->count>(data->kind==GBS_DATA_SCHEDULE?GBS_SCHEDULE_LIMIT:GBS_HISTORY_LIMIT)) return;
+    if(data->kind==GBS_DATA_SCHEDULE&&plan_editor()&&!ui.schedule_submitted&&data->valid) {
+        unsigned index=0;
+        while(index<data->count&&strcmp(data->items.schedules[index].id,ui.selected_schedule.id)) ++index;
+        if(data->binding_generation!=ui.data[data->kind].binding_generation||index==data->count||
+            !gbs_ui_schedule_equal(&data->items.schedules[index],&ui.selected_schedule)) ui.conflict=true;
+    }
+    ui.data[data->kind]=*data;
+    unsigned pages=data->count?(data->count+2)/3:1;
+    if(ui.data_page[data->kind]>=pages) ui.data_page[data->kind]=pages-1;
+    if((data_page()&&data_kind()==data->kind)||plan_editor()) render();
 }
 void gbs_ui_set_bridge(const gbs_ui_bridge_t *s)
 {
@@ -1039,6 +1334,7 @@ void gbs_ui_control_result(uint32_t request_id, gbs_ui_control_t result)
     if (ui.control != GBS_UI_CONTROL_PENDING || request_id != ui.request_id) return;
     ui.control = result;
     if (result == GBS_UI_CONTROL_CONFIRMED) {
+        if(ui.schedule_submitted) { ui.selected_schedule=ui.schedule_draft; ui.selected_stale=false; }
         ui.conflict=false;
         if(editor()) { ui.initial=ui.draft=current_value(); ui.edit_snapshot=ui.machine; }
     }

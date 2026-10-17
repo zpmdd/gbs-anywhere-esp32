@@ -158,6 +158,123 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
     if(!ok) { machine->stale=true; machine->writable=0; return false; }
     next.observed_ms=io->now(io->context); *machine=next; return true;
 }
+static bool optional_number(const cJSON *j,const char *key,double high,double *out)
+{
+    const cJSON *v=item(j,key);
+    *out=number(j,key,0,high);
+    return !v||cJSON_IsNull(v)||isfinite(*out);
+}
+
+static bool utc_time(const cJSON *j,char out[21])
+{
+    if(!text(j,"time",out,21,false)||strlen(out)!=20) return false;
+    for(unsigned i=0;i<20;++i) {
+        char separator=i==4||i==7?'-':i==10?'T':i==13||i==16?':':i==19?'Z':0;
+        if(separator?out[i]!=separator:!isdigit((unsigned char)out[i])) return false;
+    }
+    unsigned year,month,day,hour,minute,second;
+    if(sscanf(out,"%u-%u-%uT%u:%u:%uZ",&year,&month,&day,&hour,&minute,&second)!=6||
+        year<1970||month<1||month>12||hour>23||minute>59||second>59) return false;
+    const unsigned lengths[]={31,28,31,30,31,30,31,31,30,31,30,31};
+    unsigned last=lengths[month-1]+(month==2&&year%4==0&&(year%100!=0||year%400==0));
+    return day>=1&&day<=last;
+}
+
+static bool parse_history(const cJSON *j,gbs_ui_data_t *data)
+{
+    const cJSON *rows=item(j,"recentCoffees"),*row=NULL;
+    if(!cJSON_IsArray(rows)||cJSON_GetArraySize(rows)>512) return false;
+    data->total=(unsigned)cJSON_GetArraySize(rows);
+    cJSON_ArrayForEach(row,rows) {
+        gbs_ui_coffee_t coffee={.mode=mode(row,"doseMode",bbw_modes,4)};
+        if(!cJSON_IsObject(row)||!utc_time(row,coffee.time)||
+            !optional_number(row,"extractionSeconds",86400,&coffee.seconds)||
+            !optional_number(row,"doseValue",1000000,&coffee.dose)||
+            !optional_number(row,"targetTemperature",160,&coffee.temperature)) return false;
+        unsigned index=0;
+        while(index<data->count&&strcmp(data->items.coffees[index].time,coffee.time)>=0) ++index;
+        if(index>=GBS_HISTORY_LIMIT) continue;
+        if(data->count<GBS_HISTORY_LIMIT) ++data->count;
+        memmove(&data->items.coffees[index+1],&data->items.coffees[index],
+                (data->count-index-1)*sizeof(coffee));
+        data->items.coffees[index]=coffee;
+    }
+    return true;
+}
+
+static bool parse_schedule(const cJSON *j,const gbs_hub_config_t *config,gbs_ui_data_t *data)
+{
+    const cJSON *raw=item(j,"raw"),*supported=item(raw,"smartWakeUpSleepSupported");
+    if(!equal(raw,"serialNumber",config->serial)||!cJSON_IsBool(supported)) return false;
+    if(cJSON_IsFalse(supported)) { data->state=GBS_DATA_UNSUPPORTED; return true; }
+    const cJSON *settings=item(raw,"smartWakeUpSleep"),*rows=item(settings,"schedules"),*row=NULL;
+    if(!cJSON_IsObject(settings)||(rows&&!cJSON_IsArray(rows))||cJSON_GetArraySize(rows)>GBS_SCHEDULE_LIMIT) return false;
+    static const char *const weekdays[]={"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"};
+    cJSON_ArrayForEach(row,rows) {
+        double on=number(row,"onTimeMinutes",0,1439),off=number(row,"offTimeMinutes",0,1439);
+        const cJSON *enabled=item(row,"enabled"),*days=item(row,"days"),*day=NULL;
+        if(!cJSON_IsObject(row)||!isfinite(on)||on!=floor(on)||!isfinite(off)||off!=floor(off)||
+            !cJSON_IsBool(item(row,"steamBoiler"))||(enabled&&!cJSON_IsBool(enabled))||
+            (days&&!cJSON_IsArray(days))||cJSON_GetArraySize(days)>7) return false;
+        gbs_ui_schedule_t plan={.on_minutes=(unsigned)on,.off_minutes=(unsigned)off,
+            .enabled=yes(row,"enabled"),.steam=yes(row,"steamBoiler")};
+        const cJSON *id=item(row,"id");
+        if(id&&!cJSON_IsNull(id)&&!text(row,"id",plan.id,sizeof(plan.id),false)) return false;
+        if(plan.id[0]) for(unsigned i=0;i<data->count;++i)
+            if(!strcmp(plan.id,data->items.schedules[i].id)) return false;
+        cJSON_ArrayForEach(day,days) {
+            unsigned index=0;
+            if(!cJSON_IsString(day)) return false;
+            while(index<7&&strcmp(day->valuestring,weekdays[index])) ++index;
+            if(index==7||(plan.days&(1u<<index))) return false;
+            plan.days|=1u<<index;
+        }
+        data->items.schedules[data->count++]=plan;
+    }
+    data->total=data->count;
+    return true;
+}
+
+void gbs_hub_fetch_data(const gbs_hub_config_t *config,const gbs_hub_io_t *io,
+                       gbs_ui_data_kind_t kind,bool refresh,int64_t deadline,gbs_ui_data_t *data)
+{
+    memset(data,0,sizeof(*data)); data->kind=kind; data->state=GBS_DATA_ERROR;
+    if(kind>=GBS_DATA_COUNT) return;
+    uint32_t before=0,after=0;
+    cJSON *j=get(io,"/machine/binding",deadline);
+    bool ok=binding(j,config,&before); cJSON_Delete(j);
+    if(!ok) return;
+    j=get(io,"/machine/capabilities",deadline);
+    ok=identity(j,config); bool available=capability(j,kind==GBS_DATA_SCHEDULE?"schedule":"statistics");
+    data->editable=kind==GBS_DATA_SCHEDULE&&capability(j,"scheduleEdit");
+    cJSON_Delete(j);
+    if(!ok) return;
+    if(!available) { data->state=GBS_DATA_UNAVAILABLE; return; }
+    if(refresh) {
+        const char *path=kind==GBS_DATA_SCHEDULE?"/diagnostics/slow-cloud-reads/refresh?kind=schedule":
+            "/diagnostics/slow-cloud-reads/refresh?kind=statistics&days=7";
+        if(io->now(io->context)>=deadline||io->exchange(io->context,path,"{}",io->reply,io->reply_size,deadline)!=200) return;
+        j=cJSON_ParseWithOpts(io->reply,NULL,true);
+        ok=yes(j,"ok")&&yes(j,"accepted")&&equal(j,"kind",kind==GBS_DATA_SCHEDULE?"schedule":"statistics");
+        cJSON_Delete(j);
+        if(!ok) { data->state=GBS_DATA_UNAVAILABLE; return; }
+    }
+    const char *path=kind==GBS_DATA_SCHEDULE?"/machine/schedule":"/machine/statistics?days=7";
+    if(io->now(io->context)>=deadline) return;
+    int status=io->exchange(io->context,path,NULL,io->reply,io->reply_size,deadline);
+    bool stale=io->response_stale&&*io->response_stale;
+    if(status==202) { data->state=GBS_DATA_LOADING; return; }
+    if(status==503) { data->state=GBS_DATA_UNAVAILABLE; return; }
+    if(status!=200) return;
+    j=cJSON_ParseWithOpts(io->reply,NULL,true);
+    data->state=stale?GBS_DATA_STALE:GBS_DATA_READY;
+    ok=cJSON_IsObject(j)&&(kind==GBS_DATA_SCHEDULE?parse_schedule(j,config,data):parse_history(j,data));
+    cJSON_Delete(j);
+    if(ok) { j=get(io,"/machine/binding",deadline); ok=binding(j,config,&after)&&before==after; cJSON_Delete(j); }
+    if(ok) { data->valid=data->state!=GBS_DATA_UNSUPPORTED; data->binding_generation=before; }
+    else { memset(data,0,sizeof(*data)); data->kind=kind; data->state=GBS_DATA_ERROR; }
+}
+
 bool gbs_hub_prepare(gbs_ui_action_t action,double value,const gbs_ui_machine_t *m,const char *id,
                      char *path,size_t path_size,char *body,size_t body_size)
 {
@@ -263,6 +380,61 @@ gbs_ui_control_t gbs_hub_execute(const gbs_hub_config_t *config,const gbs_hub_io
         } else if(result!=GBS_UI_CONTROL_PENDING) return result;
         io->wait(io->context,250);
         if(io->now(io->context)>=deadline) break;
+        status=io->exchange(io->context,path,NULL,io->reply,io->reply_size,deadline);
+        if(status==200||status==202) result=gbs_hub_result(io->reply,id);
+        else if(status==401||status==403||status==404) return GBS_UI_CONTROL_UNKNOWN;
+    }
+    return GBS_UI_CONTROL_UNKNOWN;
+}
+
+static cJSON *schedule_json(const gbs_ui_schedule_t *plan)
+{
+    if(!plan||!plan->id[0]||!memchr(plan->id,0,sizeof(plan->id))||plan->on_minutes>1439||
+        plan->off_minutes>1439||plan->days>127) return NULL;
+    cJSON *j=cJSON_CreateObject(),*days=cJSON_CreateArray();
+    const char *names[]={"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"};
+    bool ok=j&&days&&cJSON_AddStringToObject(j,"id",plan->id)&&cJSON_AddBoolToObject(j,"enabled",plan->enabled)&&
+        cJSON_AddNumberToObject(j,"onTimeMinutes",plan->on_minutes)&&cJSON_AddNumberToObject(j,"offTimeMinutes",plan->off_minutes)&&
+        cJSON_AddBoolToObject(j,"steamBoiler",plan->steam);
+    for(unsigned i=0;i<7&&ok;++i) if(plan->days&(1u<<i)) ok=cJSON_AddItemToArray(days,cJSON_CreateString(names[i]));
+    if(!ok||!cJSON_AddItemToObject(j,"days",days)) { cJSON_Delete(days); cJSON_Delete(j); return NULL; }
+    return j;
+}
+gbs_ui_control_t gbs_hub_execute_schedule(const gbs_hub_config_t *config,const gbs_hub_io_t *io,
+    const gbs_ui_schedule_t *expected,const gbs_ui_schedule_t *requested,const char *id,
+    int64_t deadline,gbs_ui_data_t *data)
+{
+    if(!uuid(id)||!expected||!requested||!memchr(expected->id,0,sizeof(expected->id))||
+        !memchr(requested->id,0,sizeof(requested->id))||strcmp(expected->id,requested->id)||
+        (requested->enabled&&(!requested->days||requested->on_minutes==requested->off_minutes))) return GBS_UI_CONTROL_FAILED;
+    gbs_hub_fetch_data(config,io,GBS_DATA_SCHEDULE,false,deadline,data);
+    if(!data->valid||!data->editable||data->state!=GBS_DATA_READY) return GBS_UI_CONTROL_FAILED;
+    unsigned index=0;
+    while(index<data->count&&strcmp(data->items.schedules[index].id,expected->id)) ++index;
+    if(index==data->count||!gbs_ui_schedule_equal(&data->items.schedules[index],expected)) return GBS_UI_CONTROL_FAILED;
+    cJSON *j=cJSON_CreateObject(),*before=schedule_json(expected),*after=schedule_json(requested);
+    if(!j||!before||!after) { cJSON_Delete(j); cJSON_Delete(before); cJSON_Delete(after); return GBS_UI_CONTROL_FAILED; }
+    bool ok=cJSON_AddStringToObject(j,"requestId",id)&&cJSON_AddStringToObject(j,"clientSurface","diagnostic")&&
+        cJSON_AddBoolToObject(j,"confirm",true);
+    cJSON_AddItemToObject(j,"expected",before); cJSON_AddItemToObject(j,"schedule",after);
+    char body[1536],path[96]; ok=ok&&cJSON_PrintPreallocated(j,body,sizeof(body),false); cJSON_Delete(j);
+    if(!ok||io->now(io->context)>=deadline) return GBS_UI_CONTROL_FAILED;
+    int status=io->exchange(io->context,"/controls/schedule",body,io->reply,io->reply_size,deadline);
+    if(status==400||status==401||status==403||status==409||status==426) return GBS_UI_CONTROL_FAILED;
+    gbs_ui_control_t result=status>0?gbs_hub_result(io->reply,id):GBS_UI_CONTROL_PENDING;
+    snprintf(path,sizeof(path),"/diagnostics/commands?id=%s",id);
+    while(io->now(io->context)<deadline) {
+        if(result==GBS_UI_CONTROL_CONFIRMED) {
+            j=cJSON_ParseWithOpts(io->reply,NULL,true);
+            ok=yes(j,"stateConfirmed")&&equal(j,"control","schedule"); cJSON_Delete(j);
+            uint32_t generation=0; j=get(io,"/machine/binding",deadline);
+            ok=ok&&binding(j,config,&generation)&&generation==data->binding_generation; cJSON_Delete(j);
+            if(!ok) return GBS_UI_CONTROL_UNKNOWN;
+            data->items.schedules[index]=*requested; data->state=GBS_DATA_STALE;
+            return result;
+        }
+        if(result!=GBS_UI_CONTROL_PENDING) return result;
+        io->wait(io->context,250); if(io->now(io->context)>=deadline) break;
         status=io->exchange(io->context,path,NULL,io->reply,io->reply_size,deadline);
         if(status==200||status==202) result=gbs_hub_result(io->reply,id);
         else if(status==401||status==403||status==404) return GBS_UI_CONTROL_UNKNOWN;

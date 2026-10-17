@@ -24,7 +24,11 @@ of the separate Hub; the screen does not embed its BLE/Cloud implementation. Wit
 trust record, machine values remain unavailable and writes stay disabled.
 Missing measured temperatures remain dashes, even when targets are known.
 Power and smart-standby changes require an explicit confirmation screen.
-Schedules, multi-cup history and independent idle timers remain unavailable.
+Schedules and multi-cup history now use the Hub's bounded slow-read cache.
+Schedule editing additionally requires the matching Hub extension described below:
+LamaBuddy branch `codex/hub-schedule-edit`, commit `7b00f00a`. It includes the
+local binding query and v2 command-status metadata required by this client.
+Independent idle timers remain unavailable.
 The Mac simulator supplies synthetic data and acknowledgments; it never contacts
 devices or cloud services. There is no OTA or new pairing workflow.
 
@@ -105,6 +109,52 @@ Only smart weight selection carries the Hub's supported eight-second `clientTtlM
 explicit dose and mode editors use the ordinary Hub commands without that field.
 The existing v2 surface enum has no touchscreen value, so requests use `diagnostic`.
 
+## Schedules and multi-cup history
+
+Settings → Machine → Schedule opens plans; Settings → Coffee history opens
+recent Cloud cups. Lists show three entries per page, an explicit refresh action,
+and loading, stale, empty, unsupported or unavailable states. Opening a page starts
+one coalesced refresh request; the client polls cached reads for at most 30 seconds,
+without repeated refresh POSTs. Existing telemetry and pending controls keep
+priority on the shared Hub task. Collection buffers live in PSRAM.
+
+| Data | Hub contract |
+| --- | --- |
+| Schedule read | `GET /machine/schedule`, capability `schedule`; up to 64 plans. |
+| Recent cups | `GET /machine/statistics?days=7`, capability `statistics`; keep the latest 32 of at most 512 returned records. |
+| Refresh | `POST /diagnostics/slow-cloud-reads/refresh?kind=schedule` or `kind=statistics&days=7`; cached GETs may return 202/503 or `X-LamaBuddy-Stale: 1`. |
+| Existing-plan edit | `POST /controls/schedule`, capability `scheduleEdit`; the matching separate Hub extension is required. |
+
+Coffee timestamps are normalized UTC (`YYYY-MM-DDTHH:MM:SSZ`); the UI labels UTC
+rather than guessing the machine's timezone. Unknown numeric fields stay dashes.
+`doseValue` is a stored dose setting, with no measured-grams claim. These Cloud
+records do not assert that the grinder received a result; that remains the
+separate linkage/result view.
+
+The schedule editor changes existing start/end minutes, weekdays, enabled state
+and steam. Times follow the machine's schedule clock, including overnight ranges;
+this client does not change the timezone. Enabling requires at least one weekday
+and different start/end minutes. Creation/deletion remain in the machine app.
+Old Hub versions retain read-only plans. Missing plan IDs and stale data cannot
+be edited.
+
+A schedule write includes `requestId`, `clientSurface: "diagnostic"`,
+`confirm: true`, `expected` and `schedule`. Both plan objects contain the same
+existing `id`, `enabled`, `onTimeMinutes`, `offTimeMinutes`, `steamBoiler` and
+English weekday names in `days`. The UI baseline and a fresh Hub cache read must
+agree before the single POST. The Hub then checks a fresh vendor plan, updates
+only that entry with `CoffeeMachineSetWakeUpSchedule`, and reads it again.
+Only `stateConfirmed: true`, the matching command UUID/control and unchanged
+machine binding complete the UI as confirmed. A changed plan is rejected;
+an uncertain reply is never automatically replayed. The Hub invalidates its
+schedule cache and discards an older in-flight read after a write attempt.
+
+The 30-second display wait is not a server cancellation. The vendor does not
+provide an atomic compare-and-set in the inspected client protocol; another app
+can still race between preflight and write. Fresh before/after checks reduce that
+window but cannot eliminate it. Live schedule timing, vendor behavior and delayed
+readback remain explicit hardware acceptance work.
+
 ## Local native preview
 
 Install SDL2 and CMake, and source ESP-IDF to provide its existing cJSON source:
@@ -133,12 +183,20 @@ This writes BMP captures of every route and critical state. The self-test also
 checks coordinate-based navigation, fast taps, duplicate-submit locking,
 confirmed-only selection, draft conflicts, disabled unavailable controls, bounded
 confirmation waits, late result isolation, steam-switch rollback and cloud-error
-colors. The 32 routes include BBW, prebrew, power and standby editors. Their tests
+colors. The 38 routes include BBW, prebrew, power, standby, schedule and coffee-history
+screens. Every rendered label checked by the regression suite must resolve its
+glyphs; numeric font subsets include spaces, slashes and the complete °C unit. Their tests
 cover explicit confirmations, related-field conflicts, preserved values, limits,
 stale/unknown modes and swiping to offscreen machine settings. `tools/check.sh`
 additionally runs the production Hub contract against an in-memory fake, including
 lost responses, identity/binding changes, missing capabilities, partial results
 and readback mismatches, without sockets or device access.
+
+On macOS, a local AppKit event monitor supplies the simulator window's own
+content coordinates because SDL2 can coalesce a drag and reuse a stale release
+position. It does not monitor other apps or synthesize input. LVGL sees the final
+movement while still pressed, before release, so a swipe cannot become a row tap.
+Focus loss resets the active press. Other platforms retain the SDL event path.
 
 ## Firmware builds
 
@@ -163,7 +221,9 @@ and LVGL heap use PSRAM; the display task has an 8 KiB stack. Startup requires
 at least 256 KiB free PSRAM. A failed display initialization is logged without
 replacing the worker or erasing configuration.
 When configured, the Hub client adds a 16 KiB task stack and a bounded 32 KiB
-response buffer in PSRAM. Its initialization failure leaves the existing worker
+response buffer plus three bounded collection snapshots in PSRAM. The display
+keeps two snapshots and LVGL keeps two more (about 61 KiB total collection
+storage). Its initialization failure leaves the existing worker
 running. The headless build does not link the Hub client or LVGL.
 
 ## Fonts and icons

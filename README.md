@@ -244,9 +244,10 @@ adjustments for the first two of those cups. The third result was received and
 stored without a visible adjustment. Successful delivery does not guarantee
 motor movement: the grinder decides whether to adjust.
 
-Version 0.2.0 passed a board upgrade, normal-boot recovery and live status-page
-check while preserving configuration and task records. Each newer binary needs
-its own validation; precursor coffee results do not establish its real-coffee feedback.
+Versions 0.2.0 and 0.2.1 passed board upgrades, normal-boot recovery and live
+status-page checks while preserving configuration and task records. The 0.2.1
+application update also had byte-for-byte NVS readback verification. A real cup
+on 0.2.1 still needs validation; precursor results do not establish that behavior.
 See [the validation record](docs/UPSTREAM.md#validation) for the current boundary.
 Long-duration operation, real token expiry and all outage scenarios remain unverified.
 

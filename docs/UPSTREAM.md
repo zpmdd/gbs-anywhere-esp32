@@ -68,8 +68,15 @@ not a guarantee that a grind made before the API is ready can be recovered.
   page and diagnostics were checked in Chrome. New-build real-coffee feedback still
   needs the next cup.
 
-Version 0.2.1 has passed the offline checks above. Exact-build board validation is
-recorded separately as it is completed. Precursor results demonstrate feasibility,
-not full acceptance of a different binary. E80, prolonged operation and real
-network/token-expiry faults remain unverified. No new grinder pairing or synthetic
-feedback is part of this upgrade.
+- The 0.2.1 application (code `1e85800`) was flashed on 2026-10-17 after a full
+  flash backup, writing only the application partition. NVS readback was byte-for-byte
+  identical before the new application booted. The new binary restored grinder,
+  cloud and storage health in monitor mode, then returned to active/ready with no
+  current error, old job acceptance or replay. The persisted delivery count was
+  unchanged. The live Chinese status page showed 0.2.1 and Ready in Chrome.
+
+Version 0.2.1 has passed the offline and board checks above; a new-build real cup
+still needs validation. Precursor results demonstrate feasibility, not full
+acceptance of a different binary. E80, prolonged operation and real network/token-
+expiry faults remain unverified. No new grinder pairing or synthetic feedback is
+part of this upgrade.

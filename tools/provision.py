@@ -80,9 +80,11 @@ def build_config(application, pairing, grinder, certificate, ssid, wifi_password
             raise ValueError("Cloud credentials must contain 1-255 bytes and no NUL")
     if not isinstance(serial, str) or len(serial.encode()) >= 64 or "\0" in serial:
         raise ValueError("Machine serial must contain fewer than 64 bytes and no NUL")
-    pairing_id = pairing["pairing_id"]
+    pairing_id = pairing.get("pairing_id")
     if type(pairing_id) is not int or not 0 < pairing_id <= 65535:
-        raise ValueError("A saved pairing ID in 1-65535 is required")
+        raise ValueError("A saved pairing ID in 1-65535 is required. "
+                         "Finish pairing in gbs-anywhere, then export the pairing file again; "
+                         "refused_pairing_id alone is not a confirmed pairing.")
     ipaddress.IPv4Address(grinder)
     device_id = str(uuid.UUID(pairing["brew_device_id"]))
     if not certificate.strip().startswith("-----BEGIN CERTIFICATE-----") or \

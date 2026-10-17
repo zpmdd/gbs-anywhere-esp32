@@ -19,7 +19,8 @@ void gbs_health_update(gbs_health_t *health, bool ok, const char *operation,
 unsigned gbs_retry_seconds(uint32_t failures);
 cJSON *gbs_health_json(const gbs_health_t *health);
 bool gbs_job_error(const char *status);
-bool gbs_answer_gone(bool accepted, bool listed);
+// An empty list alone does not distinguish a taken job from a missing one.
+bool gbs_answer_gone(bool ongoing_missing, bool listed);
 
 typedef struct {
     char uuid[37];

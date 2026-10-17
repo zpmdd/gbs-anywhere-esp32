@@ -1,29 +1,37 @@
 # Upstream comparison and validation
 
-Checked 2026-10-16 against:
+Checked 2026-10-17 against:
 
-- [PR15, 8f398c5](https://github.com/Skamba/gbs-anywhere/pull/15)
+- [merged main, 3adf778](https://github.com/Skamba/gbs-anywhere/commit/3adf778c7f0a3803994cbcc5fe2af1f8ac8a5be1)
+- [PR15 final fix, 13e4a05](https://github.com/Skamba/gbs-anywhere/commit/13e4a053e596609b78402a2b25015a816dfe7de5)
 - [PR16, ba00c92](https://github.com/Skamba/gbs-anywhere/pull/16)
 
-Both PRs are still open. PR16 includes the current PR15 pairing fix. Its actual
-`wifi_grinder.rs` code accepts a task immediately and reaccepts it when listed
-again; the older PR15 description of waiting until measurement does not describe
-that PR16 code. The C bridge retains the immediate acceptance behavior already
-used by its working precursor.
+PR15 is merged. The published nightly includes merge `26492fb`; current main
+adds the companion README link in PR20. Desktop `v0.2.1` predates E65 support.
+PR16 remains open. The merged worker accepts a task immediately and reaccepts
+it when listed again; the C bridge retains that behavior.
 
 ## Changes relevant to this companion
 
-- PR15's newer fix leaves a grinder silent for three minutes after an unanswered
+- PR15 leaves a grinder silent for three minutes after an unanswered
   pairing-status request. Initial pairing remains a desktop task; the S3 imports
   that identity and must be stopped throughout any future pairing/recovery.
-- PR16's unchanged normal flow keeps a task alive, reconciles a lost acceptance
-  from the next task list and expires an unaccepted result whose job disappeared.
-  Version 0.2.0 covers these paths in tests of the actual C worker.
-- Three pairing refusals are distinguished from ordinary connection loss. Unlike
-  the desktop, this companion shows an action-required state instead of clearing
-  the identity or starting an unattended pairing.
+- The final fix treats an accept response saying the job is no longer listed as
+  possibly already taken, so a pending result survives a lost accept reply. The C
+  worker also had a window where a result arrived before job-list reconciliation
+  and was dropped on an empty list without ever sending `brewDone`. Version 0.2.1
+  requires explicit ongoing-job absence before expiring that result; an attempted
+  reacceptance clears the old absence. Production-worker tests cover both windows,
+  a relisted job, a truly missing job and delivery timeout.
+- Pairing refusals must be sustained for 60 seconds, with a timeout or other
+  response interrupting the period. The desktop retains a refused ID for recovery.
+  This companion keeps its imported identity and shows an action-required state
+  instead of clearing it or starting an unattended pairing.
+- A desktop export may contain `pairing_id: null` and `refused_pairing_id`. Import
+  deliberately requires a confirmed `pairing_id`; its error now explains how to
+  finish desktop recovery and export again. Tests cover both file forms.
 - Cloud authentication and coffee parsing did not change between the prior
-  `3b6ef9a` snapshot and `ba00c92`. No authentication change was necessary.
+  `3b6ef9a` snapshot, `ba00c92` and merged main. No authentication change was necessary.
 - PR16's tabs, settings, history and logs are desktop features. This embedded
   companion keeps a read-only status page with current vs previous errors,
   per-link health and colored text badges rather than porting the full desktop UI.
@@ -60,6 +68,8 @@ not a guarantee that a grind made before the API is ready can be recovered.
   page and diagnostics were checked in Chrome. New-build real-coffee feedback still
   needs the next cup.
 
-Precursor results demonstrate feasibility, not full acceptance of a different
-binary. E80, prolonged operation and real network/token-expiry faults remain
-unverified. No new grinder pairing or synthetic feedback is part of this upgrade.
+Version 0.2.1 has passed the offline checks above. Exact-build board validation is
+recorded separately as it is completed. Precursor results demonstrate feasibility,
+not full acceptance of a different binary. E80, prolonged operation and real
+network/token-expiry faults remain unverified. No new grinder pairing or synthetic
+feedback is part of this upgrade.

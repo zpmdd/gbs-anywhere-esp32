@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 - 2026-10-17
+
+- Check the C port against merged gbs-anywhere main `3adf778`, including PR15's
+  final `13e4a05` fixes. Point initial setup at the published nightly while the
+  latest desktop stable tag still predates E65 support.
+- Require 60 seconds of consecutive pairing refusals before showing an action
+  message; timeouts interrupt that period. Preserve the imported identity.
+- Keep a pending result after lost acceptance replies and an empty task list.
+  Absence expires it only after an explicit missing-ongoing-job response;
+  reacceptance clears that old absence. Ambiguous result delivery is still not
+  automatically replayed.
+- Explain that an export with only `refused_pairing_id` needs desktop recovery
+  before import. Add worker and provisioning regression tests for these paths.
+
 ## 0.2.0 - 2026-10-16
 
 - Review the bridge against PR15 `8f398c5` and PR16 `ba00c92`, retaining immediate

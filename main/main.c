@@ -35,7 +35,7 @@ static esp_netif_t *station;
 #endif
 static nvs_handle_t journal_nvs;
 static gbs_ledger_t ledger;
-static bool active, cloud_initialized, have_job, pending, accepted, canceled;
+static bool active, cloud_initialized, have_job, pending, accepted, canceled, ongoing_missing;
 static gbs_health_t cloud_health, grinder_health;
 static bool baseline_jobs = true, storage_ok = true;
 static gbs_job_t current;
@@ -43,7 +43,9 @@ static gbs_coffee_t latest, answer;
 static char event_uuid[37], issue[192], storage_issue[128], api_status[80];
 static int64_t job_deadline_us, answer_deadline_us;
 static int64_t next_jobs;
-static uint32_t accepts, pairing_refusals;
+static uint32_t accepts;
+static int64_t pairing_refused_since_us = -1;
+static bool pairing_problem;
 
 static void note_health(gbs_health_t *health, bool ok, const gbs_request_info_t *request,
                         esp_err_t err, const char *api_status)
@@ -70,8 +72,8 @@ static void publish(const char *phase)
 {
     cJSON *j = cJSON_CreateObject();
     if (!j) return;
-    cJSON_AddStringToObject(j, "firmware", "gbs-bridge 0.2.0");
-    cJSON_AddStringToObject(j, "upstream", "PR15 8f398c5 / PR16 ba00c92");
+    cJSON_AddStringToObject(j, "firmware", "gbs-bridge 0.2.1");
+    cJSON_AddStringToObject(j, "upstream", "gbs-anywhere 3adf778 / cloud ba00c92");
     cJSON_AddStringToObject(j, "build", esp_app_get_description()->version);
     cJSON_AddStringToObject(j, "mode", active ? "active" : "monitor");
     cJSON_AddStringToObject(j, "phase", phase);
@@ -85,7 +87,7 @@ static void publish(const char *phase)
                          grinder_health.error[0] ? "grinder" : cloud_health.error[0] ? "cloud" : "";
     cJSON_AddStringToObject(j, "issue", problem);
     cJSON_AddStringToObject(j, "issue_source", source);
-    cJSON_AddBoolToObject(j, "pairing_required", pairing_refusals >= 3);
+    cJSON_AddBoolToObject(j, "pairing_required", pairing_problem);
     cJSON *connections = cJSON_AddObjectToObject(j, "connections");
     cJSON_AddItemToObject(connections, "grinder", gbs_health_json(&grinder_health));
     cJSON_AddItemToObject(connections, "cloud", gbs_health_json(&cloud_health));
@@ -138,7 +140,7 @@ static void finish_job(const char *outcome)
     snprintf(ledger.last_outcome, sizeof(ledger.last_outcome), "%s", outcome);
     ledger.inflight[0] = 0;
     save_ledger();
-    have_job = pending = accepted = false;
+    have_job = pending = accepted = ongoing_missing = false;
     ESP_LOGI(TAG, "job ended: %s", outcome);
 }
 
@@ -155,12 +157,19 @@ static esp_err_t grinder_call(const char *endpoint, cJSON *body, cJSON **reply)
 
 static bool take_job(void)
 {
+    // Acceptance may succeed even when its reply is lost; an earlier absence is stale.
+    ongoing_missing = false;
     cJSON *reply = NULL;
     esp_err_t err = grinder_call("brewAccept", gbs_accept_body(gbs_config.pairing_id, &current), &reply);
     cJSON_Delete(reply);
     if (err == ESP_OK && strcmp(api_status, "Ok") == 0) {
         accepted = true; ++accepts;
         ESP_LOGI(TAG, "accepted grind=%s target_ms=%" PRIu32, current.uuid, current.target_ms);
+        return true;
+    }
+    if (err == ESP_OK && pending && !strcmp(api_status, "ClientErrorBrewJobNotExisting")) {
+        // As upstream: treat it as taken until brewDone explicitly says otherwise.
+        accepted = true;
         return true;
     }
     return false;
@@ -186,7 +195,7 @@ static void send_answer(void)
     if (esp_timer_get_time() > answer_deadline_us) {
         strcpy(issue, "result delivery timed out"); finish_job("delivery_expired"); return;
     }
-    if (!accepted && !take_job() && strcmp(api_status, "ClientErrorBrewJobNotExisting")) {
+    if (!accepted && !take_job()) {
         if (!strncmp(api_status, "ClientError", 11) && !gbs_job_error(api_status)) {
             snprintf(issue, sizeof(issue), "brewAccept refused: %.79s", api_status);
             finish_job("delivery_refused");
@@ -207,6 +216,7 @@ static void send_answer(void)
         finish_job(canceled ? "canceled" : "success");
     } else if (err == ESP_OK && strcmp(api_status, "ClientErrorOngoingJobNotExisting") == 0) {
         accepted = false;
+        ongoing_missing = true;
     } else {
         // shortcut: ambiguous delivery is not replayed; add retries only after verifying device idempotency.
         snprintf(issue, sizeof(issue), "brewDone %s: %.79s", err == ESP_OK ? "refused" : "outcome unknown", api_status);
@@ -222,9 +232,15 @@ static void jobs_tick(void)
         cJSON_Delete(request); return;
     }
     esp_err_t err = grinder_call("brewJobs", request, &reply);
-    if (gbs_grinder_request.http_status == 403 && !gbs_job_error(api_status)) {
-        if (pairing_refusals < 3) ++pairing_refusals;
-    } else if (err == ESP_OK && !strcmp(api_status, "Ok")) pairing_refusals = 0;
+    if (err == ESP_OK && gbs_grinder_request.http_status == 403 && !gbs_job_error(api_status)) {
+        int64_t now = esp_timer_get_time();
+        if (pairing_refused_since_us < 0) pairing_refused_since_us = now;
+        pairing_problem = now - pairing_refused_since_us >= 60000000LL;
+    } else {
+        // A timeout or any other response interrupts consecutive refusals.
+        pairing_refused_since_us = -1;
+        pairing_problem = false;
+    }
     if (err != ESP_OK || strcmp(api_status, "Ok")) {
         note_health(&grinder_health, false, &gbs_grinder_request, err, api_status);
         cJSON_Delete(reply); return;
@@ -259,7 +275,7 @@ static void jobs_tick(void)
     if (have_job) {
         if (listed) accepted = false;
         if (pending) {
-            if (gbs_answer_gone(accepted, listed)) {
+            if (gbs_answer_gone(ongoing_missing, listed)) {
                 strcpy(issue, canceled ? "cancellation expired" : "result not delivered: grinder no longer has the task");
                 finish_job(canceled ? "canceled" : "delivery_expired");
             } else send_answer();
@@ -293,7 +309,7 @@ static void jobs_tick(void)
     memcpy(ledger.inflight, current.uuid, sizeof(ledger.inflight));
     strcpy(ledger.last_outcome, "waiting_for_coffee");
     if (save_ledger()) {
-        have_job = true; pending = accepted = false; issue[0] = 0;
+        have_job = true; pending = accepted = ongoing_missing = false; issue[0] = 0;
         job_deadline_us = esp_timer_get_time() + 180000000LL;
         take_job();
     }
@@ -370,7 +386,7 @@ static void worker(void *unused)
         }
         if (now >= next_jobs) {
             jobs_tick();
-            unsigned seconds = pairing_refusals >= 3 ? 60 : grinder_health.ok ? (active ? 2 : 5) :
+            unsigned seconds = pairing_problem ? 60 : grinder_health.ok ? (active ? 2 : 5) :
                                gbs_retry_seconds(grinder_health.failures);
             next_jobs = esp_timer_get_time() + (int64_t)seconds * 1000000;
         }
@@ -383,7 +399,7 @@ static void worker(void *unused)
             coffee_tick();
             next_cloud = esp_timer_get_time() + (have_job && !pending ? 3000000 : cloud_health.ok ? 60000000 : 10000000);
         }
-        publish(!storage_ok ? "storage_error" : pairing_refusals >= 3 ? "pairing_required" :
+        publish(!storage_ok ? "storage_error" : pairing_problem ? "pairing_required" :
                 pending ? "sending" : have_job ? "waiting_for_coffee" :
                 !grinder_health.ok ? "grinder_waiting" : !cloud_health.ok ? "cloud_waiting" : "ready");
         if (now >= next_status) {
@@ -449,7 +465,7 @@ static int command_status(int argc, char **argv)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "gbs-anywhere ESP32-S3 0.2.0; PR16 ba00c92; reset_reason=%d", esp_reset_reason());
+    ESP_LOGI(TAG, "gbs-anywhere ESP32-S3 0.2.1; upstream 3adf778; reset_reason=%d", esp_reset_reason());
     ESP_ERROR_CHECK(nvs_flash_init()); // Never erase a damaged config automatically.
     ESP_ERROR_CHECK(gbs_load_config());
     ESP_ERROR_CHECK(gbs_crypto_init());

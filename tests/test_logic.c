@@ -130,8 +130,8 @@ static void health(void)
     assert(gbs_job_error("ClientErrorOngoingJobNotExisting"));
     assert(!gbs_job_error("ClientErrorPairingIdNotExisting"));
     assert(!gbs_job_error(NULL));
-    assert(gbs_answer_gone(false, false));
-    assert(!gbs_answer_gone(true, false) && !gbs_answer_gone(false, true));
+    assert(gbs_answer_gone(true, false));
+    assert(!gbs_answer_gone(false, false) && !gbs_answer_gone(true, true));
 }
 
 int main(void)

@@ -11,6 +11,17 @@ adds the companion README link in PR20. Desktop `v0.2.1` predates E65 support.
 PR16 remains open. The merged worker accepts a task immediately and reaccepts
 it when listed again; the C bridge retains that behavior.
 
+A follow-up comparison on the same date checked PR21 merge `c60eade2` against
+`3adf778`. It changes documentation, comments and desktop help/log wording;
+the grinder worker and La Marzocco protocol behavior are unchanged. No protocol
+port is needed for this display work; `3adf778` remains its behavior baseline.
+The Hub integration work fetched upstream again on 2026-10-17; main remained
+at `c60eade2`. The optional LamaBuddy Hub v2 client is isolated in `display/` and
+does not modify the upstream grinder/cloud feedback protocol. The publication
+check fetched both remotes again: companion main remained `b4c1e51`, and upstream
+main remained `c60eade2`; no additional protocol port was needed. The development
+state and remaining acceptance work are tracked in [PROGRESS.md](PROGRESS.md).
+
 ## Changes relevant to this companion
 
 - PR15 leaves a grinder silent for three minutes after an unanswered
@@ -50,6 +61,23 @@ not a guarantee that a grind made before the API is ready can be recovered.
 
 ## Validation
 
+The optional native display is a companion-only module, documented in
+[TOUCHSCREEN.md](TOUCHSCREEN.md). It reuses the C worker through additive status
+fields and the existing mode request; it does not fork the protocol worker,
+change pairing, or replay ambiguous results. Local UI work remains on a feature
+branch. Keep `origin` for this companion and `upstream` for Skamba's Rust
+application. Fetch upstream and review changes against the recorded commit;
+do not merge the unrelated repository histories:
+
+```sh
+git fetch upstream main
+git log --oneline 3adf778c7f0a3803994cbcc5fe2af1f8ac8a5be1..upstream/main
+git diff 3adf778c7f0a3803994cbcc5fe2af1f8ac8a5be1..upstream/main -- src
+```
+
+Port relevant protocol fixes with worker regression tests. A UI-only update
+does not advance the protocol baseline or inherit earlier hardware acceptance.
+
 - Host C tests run with ASan/UBSan. Worker tests use the production job, coffee,
   acceptance and result functions with in-memory services; no device or vendor
   cloud is contacted.
@@ -60,6 +88,12 @@ not a guarantee that a grind made before the API is ready can be recovered.
   integration requirements, port checks and the non-resetting USB open sequence.
 - UI tests cover eight locales, independent error/recovery states, color with text,
   pairing alerts, browser storage restrictions and stale/offline indicators.
+- Native UI regressions cover confirmation timeout, late callbacks, rejected/stale
+  steam switches and cloud-error colors. Hub contract tests cover measured versus
+  target values, guarded presets, preserved doses, binding changes, authentication
+  failures, missing telemetry, partial/unknown results and no-repeat POST behavior.
+  Provisioning tests verify Hub certificate identity/signature and private NVS
+  generation without contacting an existing Hub, grinder or vendor cloud.
 - ESP-IDF 5.5 builds the S3 image. Browser checks use synthetic states locally.
 - The 0.2.0 application was flashed to an ESP32-S3 on 2026-10-16 after a full
   flash backup. Its existing pairing, cloud identity, mode and task ledger were

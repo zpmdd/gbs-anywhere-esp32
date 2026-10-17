@@ -24,6 +24,10 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#ifdef GBS_TOUCHSCREEN
+#include "gbs_display.h"
+#include "gbs_hub_client.h"
+#endif
 #endif
 
 static const char *TAG = "gbs";
@@ -67,6 +71,23 @@ static esp_err_t read_coffee(gbs_coffee_t *coffee)
     return err;
 }
 
+static void add_display_state(cJSON *j)
+{
+    cJSON_AddNumberToObject(j, "uptime_ms", esp_timer_get_time() / 1000);
+    cJSON_AddBoolToObject(j, "have_job", have_job);
+    cJSON_AddBoolToObject(j, "pending", pending);
+    cJSON_AddBoolToObject(j, "canceling", pending && canceled);
+    cJSON_AddBoolToObject(j, "baseline_pending", baseline_jobs || !cloud_initialized);
+    cJSON_AddNumberToObject(j, "job_deadline_ms", have_job && !pending ? job_deadline_us / 1000 : 0);
+    cJSON_AddNumberToObject(j, "answer_deadline_ms", pending ? answer_deadline_us / 1000 : 0);
+    cJSON_AddNumberToObject(j, "grinder_retry_at_ms", next_jobs / 1000);
+    cJSON_AddBoolToObject(j, "mode_change_failed", !strcmp(issue, "mode persistence failed"));
+    if (!have_job && !canceled && answer.usable && !strcmp(ledger.last_outcome, "delivery_unknown")) {
+        cJSON_AddNumberToObject(j, "unconfirmed_grams", answer.mass_mg / 1000.0);
+        cJSON_AddNumberToObject(j, "unconfirmed_seconds", answer.duration_ms / 1000.0);
+    }
+}
+
 #ifndef GBS_WORKER_TEST
 static void publish(const char *phase)
 {
@@ -77,6 +98,7 @@ static void publish(const char *phase)
     cJSON_AddStringToObject(j, "build", esp_app_get_description()->version);
     cJSON_AddStringToObject(j, "mode", active ? "active" : "monitor");
     cJSON_AddStringToObject(j, "phase", phase);
+    add_display_state(j);
     cJSON_AddBoolToObject(j, "wifi", atomic_load(&wifi_online));
     cJSON_AddBoolToObject(j, "grinder", grinder_health.ok && atomic_load(&wifi_online));
     cJSON_AddBoolToObject(j, "cloud", cloud_health.ok && atomic_load(&wifi_online));
@@ -348,6 +370,7 @@ static void apply_mode(void)
         nvs_close(nvs);
     }
     if (err != ESP_OK) { strcpy(issue, "mode persistence failed"); atomic_store(&desired_active, active); return; }
+    if (!strcmp(issue, "mode persistence failed")) issue[0] = 0;
     if (have_job) finish_job("stopped_by_mode_change");
     active = requested;
     baseline_jobs = true;
@@ -463,11 +486,39 @@ static int command_status(int argc, char **argv)
     return 0;
 }
 
+#ifdef GBS_TOUCHSCREEN
+static bool display_state(char *buffer, size_t size)
+{
+    if (!state_mutex || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+    bool fits = strlen(state_json) < size;
+    if (fits) strcpy(buffer, state_json);
+    xSemaphoreGive(state_mutex);
+    return fits;
+}
+
+static void display_mode(bool enabled) { atomic_store(&desired_active, enabled); }
+#endif
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "gbs-anywhere ESP32-S3 0.2.1; upstream 3adf778; reset_reason=%d", esp_reset_reason());
     ESP_ERROR_CHECK(nvs_flash_init()); // Never erase a damaged config automatically.
+    state_mutex = xSemaphoreCreateMutex();
+    assert(state_mutex);
+#ifdef GBS_TOUCHSCREEN
+    esp_err_t display_error = gbs_display_start(display_state, display_mode);
+    if (display_error != ESP_OK) ESP_LOGE(TAG, "display unavailable: %s", esp_err_to_name(display_error));
+    esp_err_t config_error = gbs_load_config();
+    if (config_error != ESP_OK) {
+        xSemaphoreTake(state_mutex, portMAX_DELAY);
+        strcpy(state_json, "{\"phase\":\"configuration_required\"}");
+        xSemaphoreGive(state_mutex);
+        ESP_LOGE(TAG, "configuration unavailable: %s; provision using USB", esp_err_to_name(config_error));
+        return;
+    }
+#else
     ESP_ERROR_CHECK(gbs_load_config());
+#endif
     ESP_ERROR_CHECK(gbs_crypto_init());
     ESP_ERROR_CHECK(nvs_open("gbs_run", NVS_READWRITE, &journal_nvs));
     size_t size = sizeof(ledger);
@@ -490,8 +541,6 @@ void app_main(void)
     ESP_ERROR_CHECK(err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err);
     nvs_close(settings);
     active = saved == 1; atomic_store(&desired_active, active);
-    state_mutex = xSemaphoreCreateMutex();
-    assert(state_mutex);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     station = esp_netif_create_default_wifi_sta();
@@ -533,5 +582,9 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&status_cmd));
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     assert(xTaskCreate(worker, "gbs_worker", 24576, NULL, 5, NULL) == pdPASS);
+#ifdef GBS_TOUCHSCREEN
+    esp_err_t hub_error = gbs_hub_start(gbs_config.serial);
+    if (hub_error != ESP_OK) ESP_LOGE(TAG, "Hub client unavailable: %s", esp_err_to_name(hub_error));
+#endif
 }
 #endif

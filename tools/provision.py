@@ -12,10 +12,14 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+from urllib.parse import urlsplit
+import re
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
+from cryptography.x509.oid import NameOID
 
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE = ROOT / ".private"
@@ -109,6 +113,47 @@ def write_private(path, data):
     temporary.replace(path)
 
 
+def build_hub_config(source):
+    """Validate an explicitly supplied Hub trust record without contacting it."""
+    raw_url = source["url"]
+    if not isinstance(raw_url, str) or any(not 33 <= ord(c) <= 126 for c in raw_url):
+        raise ValueError("Invalid Hub URL")
+    url = urlsplit(raw_url)
+    if (url.scheme != "https" or not url.hostname or url.username is not None or url.password is not None or
+            url.netloc.endswith(":") or
+            url.query or url.fragment or url.path not in ("", "/") or
+            not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", url.hostname) or
+            (url.port is not None and not 1 <= url.port <= 65535)):
+        raise ValueError("Hub URL must be an HTTPS origin with an IPv4 address or DNS hostname")
+    config = {key: source[key] for key in ("token", "hub_id", "serial", "certificate")}
+    config["url"] = "https://" + url.netloc
+    config["hub_id"] = str(uuid.UUID(config["hub_id"]))
+    for key, low, high in (("url", 1, 159), ("token", 16, 128), ("serial", 1, 63)):
+        value = config[key]
+        if not isinstance(value, str) or not low <= len(value) <= high or any(not 33 <= ord(c) <= 126 for c in value):
+            raise ValueError(f"Invalid Hub {key}")
+    pem = config["certificate"]
+    if (not isinstance(pem, str) or len(pem.encode()) >= 4096 or "\0" in pem or
+            not pem.strip().startswith("-----BEGIN CERTIFICATE-----") or
+            not pem.strip().endswith("-----END CERTIFICATE-----") or pem.count("-----BEGIN") != 1):
+        raise ValueError("Provide one Hub public PEM certificate, without a private key")
+    cert = x509.load_pem_x509_certificate(pem.encode())
+    config["certificate"] = pem.strip() + "\n"
+    if len(config["certificate"].encode()) >= 4096:
+        raise ValueError("Hub public PEM certificate exceeds the firmware limit")
+    names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    key = cert.public_key()
+    if (len(names) != 1 or names[0].value != "LamaBuddy Hub " + config["hub_id"] or
+            cert.issuer != cert.subject or not isinstance(key, ec.EllipticCurvePublicKey) or
+            not isinstance(key.curve, ec.SECP256R1)):
+        raise ValueError("Hub certificate must match the configured Hub identity")
+    try:
+        key.verify(cert.signature, cert.tbs_certificate_bytes, ec.ECDSA(cert.signature_hash_algorithm))
+    except (InvalidSignature, ValueError) as error:
+        raise ValueError("Invalid Hub certificate signature") from error
+    return config
+
+
 def prepare(args):
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -128,6 +173,12 @@ def prepare(args):
     pairing = json.loads(args.pairing_file.read_text())
     config = build_config(application, pairing, args.grinder,
                           args.grinder_cert.read_text(), ssid, wifi_password)
+    hub_config = None
+    if getattr(args, "hub_config", None):
+        hub_config = build_hub_config(json.loads(args.hub_config.read_text()))
+        if config["serial"] and config["serial"] != hub_config["serial"]:
+            raise ValueError("Hub and grinder bridge must use the same coffee machine")
+        config["serial"] = hub_config["serial"]
     write_private(config_file, json.dumps(config, ensure_ascii=False) + "\n")
     nvs_csv = PRIVATE / "config.csv"
     with nvs_csv.open("w", newline="") as handle:
@@ -136,6 +187,11 @@ def prepare(args):
                           ("gbs_cfg", "namespace", "", ""),
                           ("config", "file", "string", str(config_file)),
                           ("active", "data", "u8", "0")])
+        if hub_config:
+            hub_file = PRIVATE / "hub-config.json"
+            write_private(hub_file, json.dumps(hub_config) + "\n")
+            writer.writerows([("gbs_hub", "namespace", "", ""),
+                              ("config", "file", "string", str(hub_file))])
     result = subprocess.run([sys.executable, "-m", "esp_idf_nvs_partition_gen", "generate",
                              str(nvs_csv), str(PRIVATE / "config-nvs.bin"), "0x16000"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -152,6 +208,7 @@ def main():
     parser.add_argument("--grinder", required=True, help="Grinder IPv4 address")
     parser.add_argument("--grinder-cert", type=Path, required=True, help="Trusted grinder certificate in PEM format")
     parser.add_argument("--reuse-wifi", action="store_true")
+    parser.add_argument("--hub-config", type=Path, help="Optional private HTTPS v2 Hub trust/config JSON for a new touchscreen board")
     try:
         prepare(parser.parse_args())
     except (ValueError, TypeError, AttributeError, KeyError, OSError, EOFError) as error:

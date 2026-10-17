@@ -39,9 +39,18 @@ The 0.2.1 C source has been checked against merged main `3adf778`; see
 - **Measured beverage weight** must be present in the cloud coffee record.
   Missing weight is skipped; this port does not substitute recipe weight.
 
-There is no E64 server, manual shot-entry form, Half Decent Scale integration,
-new-pairing wizard, OTA update, Bluetooth or device-control page in this first
-version. A computer is needed once for initial pairing, provisioning and flashing.
+The default headless profile has no E64 server, manual shot-entry form, Half
+Decent Scale integration, new-pairing wizard, OTA, Bluetooth or device-control
+page. A computer is needed once for initial pairing, provisioning and flashing.
+
+An optional [native touchscreen preview](docs/TOUCHSCREEN.md) adds a 240 x 280
+LVGL interface and an offline Mac/SDL simulator. It is a separate experimental
+16 MB build profile with an optional HTTPS v2 connection to an existing LamaBuddy
+Hub for dual temperatures, smart weight presets and steam controls. Its code and
+synthetic contracts are locally validated; live Hub and physical display
+acceptance remain pending. The 8 MB headless build remains the default.
+See [development progress and remaining work](docs/PROGRESS.md) for implemented
+features, validation evidence, hardware gates and the later feature backlog.
 
 Clone this companion before following the setup or Docker migration steps:
 

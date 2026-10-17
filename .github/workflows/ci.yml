@@ -26,6 +26,11 @@ jobs:
           target: esp32s3
           command: >-
             apt-get update &&
-            apt-get install --no-install-recommends -y nodejs gcc libc6-dev &&
+            apt-get install --no-install-recommends -y nodejs gcc libc6-dev cmake pkg-config libsdl2-dev &&
             sh tools/check.sh &&
-            idf.py build
+            cmake -S simulator -B build-simulator -DCMAKE_BUILD_TYPE=Debug &&
+            cmake --build build-simulator --target gbs_touch_simulator -j 2 &&
+            ctest --test-dir build-simulator --output-on-failure &&
+            idf.py -B build-headless -DGBS_TOUCHSCREEN=OFF build &&
+            idf.py -B build-touchscreen -DGBS_TOUCHSCREEN=ON
+            '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.touchscreen' build

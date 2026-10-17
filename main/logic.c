@@ -59,9 +59,9 @@ bool gbs_job_error(const char *status)
                       !strcmp(status, "ClientErrorOngoingJobNotExisting"));
 }
 
-bool gbs_answer_gone(bool accepted, bool listed)
+bool gbs_answer_gone(bool ongoing_missing, bool listed)
 {
-    return !accepted && !listed;
+    return ongoing_missing && !listed;
 }
 
 bool gbs_reply_valid(int http_status, const char *status)

@@ -10,9 +10,10 @@ https://github.com/Skamba/gbs-anywhere
 https://github.com/Skamba/gbs-anywhere/pull/15
 https://github.com/Skamba/gbs-anywhere/pull/16
 Authentication snapshot: 3b6ef9abd823f5e8ebd66fdc229a5738c0f0930e (unchanged in PR16 ba00c92).
-Protocol flow reviewed against PR15 8f398c546939fee92257828a279dcb56187c28b1
-and PR16 ba00c92e6644b3ef4e141d48224e7996438be695 on 2026-10-16.
-Desktop pairing on V01.36 requires fix 8f398c5 or later from PR #15.
+Protocol flow reviewed against merged main 3adf778c7f0a3803994cbcc5fe2af1f8ac8a5be1,
+including PR15 fix 13e4a053e596609b78402a2b25015a816dfe7de5, on 2026-10-17.
+Cloud authentication is unchanged between PR16 ba00c92 and that merged main.
+Desktop pairing on V01.36 requires the merged recovery flow from PR #15.
 
 This work remains licensed under AGPL-3.0-or-later; see LICENSE.
 ESP-IDF and its bundled libraries retain their respective licenses.

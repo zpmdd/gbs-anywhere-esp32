@@ -29,7 +29,7 @@ esp_err_t gbs_grinder(const char *endpoint, const cJSON *body, cJSON **reply, ch
     strcpy(gbs_grinder_request.operation, endpoint); gbs_grinder_request.http_status = 200;
     strcpy(status, "Ok"); *reply = cJSON_CreateObject(); assert(*reply);
     if (!strcmp(endpoint, "brewJobs")) {
-        if (fail_poll) { gbs_grinder_request.http_status = 0; strcpy(status, "TransportError"); return ESP_ERR_TIMEOUT; }
+        if (fail_poll) { gbs_grinder_request.http_status = http_refusal; strcpy(status, "TransportError"); return ESP_ERR_TIMEOUT; }
         if (http_refusal) { gbs_grinder_request.http_status = http_refusal; strcpy(status, "ClientErrorPairingIdNotExisting"); return ESP_OK; }
         cJSON *jobs = cJSON_AddArrayToObject(*reply, "brewJobs");
         if (listed_job) {
@@ -61,10 +61,12 @@ static void reset(void)
     memset(&latest, 0, sizeof(latest)); memset(&current, 0, sizeof(current));
     active = cloud_initialized = storage_ok = true;
     atomic_store(&desired_active, true); atomic_store(&wifi_online, true);
-    baseline_jobs = have_job = pending = accepted = canceled = false;
+    baseline_jobs = have_job = pending = accepted = canceled = ongoing_missing = pairing_problem = false;
     listed_job = ongoing = fail_poll = fail_accept_reply = fail_done_reply = fail_storage = false;
     next_jobs = job_deadline_us = answer_deadline_us = 0;
-    clock_us = 1000000; accepts = pairing_refusals = 0; accept_calls = done_calls = http_refusal = 0;
+    pairing_refused_since_us = -1;
+    clock_us = 1000000; accepts = 0; accept_calls = done_calls = http_refusal = 0;
+    gbs_config.pairing_id = 42;
     issue[0] = storage_issue[0] = 0;
     fake_coffee = (gbs_coffee_t){.time_ms = 1799999990000LL, .duration_ms = 30000, .mass_mg = 30000, .usable = true};
 }
@@ -99,6 +101,19 @@ int main(void)
     fail_accept_reply = false; jobs_tick(); assert(accepted);
     measured(); assert(accept_calls == 1 && done_calls == 1 && ledger.successes == 1);
 
+    reset(); listed_job = true; fail_accept_reply = true; jobs_tick();
+    fail_poll = true; jobs_tick(); fail_poll = false;
+    measured(); // The result arrives before a successful job-list reconciliation.
+    assert(pending && !accepted && ongoing && done_calls == 0);
+    fail_accept_reply = false; jobs_tick();
+    assert(!have_job && !ongoing && done_calls == 1 && ledger.successes == 1);
+
+    reset(); listed_job = true; fail_accept_reply = true; jobs_tick();
+    measured(); assert(pending && !accepted);
+    ongoing = false; fail_accept_reply = false; jobs_tick();
+    assert(pending && ongoing_missing && done_calls == 1);
+    jobs_tick(); assert(!have_job && !strcmp(ledger.last_outcome, "delivery_expired"));
+
     reset(); listed_job = true; jobs_tick(); fail_done_reply = true; measured();
     assert(!have_job && !strcmp(ledger.last_outcome, "delivery_unknown"));
     jobs_tick(); coffee_tick(); assert(done_calls == 1 && ledger.successes == 0);
@@ -107,11 +122,31 @@ int main(void)
     assert(pending && !accepted); jobs_tick();
     assert(!have_job && !strcmp(ledger.last_outcome, "delivery_expired") && done_calls == 1);
 
-    reset(); http_refusal = 403; jobs_tick(); assert(pairing_refusals == 1);
-    jobs_tick(); jobs_tick(); assert(pairing_refusals == 3);
-    http_refusal = 0; jobs_tick(); assert(pairing_refusals == 0 && grinder_health.ok);
+    reset(); listed_job = true; jobs_tick(); ongoing = false; measured();
+    assert(pending && ongoing_missing);
+    listed_job = true; fail_accept_reply = true; jobs_tick();
+    assert(pending && ongoing && !ongoing_missing);
+    fail_accept_reply = false; jobs_tick();
+    assert(!have_job && ledger.successes == 1 && done_calls == 2);
+
+    reset(); listed_job = true; fail_accept_reply = true; jobs_tick(); measured();
+    clock_us = answer_deadline_us + 1; fail_accept_reply = false; jobs_tick();
+    assert(!have_job && done_calls == 0 && !strcmp(ledger.last_outcome, "delivery_expired"));
+
+    reset(); http_refusal = 403; jobs_tick();
+    clock_us += 2000000; jobs_tick(); clock_us += 2000000; jobs_tick();
+    assert(!pairing_problem && gbs_config.pairing_id == 42);
+    clock_us += 56000000; jobs_tick();
+    assert(pairing_problem && gbs_config.pairing_id == 42);
+    fail_poll = true; jobs_tick();
+    assert(!pairing_problem && pairing_refused_since_us == -1);
+    fail_poll = false; jobs_tick(); clock_us += 59000000; jobs_tick();
+    assert(!pairing_problem);
+    clock_us += 1000000; jobs_tick(); assert(pairing_problem);
+    http_refusal = 0; jobs_tick();
+    assert(!pairing_problem && pairing_refused_since_us == -1 && grinder_health.ok);
 
     reset(); listed_job = true; fail_storage = true; jobs_tick();
     assert(!storage_ok && !have_job && accept_calls == 0 && done_calls == 0);
-    puts("PASS: real worker daily power-on, startup baseline, reaccept, lost accept, ambiguous result, expired job, pairing refusals, NVS failure");
+    puts("PASS: worker recovery, pending/lost acceptance, relisted and expired results, ambiguous delivery, timed refusals, NVS failure");
 }

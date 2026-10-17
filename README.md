@@ -9,7 +9,7 @@ adjustment; this firmware reports the measured shot time and weight.
 Not affiliated with Mahlkönig or Hemro.
 
 This is a separate ESP-IDF C application. Its protocol and cloud authentication
-are ported from [PR15](https://github.com/Skamba/gbs-anywhere/pull/15) and
+are ported from [merged PR15](https://github.com/Skamba/gbs-anywhere/pull/15) and
 [PR16 at ba00c92](https://github.com/Skamba/gbs-anywhere/pull/16), with thanks to
 Skamba and erikp152. It is licensed under the repository's AGPL-3.0-or-later
 [license](LICENSE). ESP-IDF and its bundled libraries supply WiFi, TLS,
@@ -18,11 +18,13 @@ on the board. This companion repository is maintained separately from the
 [desktop application](https://github.com/Skamba/gbs-anywhere). It was split from
 [PR18](https://github.com/Skamba/gbs-anywhere/pull/18); see [NOTICE](NOTICE) for provenance.
 
-PR15 is not yet merged or released. Initial pairing currently requires its
-experimental branch, including fix `8f398c5` or later. Once that support is
-released, setup will point to the release and this C port will be checked against
-the merged flow. The 0.2.0 source has been checked against PR15 `8f398c5` and
-PR16 `ba00c92`; see [the comparison](docs/UPSTREAM.md). This remains experimental.
+PR15 was merged on 2026-10-17. Initial pairing can use the upstream
+`ghcr.io/skamba/gbs-anywhere:nightly` image built from merge `26492fb`, or main
+`3adf778`, which includes the pairing and lost-accept fixes in `13e4a05`.
+The latest desktop tag, `v0.2.1`, predates E65 support; use a newer tagged release
+only once it contains PR15. The companion's version numbers are independent.
+The 0.2.1 C source has been checked against merged main `3adf778`; see
+[the comparison](docs/UPSTREAM.md). This remains experimental.
 
 ## Supported setup
 
@@ -82,11 +84,14 @@ another host.
 
 ## One-time setup
 
-1. Use a desktop version with PR15's E65 support to complete pairing and add
-   La Marzocco cloud. For V01.36 use **8f398c5 or later**, including its three-minute
-   silent period on a pairing failure. Retain the files passed to `--config` and
+1. Follow the upstream [E65/E80 setup](https://github.com/Skamba/gbs-anywhere#set-up-an-e65e80-gbs)
+   using the nightly or merged version above to complete pairing and add
+   La Marzocco cloud. This includes the three-minute silent period after an
+   unanswered pairing check on V01.36. Retain the files passed to `--config` and
    `--grinder-pairing-file`. The latter must contain a saved `pairing_id` and
-   `brew_device_id`. If pairing is cleared, Generic WiFi must be enabled again.
+   `brew_device_id`. A file with `pairing_id: null` and only `refused_pairing_id`
+   is not ready to import: finish pairing/recovery in the desktop app, then export
+   again. If pairing is cleared, Generic WiFi must be enabled again.
 2. Stop every desktop/container/test client that contacts this grinder. Keep
    Generic WiFi enabled, select group head 1, and enable GbS on the recipe.
    The ESP32 takes over the existing identity; it must not share it with another
@@ -187,8 +192,9 @@ before grinding. It can be mechanically ready before its network API responds.
 Ordinary connection failures retry after 2, 4, then at most 5 seconds, instead of
 increasing to a minute while the grinder is off. These are waits between requests,
 not a guaranteed recovery time: request timeouts and cloud calls add latency.
-Three consecutive pairing refusals instead show an action-required message and
-check once a minute. The saved pairing is never erased or recreated automatically.
+Pairing refusals sustained for 60 seconds instead show an action-required message
+and check once a minute. A timeout or another response interrupts that refusal
+period. The saved pairing is never erased or recreated automatically.
 
 For each cup, grind with the GbS recipe, then pull the shot. The bridge queries
 jobs about every two seconds and cloud coffee every three seconds while waiting
@@ -212,9 +218,12 @@ replaying it. NVS failures disable further result delivery.
 A relisted current job is accepted again. A newer job cancels the old one before
 being taken. An unanswered brew times out after 180 seconds. Explicit
 `ClientErrorOngoingJobNotExisting` replies permit reaccepting and resending the
-same event while that task remains listed. If it is no longer listed and no
-acceptance is known, delivery ends as expired. A lost accept response is reconciled
-by the next successful task list before reporting. An ambiguous `brewDone` transport failure becomes `delivery_unknown`
+same event while that task remains listed. Delivery expires when the grinder
+explicitly reports that the ongoing job is missing and the next job list does not
+contain it. An empty job list alone cannot distinguish a taken job from a missing
+one. After a lost accept reply, a pending result can therefore still be reported;
+an accept response saying the job is no longer listed is treated as possibly taken
+until `brewDone` says otherwise. An ambiguous `brewDone` transport failure becomes `delivery_unknown`
 and is not automatically replayed. These choices differ from the desktop's
 recipe-weight fallback and broader result retry behavior.
 
@@ -235,9 +244,10 @@ adjustments for the first two of those cups. The third result was received and
 stored without a visible adjustment. Successful delivery does not guarantee
 motor movement: the grinder decides whether to adjust.
 
-The exact 0.2.0 build has passed a board upgrade, normal-boot recovery and live
-status-page check while preserving configuration and task records. Precursor
-coffee results do not establish its real-coffee feedback.
+Versions 0.2.0 and 0.2.1 passed board upgrades, normal-boot recovery and live
+status-page checks while preserving configuration and task records. The 0.2.1
+application update also had byte-for-byte NVS readback verification. A real cup
+on 0.2.1 still needs validation; precursor results do not establish that behavior.
 See [the validation record](docs/UPSTREAM.md#validation) for the current boundary.
 Long-duration operation, real token expiry and all outage scenarios remain unverified.
 

@@ -65,6 +65,14 @@ class ProvisionTest(unittest.TestCase):
                     ValueError, "Exactly one La Marzocco integration is required"):
                 self.config(application={"integrations": entries})
 
+    def test_unconfirmed_refused_pairing_requires_desktop_recovery(self):
+        pairing = {"pairing_id": None, "refused_pairing_id": 42,
+                   "brew_device_id": "11111111-1111-4111-8111-111111111111"}
+        with self.assertRaisesRegex(ValueError, "Finish pairing in gbs-anywhere"):
+            self.config(pairing=pairing)
+        pairing["pairing_id"] = 7
+        self.assertEqual(self.config(pairing=pairing)["pairing_id"], 7)
+
     def test_creates_private_nvs_image_in_monitor_mode(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

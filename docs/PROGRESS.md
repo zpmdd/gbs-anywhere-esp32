@@ -36,6 +36,7 @@ as part of this source publication.
 | Host regressions | Both offline entry points passed locally: synthetic protocol/worker/UI and Hub/recipe/transaction checks, with ASan/UBSan and no real devices. |
 | Local builds and simulators | All four profiles built: root headless/touchscreen and integrated headless/touchscreen. Both native simulator self-tests passed. Imported runtime C/headers match the archived source. |
 | Initial provisioning | Imported identity starts in monitor mode. Actual NVS generation is tested at both touchscreen/headless sizes, with private file permissions and no credential echo. |
+| Build portability | Host tests use `IDF_PATH`; the integrated manifest/CI pin ESP-IDF 5.5.4. The older 5.5.0 image lacks a WebSocket transport API used by the pinned component. |
 | CI | The [workflow](../.github/workflows/ci.yml) checks both applications and all four main firmware profiles. Its commit-specific result is the hosted evidence; builds do not establish physical acceptance. |
 | Production release/security | Still experimental. No general firmware release, armed eFuse tool or security-gate certification is part of this publication. |
 

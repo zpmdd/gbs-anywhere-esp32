@@ -50,6 +50,8 @@ deadline, manual cancellation and no replay on ambiguous outcomes.
 ## Exact source-build identity
 
 - Build ID: `c88791b2`; original build version `7b00f00a-dirty`.
+- SDK string embedded in that binary: `v5.5.4-777-g0f4a3e8c2e-dirty`.
+  Public CI instead pins the clean official ESP-IDF `v5.5.4` release.
 - Application size: 2,336,576 bytes.
 - Application SHA-256: `66cc6cc7d91f96707b7c6719b94a27e89873f6504fdc7a369be51419097cab01`.
 - ELF SHA-256: `c88791b2bad708a01501548bcc953f51cad4c6bad103c6b56f204fdcf8fc71af`.

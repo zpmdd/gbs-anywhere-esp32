@@ -8,7 +8,7 @@ Start with [build, provisioning and LAN update instructions](../../docs/INTEGRAT
 See [field acceptance](../../docs/RECIPE_FOLLOW_ACCEPTANCE.md) for the tested
 binary and [source provenance](UPSTREAM.md) for import boundaries.
 
-From this directory, after sourcing ESP-IDF 5.5:
+From this directory, after sourcing ESP-IDF 5.5.4:
 
 ```sh
 sh tools/check-integrated.sh

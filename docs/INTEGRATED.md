@@ -27,7 +27,10 @@ older Cloud snapshot from silently clearing the selected weight.
 
 ## Build and local checks
 
-Install ESP-IDF 5.5 with the ESP32-S3 toolchain. Host checks need a C compiler,
+Install ESP-IDF **5.5.4** with the ESP32-S3 toolchain, matching the pinned public
+CI image. The field binary used a local 5.5.4-based checkout; public rebuilding
+is separate from that exact-binary acceptance. ESP-IDF 5.5.0 lacks a transport API used by
+the pinned WebSocket component and cannot build this application. Host checks need a C compiler,
 Python from the IDF environment and zlib development headers (`zlib1g-dev` on
 Debian/Ubuntu). From the repository root:
 

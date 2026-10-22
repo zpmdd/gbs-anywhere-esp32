@@ -16,7 +16,8 @@ images, commercial planning and armed Secure Boot/eFuse provisioning tools.
 
 Runtime files retain their imported behavior. Publication adaptations are the
 public documentation, a complete offline-test entry point using the configured
-ESP-IDF path, and profile-specific
+ESP-IDF path, an explicit official ESP-IDF 5.5.4 build requirement for public
+CI, and profile-specific
 NVS generation (0x15000 for touchscreen, 0x6000 for headless). These tooling
 changes do not alter the application running on the already-tested device.
 

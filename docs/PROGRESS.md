@@ -2,9 +2,10 @@
 
 Updated 2026-10-22. The complete integrated firmware is published in this
 repository; the original lightweight and external-Hub display builds remain
-available. This update records both directions of real-cup recipe following and
-the scale connection-cache defect. All variants remain experimental. Source
-maintenance and local validation do not access or update devices.
+available. This update records both directions of real-cup recipe following,
+followed by the authorized 1.69-inch OTA and scale off/on/off acceptance. All
+variants remain experimental. This documentation publication performs no new
+device access or update.
 
 ## Latest milestone: one device and automatic recipe following
 
@@ -34,14 +35,18 @@ maintenance and local validation do not access or update devices.
 - The reverse cup exposed stale `scaleConnected: false` despite a connected scale
   and valid measured result. The shared cache now accepts fresh control preflight
   observations, uses bounded 30-second accessory reads and expires observations
-  after 60 seconds. Missing fields remain unknown. No updated firmware or scale
-  power-on/off hardware acceptance is claimed.
+  after 60 seconds. Missing fields remain unknown. The authorized OTA of source
+  `975ebc5`, build `b923fa91`, subsequently passed a physical off -> on -> off
+  cycle: disconnected/unknown battery -> connected/28% -> disconnected/unknown
+  battery. Over 252 seconds, 174 cached reads had no failures, uptime remained
+  monotonic and the grinder remained ready with its success count unchanged at
+  12. No cup was made on this new build. See [the scale report](SCALE_STATE_ACCEPTANCE.md).
 
 ## Build and validation boundaries
 
 | Surface | Evidence and status |
 | --- | --- |
-| Integrated touchscreen source | Imported runtime from `050790dc`; source build `c88791b2` has one successful cup in each direction. Public rebuilding or the cache correction changes its binary identity and needs separate hardware acceptance. |
+| Integrated touchscreen source | `c88791b2` has one successful cup in each direction. Later `b923fa91` passed OTA and one scale off/on/off cycle on the 1.69-inch board; a new-build cup, endurance and physical touch latency remain unverified. |
 | Integrated headless | Shared Hub/grinder core with no display tasks. Dedicated integrated-headless hardware acceptance remains open. |
 | Root companion and external-Hub preview | Existing source/features retained; job/coffee parser compatibility fixes synchronized. Their older hardware evidence does not certify the integrated build. |
 | Host regressions | Both offline entry points passed locally: synthetic protocol/worker/UI and Hub/recipe/transaction checks, with ASan/UBSan and no real devices. |
@@ -66,17 +71,20 @@ UI calls the same board's Hub directly. Their setup guides must not be mixed.
 
 ## Remaining work, in order
 
-1. Verify the scale connection-cache correction on hardware, then repeat
-   alternating-handle tests beyond the single successful cup in each direction.
-2. Network/Cloud interruptions, deadline/cancellation timing and extended runtime
+1. Verify a real cup on `b923fa91`, then repeat alternating-handle tests beyond
+   the single successful cup in each direction on the earlier `c88791b2` build.
+2. Scale-off weight changes retained at scale power-on and App/device display
+   agreement. The completed off/on/off cycle did not issue preset commands.
+3. Network/Cloud interruptions, hardware stale/unknown transitions,
+   deadline/cancellation timing, physical touch latency and extended runtime
    with touch, BLE, TLS, log parsing and feedback active together.
-3. A reliable live extraction-start signal. Current timer checks do not prove a
+4. A reliable live extraction-start signal. Current timer checks do not prove a
    physical extraction lock: wait for confirmed target weight before brewing.
-4. Dedicated integrated-headless hardware and E80/other-board acceptance.
-5. Scale-off weight selection retained at power-on, bidirectional client display
-   agreement, physical schedule edit/readback and remaining App/Widget/Watch/Siri
+5. Dedicated integrated-headless, E80 and other-board acceptance. AMOLED board/UI
+   work remains separate; this 1.69-inch scale result does not certify it.
+6. Physical schedule edit/readback and remaining App/Widget/Watch/Siri
    matrices. Their application projects are maintained separately.
-6. Production security/installation gates and upstream recipe-relative
+7. Production security/installation gates and upstream recipe-relative
    adjustment-window hints. Acknowledged feedback is distinct from adjustment.
 
 Schedule creation/deletion, independent dim/blank timers and a full on-device

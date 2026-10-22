@@ -78,6 +78,19 @@ static void measured(void)
 }
 int main(void)
 {
+    reset(); listed_job = true; jobs_tick();
+    cJSON *display = cJSON_CreateObject();
+    add_display_state(display);
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "have_job")));
+    assert(cJSON_GetObjectItemCaseSensitive(display, "job_deadline_ms")->valuedouble == job_deadline_us / 1000);
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "pending")));
+    cJSON_Delete(display);
+    gbs_coffee_t empty = {0}; prepare_answer(&empty, true);
+    display = cJSON_CreateObject(); add_display_state(display);
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "canceling")));
+    assert(cJSON_GetObjectItemCaseSensitive(display, "answer_deadline_ms")->valuedouble == answer_deadline_us / 1000);
+    assert(cJSON_GetObjectItemCaseSensitive(display, "job_deadline_ms")->valuedouble == 0);
+    cJSON_Delete(display);
     reset();
     fail_poll = true; for (int i = 0; i < 100; ++i) jobs_tick();
     assert(!grinder_health.ok && grinder_health.failures == 100 && !have_job);
@@ -116,6 +129,9 @@ int main(void)
 
     reset(); listed_job = true; jobs_tick(); fail_done_reply = true; measured();
     assert(!have_job && !strcmp(ledger.last_outcome, "delivery_unknown"));
+    display = cJSON_CreateObject(); add_display_state(display);
+    assert(cJSON_GetObjectItemCaseSensitive(display, "unconfirmed_grams")->valuedouble == answer.mass_mg / 1000.0);
+    cJSON_Delete(display);
     jobs_tick(); coffee_tick(); assert(done_calls == 1 && ledger.successes == 0);
 
     reset(); listed_job = true; jobs_tick(); ongoing = false; measured();

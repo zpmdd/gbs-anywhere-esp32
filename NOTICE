@@ -16,6 +16,17 @@ Cloud authentication is unchanged between PR16 ba00c92 and that merged main.
 Desktop pairing on V01.36 requires the merged recovery flow from PR #15.
 
 This work remains licensed under AGPL-3.0-or-later; see LICENSE.
+The optional firmware/integrated application includes the LamaBuddy Hub runtime
+and integrated companion changes contributed by zpmdd, imported from source
+revision 050790dc62b0c121da70911652f108e049b40754 on 2026-10-22 and published
+under this repository's AGPL-3.0-or-later license. It includes no private
+configuration, device identities or raw hardware logs. See docs/INTEGRATED.md
+and firmware/integrated/UPSTREAM.md for the source boundaries and sync policy.
+Upstream protocol compatibility was reviewed through
+ebaac65901fee0570ac26f9fda202c61f74ba055; see docs/UPSTREAM.md for port decisions.
 ESP-IDF and its bundled libraries retain their respective licenses.
+The optional display uses LVGL 8.4.0 (MIT), Noto Sans CJK and Inter (SIL OFL 1.1),
+and Tabler Icons 3.35.0 (MIT). See display/fonts/ and display/icons/ for the font
+and icon license notices, and docs/TOUCHSCREEN.md for source attribution.
 Vendor and product names identify compatibility only. Not affiliated with
 Mahlkönig, Hemro or La Marzocco.

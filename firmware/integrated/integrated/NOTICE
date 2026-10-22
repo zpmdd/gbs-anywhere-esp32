@@ -1,0 +1,26 @@
+gbs-anywhere ESP32-S3 companion
+
+This experimental ESP-IDF application was split from the firmware/esp32-s3
+directory of Skamba/gbs-anywhere PR #18, originally contributed by zpmdd at
+commit 8c19924d7ca3549a8692190c5aa30b24d26ebd75.
+
+The Generic WiFi flow and La Marzocco authentication were ported from
+gbs-anywhere by Skamba, erikp152 and its contributors:
+https://github.com/Skamba/gbs-anywhere
+https://github.com/Skamba/gbs-anywhere/pull/15
+https://github.com/Skamba/gbs-anywhere/pull/16
+Authentication snapshot: 3b6ef9abd823f5e8ebd66fdc229a5738c0f0930e (unchanged in PR16 ba00c92).
+Protocol flow reviewed against merged main 3adf778c7f0a3803994cbcc5fe2af1f8ac8a5be1,
+including PR15 fix 13e4a053e596609b78402a2b25015a816dfe7de5, on 2026-10-17.
+Cloud authentication is unchanged between PR16 ba00c92 and that merged main.
+Desktop pairing on V01.36 requires the merged recovery flow from PR #15.
+
+This work remains licensed under AGPL-3.0-or-later; see LICENSE.
+ESP-IDF and its bundled libraries retain their respective licenses.
+The optional display uses LVGL 8.4.0 (MIT), Noto Sans CJK and Inter (SIL OFL 1.1),
+and Tabler Icons 3.35.0 (MIT). See display/fonts/ and display/icons/ for the font
+and icon license notices, and the original asset attribution at
+https://github.com/zpmdd/gbs-anywhere-esp32/blob/423e0866756e0372d0d98520455d6ac09466578b/docs/TOUCHSCREEN.md.
+For subsequent integrated-port compatibility reviews, see UPSTREAM.md.
+Vendor and product names identify compatibility only. Not affiliated with
+Mahlkönig, Hemro or La Marzocco.

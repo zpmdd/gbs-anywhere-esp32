@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased - 2026-10-22
+
+- Publish the complete integrated ESP32-S3 Hub, grinder and optional touchscreen
+  application in `firmware/integrated`. A clone of this public repository now
+  contains the runtime source needed for the integrated feature set; no private
+  Hub checkout or second ESP is required for that profile.
+- Add ordinary grinder ZIP/CSV recipe lookup after fresh job acceptance, exact
+  UUID matching and guarded automatic target-weight selection during puck
+  preparation. Keep manual cancellation, short deadlines and no ambiguous retry.
+- Include PSRAM allocation fixes, fresh preset/online preflight, persistent dose
+  selection, USB-C-right touch mapping, steam-level home display, shared Cloud
+  history, authenticated LAN OTA and real framebuffer diagnostics.
+- Preserve the lightweight companion and external-Hub touchscreen profiles.
+  Port null/missing coffee-list handling and sub-millisecond target rejection
+  to both C parsers; review the Rust upstream through `ebaac65`.
+- Record one successful 20 g -> 30 g automatic-follow cup on source build
+  `c88791b2`: 30.2 g / 27.696 s, acknowledged feedback and user-confirmed physical
+  adjustment. Publishing or rebuilding this source is not another hardware test.
+- Add integrated CI and board-specific first-install NVS sizing. Production
+  security certification, reliable live extraction-start protection, reverse
+  20 g following, E80, outages and endurance remain open.
+
 ## 0.2.1 - 2026-10-17
 
 - Check the C port against merged gbs-anywhere main `3adf778`, including PR15's

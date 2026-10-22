@@ -17,6 +17,21 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
   "$gbs_root/main/logic.c" "$gbs_root/tests/test_worker.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_worker"
 "$gbs_root/build-host/test_worker"
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+  -I "$gbs_root/display" -I "$gbs_idf/components/json/cJSON" \
+  "$gbs_root/display/gbs_ui_model.c" "$gbs_root/tests/test_display_model.c" \
+  "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_display_model"
+"$gbs_root/build-host/test_display_model"
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+  -I "$gbs_root/display" -I "$gbs_idf/components/json/cJSON" \
+  "$gbs_root/display/gbs_hub.c" "$gbs_root/display/gbs_ui_model.c" "$gbs_root/tests/test_hub.c" \
+  "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_hub"
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+  -I "$gbs_root/display" -I "$gbs_idf/components/json/cJSON" \
+  "$gbs_root/display/gbs_hub.c" "$gbs_root/display/gbs_ui_model.c" "$gbs_root/tests/test_hub_data.c" \
+  "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_hub_data"
+"$gbs_root/build-host/test_hub_data" "$gbs_root/tests/fixtures"
+"$gbs_root/build-host/test_hub"
 "$gbs_python" "$gbs_root/tests/test_provision.py"
 "$gbs_python" "$gbs_root/tests/test_serial_log.py"
 "${GBS_NODE:-node}" "$gbs_root/tests/test_ui.cjs"

@@ -4,3 +4,7 @@ idf_component_register(SRCS "main.c" "network.c" "logic.c"
              esp_timer mbedtls json console esp_psram
     PRIV_REQUIRES esp_app_format
     EMBED_TXTFILES "index.html")
+if(GBS_TOUCHSCREEN)
+    idf_component_optional_requires(PRIVATE display)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GBS_TOUCHSCREEN=1)
+endif()

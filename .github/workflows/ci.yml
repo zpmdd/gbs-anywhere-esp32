@@ -26,6 +26,32 @@ jobs:
           target: esp32s3
           command: >-
             apt-get update &&
-            apt-get install --no-install-recommends -y nodejs gcc libc6-dev &&
+            apt-get install --no-install-recommends -y nodejs gcc libc6-dev cmake pkg-config libsdl2-dev &&
             sh tools/check.sh &&
-            idf.py build
+            cmake -S simulator -B build-simulator -DCMAKE_BUILD_TYPE=Debug &&
+            cmake --build build-simulator --target gbs_touch_simulator -j 2 &&
+            ctest --test-dir build-simulator --output-on-failure &&
+            idf.py -B build-headless -DGBS_TOUCHSCREEN=OFF build &&
+            idf.py -B build-touchscreen -DGBS_TOUCHSCREEN=ON
+            "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.touchscreen" build
+
+  integrated-test-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Integrated host tests and both board profiles
+        uses: espressif/esp-idf-ci-action@v1.2.0
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32s3
+          command: >-
+            apt-get update &&
+            apt-get install --no-install-recommends -y gcc libc6-dev zlib1g-dev cmake pkg-config libsdl2-dev &&
+            cd firmware/integrated &&
+            sh tools/check-integrated.sh &&
+            cmake -S integrated/simulator -B build-simulator -DCMAKE_BUILD_TYPE=Debug &&
+            cmake --build build-simulator --target gbs_touch_simulator -j 2 &&
+            ctest --test-dir build-simulator --output-on-failure &&
+            sh tools/build-integrated.sh touchscreen &&
+            sh tools/build-integrated.sh headless

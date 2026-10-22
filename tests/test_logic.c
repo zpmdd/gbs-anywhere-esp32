@@ -52,9 +52,17 @@ static void coffee(void)
     j = json("{\"output\":{\"lastCoffees\":[]}}");
     assert(gbs_latest_coffee(j, &c) && c.time_ms == 0); cJSON_Delete(j);
     j = json("{\"output\":{}}");
-    assert(!gbs_latest_coffee(j, &c)); cJSON_Delete(j);
+    assert(gbs_latest_coffee(j, &c) && c.time_ms == 0 && !c.usable); cJSON_Delete(j);
+    j = json("{\"output\":{\"lastCoffees\":null}}");
+    assert(gbs_latest_coffee(j, &c) && c.time_ms == 0 && !c.usable); cJSON_Delete(j);
+    const char *bad[] = {"{}", "{\"output\":null}", "{\"output\":[]}", "{\"output\":{\"lastCoffees\":{}}}"};
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        j = json(bad[i]); assert(!gbs_latest_coffee(j, &c)); cJSON_Delete(j);
+    }
     j = json("{\"output\":{\"lastCoffees\":[{\"time\":1791942600000,\"extractionSeconds\":1e300,\"doseValue\":30}]}}");
     assert(gbs_latest_coffee(j, &c) && !c.usable); cJSON_Delete(j);
+    j = json("{\"output\":{\"lastCoffees\":[{\"time\":1791942600000,\"extractionSeconds\":37.441,\"doseValue\":-129.8,\"valid\":false,\"invalidReason\":\"NegativeMass\"}]}}");
+    assert(gbs_latest_coffee(j, &c) && !c.usable && !gbs_new_coffee(&c, 0)); cJSON_Delete(j);
 }
 
 static void results(void)

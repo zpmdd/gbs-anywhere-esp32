@@ -1,5 +1,30 @@
 # Upstream comparison and validation
 
+## Current review: 2026-10-22
+
+Fetched `Skamba/gbs-anywhere` main at
+`ebaac65901fee0570ac26f9fda202c61f74ba055`. The root lightweight companion and
+the newly published [integrated Hub](INTEGRATED.md) both retain the C port's
+single-owner identity and no-replay policy.
+
+| Change since the previous review | Disposition |
+| --- | --- |
+| `40fbf3b`: null/missing `LAST_COFFEE.lastCoffees` | Ported with regression coverage to both C parsers. Wrong outer output/list types still fail. |
+| `164dfe3`: target duration below 1 ms is absent | Ported to both job parsers. |
+| `b67e6fc` / `164dfe3`: recipe-relative adjustment-window hints | Reviewed, UI metadata deferred. Valid measured results are delivered; the grinder decides whether it adjusts. |
+| Desktop API names, saved-file link takeover, stop signals and Web history/settings | Reviewed differences. No second server, filesystem pairing owner or Rust process lifecycle is introduced into the embedded worker. |
+
+One-shot ordinary CSV recipe following is an integrated-port addition, not a
+new upstream Generic WiFi field. It uses the authenticated grinder web export,
+exact task UUID matching and existing Hub command guards. The root lightweight
+firmware does not gain coffee-machine controls through a parser-only update.
+
+The integrated runtime source and its import pin are recorded in
+[`firmware/integrated/UPSTREAM.md`](../firmware/integrated/UPSTREAM.md).
+Both applications build from this public checkout. Keep reviewing relevant
+upstream deltas; an updated review pin does not mean every Rust commit was merged.
+The older sections below preserve the history of earlier comparisons and builds.
+
 Checked 2026-10-17 against:
 
 - [merged main, 3adf778](https://github.com/Skamba/gbs-anywhere/commit/3adf778c7f0a3803994cbcc5fe2af1f8ac8a5be1)

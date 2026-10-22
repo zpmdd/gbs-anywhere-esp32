@@ -1,5 +1,9 @@
 # Experimental native touchscreen
 
+This guide describes the earlier root-level display client that connects to an
+external Hub. For the complete Hub/grinder/display on one ESP32-S3, use the
+[integrated firmware guide](INTEGRATED.md) and its board-specific build entry.
+
 The optional LVGL renderer targets the Waveshare ESP32-S3-Touch-LCD-1.69
 (240 x 280, ST7789, CST816 touch, 16 MB flash and octal PSRAM). The normal
 8 MB headless profile stays the default. This display binary has not been

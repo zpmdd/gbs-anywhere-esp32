@@ -1,0 +1,9 @@
+# 16 MB Waveshare profile. Install through USB before using LAN OTA.
+# Name, Type, SubType, Offset, Size, Flags
+nvs, data, nvs, 0x9000, 0x15000,
+otadata, data, ota, 0x1e000, 0x2000,
+phy_init, data, phy, 0x20000, 0x1000,
+factory, app, factory, 0x30000, 4M,
+ota_0, app, ota_0, 0x430000, 4M,
+ota_1, app, ota_1, 0x830000, 4M,
+nvs_keys, data, nvs_keys, 0xc30000, 0x1000, encrypted

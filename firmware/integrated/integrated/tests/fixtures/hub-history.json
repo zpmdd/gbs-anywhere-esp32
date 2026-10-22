@@ -1,0 +1,11 @@
+{
+  "counter": {"totalCoffee":125,"totalFlush":10},
+  "recentCoffees": [
+    {"time":"2026-10-17T01:10:00Z","extractionSeconds":29.7,"doseMode":"Dose2","doseIndex":"dose2","doseValue":40,"targetTemperature":93},
+    {"time":"2026-10-18T01:18:20Z","extractionSeconds":31.2,"doseMode":"Dose1","doseIndex":"dose1","doseValue":30,"targetTemperature":93},
+    {"time":"2026-10-18T01:02:00Z","extractionSeconds":28.5,"doseMode":"Continuous","doseIndex":null,"doseValue":null,"targetTemperature":92.5},
+    {"time":"2026-10-16T09:20:00Z","extractionSeconds":null,"doseMode":null,"doseIndex":null,"doseValue":null,"targetTemperature":null},
+    {"time":"2026-10-16T01:10:00Z","extractionSeconds":30.3,"doseMode":"PulsesType","doseIndex":"dose1","doseValue":180,"targetTemperature":94}
+  ],
+  "trend": {"days":7,"timezone":"Asia/Shanghai","coffees":[],"flushes":[]}
+}

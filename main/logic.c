@@ -111,7 +111,7 @@ bool gbs_parse_job(const cJSON *j, gbs_job_t *job)
         if (len >= sizeof(job->dose_json)) return false;
     } else strcpy(job->dose_json, "null");
     double ms = number(j, "durationExpectedMs"), mg = number(j, "brewWeightExpectedMg");
-    if (isfinite(ms) && ms > 0) job->target_ms = (uint32_t)fmin(ms, UINT32_MAX);
+    if (isfinite(ms) && ms >= 1) job->target_ms = (uint32_t)fmin(ms, UINT32_MAX);
     if (isfinite(mg) && mg > 0) job->target_grams = mg / 1000.0;
     return true;
 }
@@ -120,7 +120,9 @@ bool gbs_latest_coffee(const cJSON *json, gbs_coffee_t *coffee)
 {
     memset(coffee, 0, sizeof(*coffee));
     const cJSON *output = cJSON_GetObjectItemCaseSensitive(json, "output");
+    if (!cJSON_IsObject(output)) return false;
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(output, "lastCoffees");
+    if (!list || cJSON_IsNull(list)) return true;
     if (!cJSON_IsArray(list)) return false;
     const cJSON *item;
     cJSON_ArrayForEach(item, list) {

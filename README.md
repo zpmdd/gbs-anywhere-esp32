@@ -6,6 +6,13 @@ Run E65/E80 Generic WiFi feedback and La Marzocco cloud polling on a USB-powered
 ESP32-S3, without leaving a computer or NAS running. The grinder calculates the
 adjustment; this firmware reports the measured shot time and weight.
 
+The [integrated firmware](docs/INTEGRATED.md) now also runs the Hub, native
+touchscreen and guarded coffee-machine controls on that same ESP32-S3. After
+grinding, it can match the current recipe's target in the ordinary grinder CSV
+export and set the coffee-machine weight during puck preparation. One complete
+20 g -> 30 g cup passed on the source build; see the
+[field report and limits](docs/RECIPE_FOLLOW_ACCEPTANCE.md).
+
 Not affiliated with Mahlkönig or Hemro.
 
 This is a separate ESP-IDF C application. Its protocol and cloud authentication
@@ -18,13 +25,27 @@ on the board. This companion repository is maintained separately from the
 [desktop application](https://github.com/Skamba/gbs-anywhere). It was split from
 [PR18](https://github.com/Skamba/gbs-anywhere/pull/18); see [NOTICE](NOTICE) for provenance.
 
-PR15 was merged on 2026-10-17. Initial pairing can use the upstream
-`ghcr.io/skamba/gbs-anywhere:nightly` image built from merge `26492fb`, or main
-`3adf778`, which includes the pairing and lost-accept fixes in `13e4a05`.
-The latest desktop tag, `v0.2.1`, predates E65 support; use a newer tagged release
-only once it contains PR15. The companion's version numbers are independent.
-The 0.2.1 C source has been checked against merged main `3adf778`; see
-[the comparison](docs/UPSTREAM.md). This remains experimental.
+PR15 was merged on 2026-10-17. Initial pairing must use an upstream version
+containing its recovery and lost-accept fixes. Protocol compatibility was last
+reviewed through main `ebaac65` on 2026-10-22; see
+[the comparison and intentional differences](docs/UPSTREAM.md).
+This is an independent C port: upstream Rust changes are reviewed and ported,
+not merged wholesale. The companion's version numbers are independent.
+
+## Choose a firmware
+
+| Build | Source and hardware | Role |
+| --- | --- | --- |
+| Lightweight companion | Repository root, 8 MB flash / 8 MB PSRAM | Existing grinder feedback bridge; default root build. |
+| External-Hub touchscreen preview | Repository root, `GBS_TOUCHSCREEN=ON`, 16 MB Waveshare 1.69-inch | Earlier display client that connects to another Hub. See [its guide](docs/TOUCHSCREEN.md). |
+| **Integrated touchscreen** | `firmware/integrated`, `touchscreen`, 16 MB / 8 MB PSRAM Waveshare 1.69-inch | Hub, grinder, approved native UI, recipe following and LAN OTA on one board. USB-C on the right. |
+| **Integrated headless** | `firmware/integrated`, `headless`, 8 MB flash / 8 MB PSRAM | Same Hub/grinder core without display tasks. Local build evidence; separate physical acceptance still needed. |
+
+For the complete single-device workflow, start with
+[integrated build, setup and update instructions](docs/INTEGRATED.md).
+The remaining instructions on this page describe the lightweight companion.
+Cloud access is required for machine controls and measured coffee results;
+other ESP chips, pinouts and memory configurations need their own verified profile.
 
 ## Supported setup
 
@@ -95,7 +116,7 @@ another host.
 ## One-time setup
 
 1. Follow the upstream [E65/E80 setup](https://github.com/Skamba/gbs-anywhere#set-up-an-e65e80-gbs)
-   using the nightly or merged version above to complete pairing and add
+   using a version containing PR15's recovery fixes to complete pairing and add
    La Marzocco cloud. This includes the three-minute silent period after an
    unanswered pairing check on V01.36. Retain the files passed to `--config` and
    `--grinder-pairing-file`. The latter must contain a saved `pairing_id` and

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Execute the real keeper loop and durable display-selection code with host fakes."""
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -194,7 +195,7 @@ def main():
         cloud = (ROOT / "main/hub_cloud.c").read_text()
         types = re.search(r"typedef struct\s*\{[^}]+\}\s*cloud_snapshot_t;", cloud).group()
         body = "const char *hub_cloud_machine_state_json(void) {" + function_body(cloud, "hub_cloud_machine_state_json") + "}"
-        json_dir = Path.home() / "esp/esp-idf/components/json/cJSON"
+        json_dir = Path(os.environ["IDF_PATH"]) / "components/json/cJSON"
         compile_run(directory, "state", STATE.replace("/* TYPES */", types).replace("/* FUNCTIONS */", body),
             ["-I", json_dir, json_dir / "cJSON.c", "-Wno-deprecated-declarations"])
     print("State selection PASS: bounded reconnection recovery, durable scoped confirmations, stale/replay/failure guards")

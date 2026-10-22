@@ -26,6 +26,9 @@ static const uint32_t IDLE_THRESHOLD_MS = 1800000;
 static const uint32_t IDLE_INTERVAL_MS = 3600000;
 static const uint32_t LOCAL_STATE_POLL_MS = 30000;
 static const uint32_t CONNECTION_RECOVERY_INTERVAL_MS = 60000;
+static const uint32_t SCALE_INTERVAL_MS = 30000;
+static const uint32_t SCALE_BUSY_RETRY_MS = 5000;
+static const uint32_t SCALE_RETRY_INTERVALS_MS[] = {60000, 120000, 240000, 300000};
 
 #define HUB_STATE_KEEPER_NOTIFY_TOUCH BIT0
 #define HUB_STATE_KEEPER_NOTIFY_RECOVERY BIT1
@@ -143,6 +146,9 @@ static void hub_state_keeper_task(void *arg)
     size_t cold_attempt = 0;
     int64_t last_attempt_ms = 0;
     bool was_snapshot_ready = false;
+    int64_t scale_observed_ms = 0;
+    int64_t scale_retry_due_ms = 0;
+    size_t scale_failures = 0;
 
     while (true) {
         if (hub_state_process_pending_slow_cloud_read()) {
@@ -186,6 +192,44 @@ static void hub_state_keeper_task(void *arg)
         }
         bool due = initial_attempt || recovery || now >= next_due_ms;
         if (!due) {
+            if (status.scale_observed_ms != scale_observed_ms) {
+                scale_observed_ms = status.scale_observed_ms;
+                if (scale_observed_ms > 0) {
+                    scale_retry_due_ms = 0;
+                    scale_failures = 0;
+                }
+            }
+            bool scale_eligible = snapshot_ready
+                && (status.is_connected || hub_ble_has_cached_state());
+            if (scale_eligible) {
+                int64_t scale_due_ms = scale_observed_ms > 0
+                    ? scale_observed_ms + SCALE_INTERVAL_MS : now;
+                if (scale_retry_due_ms > scale_due_ms) {
+                    scale_due_ms = scale_retry_due_ms;
+                }
+                if (now >= scale_due_ms) {
+                    // Reuse the keeper only between full refreshes; controls retain IO priority.
+                    esp_err_t err = hub_cloud_refresh_scale();
+                    uint32_t retry_ms = SCALE_INTERVAL_MS;
+                    if (err == ESP_ERR_INVALID_STATE) {
+                        retry_ms = SCALE_BUSY_RETRY_MS;
+                    } else if (err != ESP_OK) {
+                        size_t last = sizeof(SCALE_RETRY_INTERVALS_MS)
+                            / sizeof(SCALE_RETRY_INTERVALS_MS[0]) - 1;
+                        retry_ms = SCALE_RETRY_INTERVALS_MS[scale_failures];
+                        if (scale_failures < last) {
+                            scale_failures++;
+                        }
+                    } else {
+                        scale_failures = 0;
+                    }
+                    scale_retry_due_ms = now_ms() + retry_ms;
+                    continue;
+                }
+                if (scale_due_ms < next_due_ms) {
+                    next_due_ms = scale_due_ms;
+                }
+            }
             uint32_t wait_ms = (uint32_t)(next_due_ms - now);
             if (wait_ms > LOCAL_STATE_POLL_MS) {
                 wait_ms = LOCAL_STATE_POLL_MS;

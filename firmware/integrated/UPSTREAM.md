@@ -14,12 +14,17 @@ authenticated OTA and read-only diagnostics tools. Excluded: App/Watch projects,
 private device configuration, credentials/certificates, hardware logs, binary
 images, commercial planning and armed Secure Boot/eFuse provisioning tools.
 
-Runtime files retain their imported behavior. Publication adaptations are the
+The initial publication retained the imported runtime behavior. Its adaptations were the
 public documentation, a complete offline-test entry point using the configured
 ESP-IDF path, an explicit official ESP-IDF 5.5.4 build requirement for public
 CI, and profile-specific
 NVS generation (0x15000 for touchscreen, 0x6000 for headless). These tooling
 changes do not alter the application running on the already-tested device.
+
+Subsequent local maintenance fixes the shared scale-state cache: fresh control
+reads publish accessory observations, a bounded keeper read refreshes them, and
+stale/missing values become unknown. This deliberately diverges from the archived
+runtime and has local regression/build evidence only until hardware acceptance.
 
 The nested `integrated/` directory retains its original layout deliberately so
 the deployed source, imports and upstream patches can be compared directly.
@@ -36,4 +41,4 @@ reviewed differences; see [the port matrix](../../docs/UPSTREAM.md).
 For subsequent imports, review the source range, preserve all local credential,
 deadline and no-replay guards, run both offline suites and both integrated
 profiles, and update this source pin. A new public build has a new build ID;
-the source build's one-cup result does not certify that new binary or all boards.
+the source build's cup results do not certify that new binary or all boards.

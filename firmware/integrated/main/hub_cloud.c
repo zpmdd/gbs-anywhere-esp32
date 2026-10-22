@@ -129,6 +129,7 @@ typedef struct {
     bool thing_scale_connected;
     bool scale_battery_level_set;
     double scale_battery_level;
+    int64_t scale_observed_ms;
     bool scale_calibration_required_set;
     bool scale_calibration_required;
     char scale_name[64];
@@ -3140,7 +3141,7 @@ static void parse_thing_scale(cJSON *output, cloud_snapshot_t *parsed)
 
     double value = 0;
     cJSON *battery_level = cJSON_GetObjectItemCaseSensitive(output, "batteryLevel");
-    if (json_item_to_double(battery_level, &value)) {
+    if (json_item_to_double(battery_level, &value) && isfinite(value) && value >= 0 && value <= 100) {
         parsed->scale_battery_level = value;
         parsed->scale_battery_level_set = true;
     }
@@ -3207,6 +3208,10 @@ static esp_err_t parse_dashboard_snapshot(
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    if (!cJSON_IsObject(root) || !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(root, "widgets"))) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     const char *response_serial = json_optional_string(root, "serialNumber");
     if (response_serial[0] != '\0' && strcmp(response_serial, expected_serial_number) != 0) {
         cJSON_Delete(root);
@@ -3272,8 +3277,95 @@ static esp_err_t parse_dashboard_snapshot(
     struct tm tm = {0};
     gmtime_r(&now, &tm);
     strftime(parsed->last_updated, sizeof(parsed->last_updated), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    if (parsed->bbw_scale_connected_set || parsed->thing_scale_connected_set) {
+        parsed->scale_observed_ms = esp_timer_get_time() / 1000;
+    }
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+static bool scale_snapshot_fresh(const cloud_snapshot_t *current, int64_t now)
+{
+    return current->connected && current->scale_observed_ms > 0
+        && now >= current->scale_observed_ms && now - current->scale_observed_ms < 60000;
+}
+
+static bool publish_scale_snapshot(const cloud_snapshot_t *observed)
+{
+    hub_machine_selection_identity_t target = {.generation = observed->selection_generation};
+    snprintf(target.serial_number, sizeof(target.serial_number), "%s", observed->serial_number);
+    if (!hub_config_machine_selection_matches(&target)) return false;
+    portENTER_CRITICAL(&snapshot_lock);
+    bool matches = cached_snapshot && snapshot.selection_generation == target.generation
+        && strcmp(snapshot.serial_number, target.serial_number) == 0;
+    if (matches) {
+        // Replace missing fields too; a successful read must not renew an older accessory value.
+        snapshot.bbw_scale_connected_set = observed->bbw_scale_connected_set;
+        snapshot.bbw_scale_connected = observed->bbw_scale_connected;
+        snapshot.thing_scale_connected_set = observed->thing_scale_connected_set;
+        snapshot.thing_scale_connected = observed->thing_scale_connected;
+        snapshot.scale_battery_level_set = observed->scale_battery_level_set;
+        snapshot.scale_battery_level = observed->scale_battery_level;
+        snapshot.scale_calibration_required_set = observed->scale_calibration_required_set;
+        snapshot.scale_calibration_required = observed->scale_calibration_required;
+        snprintf(snapshot.scale_name, sizeof(snapshot.scale_name), "%s", observed->scale_name);
+        snapshot.scale_observed_ms = observed->scale_observed_ms;
+        snapshot.connected = observed->connected;
+    }
+    portEXIT_CRITICAL(&snapshot_lock);
+    return matches;
+}
+
+esp_err_t hub_cloud_refresh_scale(void)
+{
+    if (hub_command_interactive_pending() || cloud_command_is_waiting()) return ESP_ERR_INVALID_STATE;
+    hub_machine_selection_identity_t target = {0};
+    if (hub_config_get_machine_selection_identity(&target) != ESP_OK) return ESP_ERR_INVALID_STATE;
+    ESP_RETURN_ON_ERROR(ensure_refresh_mutex(), TAG, "Scale refresh mutex unavailable");
+    if (xSemaphoreTake(refresh_mutex, 0) != pdTRUE) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    hub_cloud_settings_t *settings = NULL;
+    installation_key_t *key = NULL;
+    cloud_tokens_t *tokens = NULL;
+    http_response_t response = {0};
+    int status_code = 0;
+    int64_t started_us = esp_timer_get_time();
+    if (hub_command_interactive_pending() || cloud_command_is_waiting()) goto cleanup;
+    settings = heap_caps_calloc(1, sizeof(*settings), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    key = heap_caps_calloc(1, sizeof(*key), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    tokens = heap_caps_calloc(1, sizeof(*tokens), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!settings || !key || !tokens) { err = ESP_ERR_NO_MEM; goto cleanup; }
+    err = load_cloud_context(settings, key, tokens);
+    if (err != ESP_OK) { (void)hub_cloud_request_refresh(); goto cleanup; }
+    if (!hub_config_machine_selection_matches(&target)) { err = ESP_ERR_INVALID_STATE; goto cleanup; }
+    if (hub_command_interactive_pending() || cloud_command_is_waiting()) { err = ESP_ERR_INVALID_STATE; goto cleanup; }
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+        < CLOUD_READONLY_MIN_INTERNAL_BLOCK_BYTES) { err = ESP_ERR_NO_MEM; goto cleanup; }
+    char url[160];
+    snprintf(url, sizeof(url), "%s/things/%s/dashboard", CUSTOMER_APP_URL, target.serial_number);
+    // One GET, no retries or discovery; keep the shared TLS path available for controls.
+    err = cloud_http_request_no_retry(url, HTTP_METHOD_GET, key, tokens->access_token,
+                                    NULL, &response, &status_code, CLOUD_READONLY_HTTP_TIMEOUT_MS);
+    if (status_code == 401 || status_code == 403) {
+        invalidate_cached_tokens();
+        (void)hub_cloud_request_refresh();
+    }
+    if (err == ESP_OK && status_code != 200) err = ESP_ERR_INVALID_RESPONSE;
+    if (err == ESP_OK) {
+        cloud_snapshot_t previous = {0}, observed = {0};
+        char name[HUB_CONFIG_MAX_MACHINE_NAME_LEN + 1];
+        err = parse_dashboard_snapshot(response.data, target.serial_number, target.generation,
+                                       &previous, &observed, name, sizeof(name));
+        if (err == ESP_OK && !publish_scale_snapshot(&observed)) err = ESP_ERR_INVALID_STATE;
+    }
+cleanup:
+    record_readonly_http_diag(READONLY_DIAG_DASHBOARD, err, status_code,
+        (int)((esp_timer_get_time() - started_us) / 1000), response.len, http_response_first_bytes(&response));
+    hub_http_response_reset(&response);
+    free_cloud_context(settings, key, tokens);
+    cloud_readonly_io_unlock();
+    return err;
 }
 
 static esp_err_t cloud_fetch_dashboard(
@@ -3594,6 +3686,7 @@ void hub_cloud_get_snapshot_status(hub_cloud_snapshot_status_t *out)
     out->is_ready = snapshot_usable && current.connected && has_complete_bbw;
     out->refresh_pending = cloud_refresh_pending_snapshot();
     out->last_refresh_ms = last_refresh_ms;
+    out->scale_observed_ms = snapshot_usable ? current.scale_observed_ms : 0;
     out->dose1 = current.dose1;
     out->dose2 = current.dose2;
 }
@@ -4141,6 +4234,7 @@ static esp_err_t read_control_snapshot_locked(
     if (err == ESP_OK && !hub_config_machine_selection_matches(&target)) {
         err = ESP_ERR_INVALID_STATE;
     }
+    if (err == ESP_OK) (void)publish_scale_snapshot(out);
     record_readonly_http_diag(
         READONLY_DIAG_DASHBOARD, err, status_code,
         (int)((esp_timer_get_time() - started_us) / 1000), response.len, 0
@@ -4963,16 +5057,19 @@ const char *hub_cloud_machine_state_json(void)
     if (current.bbw_mode[0] != '\0') {
         snprintf(bbw_mode, sizeof(bbw_mode), "\"%s\"", current.bbw_mode);
     }
-    if (current.bbw_scale_connected_set) {
+    bool scale_fresh = scale_snapshot_fresh(&current, esp_timer_get_time() / 1000);
+    bool scale_online = current.bbw_scale_connected_set ? current.bbw_scale_connected
+        : current.thing_scale_connected_set && current.thing_scale_connected;
+    if (scale_fresh && current.bbw_scale_connected_set) {
         snprintf(scale_connected, sizeof(scale_connected), "%s", current.bbw_scale_connected ? "true" : "false");
     }
-    if (current.thing_scale_connected_set) {
+    if (scale_fresh && current.thing_scale_connected_set) {
         snprintf(thing_scale_connected, sizeof(thing_scale_connected), "%s", current.thing_scale_connected ? "true" : "false");
     }
-    if (current.scale_battery_level_set) {
+    if (scale_fresh && scale_online && current.scale_battery_level_set) {
         snprintf(scale_battery_level, sizeof(scale_battery_level), "%.0f", current.scale_battery_level);
     }
-    if (current.scale_calibration_required_set) {
+    if (scale_fresh && scale_online && current.scale_calibration_required_set) {
         snprintf(
             scale_calibration_required,
             sizeof(scale_calibration_required),
@@ -4980,7 +5077,7 @@ const char *hub_cloud_machine_state_json(void)
             current.scale_calibration_required ? "true" : "false"
         );
     }
-    if (current.scale_name[0] != '\0') {
+    if (scale_fresh && current.scale_name[0] != '\0') {
         char escaped_scale_name[64] = {0};
         json_safe_copy(escaped_scale_name, sizeof(escaped_scale_name), current.scale_name);
         snprintf(scale_name, sizeof(scale_name), "\"%s\"", escaped_scale_name);
@@ -5010,6 +5107,7 @@ const char *hub_cloud_machine_state_json(void)
         "\"scaleConnected\":%s,"
         "\"thingScaleConnected\":%s,"
         "\"scaleBatteryLevel\":%s,"
+        "\"scaleObservedMs\":%lld,"
         "\"scaleCalibrationRequired\":%s,"
         "\"scaleName\":%s,"
         "\"activeDose\":\"dose1\","
@@ -5043,6 +5141,7 @@ const char *hub_cloud_machine_state_json(void)
         scale_connected,
         thing_scale_connected,
         scale_battery_level,
+        (long long)current.scale_observed_ms,
         scale_calibration_required,
         scale_name,
         current.prebrew_mode[0] != '\0' ? current.prebrew_mode : "Disabled",

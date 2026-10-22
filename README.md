@@ -10,7 +10,7 @@ The [integrated firmware](docs/INTEGRATED.md) now also runs the Hub, native
 touchscreen and guarded coffee-machine controls on that same ESP32-S3. After
 grinding, it can match the current recipe's target in the ordinary grinder CSV
 export and set the coffee-machine weight during puck preparation. One complete
-20 g -> 30 g cup passed on the source build; see the
+cup in each direction, 20 g -> 30 g and 30 g -> 20 g, passed on the source build; see the
 [field report and limits](docs/RECIPE_FOLLOW_ACCEPTANCE.md).
 
 Not affiliated with Mahlkönig or Hemro.

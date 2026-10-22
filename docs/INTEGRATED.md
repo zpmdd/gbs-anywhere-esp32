@@ -113,6 +113,34 @@ client that does not print tokens or passwords.
 | `POST /diagnostics/grinder/recipe-probe` | Read-only historical log match by `grindUuid`, while idle; does not set machine weight or prove a new-cup flow. |
 | `GET /diagnostics/display` and `GET /diagnostics/display/frame` | Touch/display diagnostics and actual RGB565 framebuffer; no remote touch injection. |
 
+### Scale observations
+
+`/machine/state` exposes optional `scaleConnected`, `thingScaleConnected`,
+`scaleBatteryLevel`, `scaleCalibrationRequired` and `scaleName` alongside
+`scaleObservedMs`. The timestamp is milliseconds since **this ESP boot**, not
+Unix time; zero means no valid connection observation. Compare it with the same
+device's uptime and never carry it across reboot or machine selection.
+
+The shared keeper makes one Dashboard GET every 30 seconds while a complete
+machine snapshot is available and Cloud or local BLE indicates connectivity.
+Full refresh and token renewal retain their existing schedule. Control preflight
+reads publish scale fields immediately without renewing temperature or preset
+freshness. GET `/machine/state` itself does no Cloud IO.
+
+Observations expire at 60 seconds. Missing/invalid connection fields, an offline
+machine or expired observations produce `null` scale values instead of a stale
+online/offline claim. Battery and calibration are shown only for a fresh connected
+scale; battery must be finite and within 0..100. The two connection fields retain
+their separate upstream meanings, with BBW connection taking precedence for
+battery availability. This is Cloud-observed state, not direct scale telemetry.
+
+The refresh uses the existing shared IO owner, one HTTP attempt with a 4-second
+timeout, PSRAM context allocation and internal-heap admission. Pending controls
+defer it; busy retries wait 5 seconds and other failures back off from 60 to 300
+seconds. An already-started GET can finish before a newly arriving command.
+These changes are locally validated source; power-on/off hardware acceptance
+requires a separately authorized firmware update.
+
 Recipe following is opt-in. After successful `brewAccept` of a fresh grind,
 the worker performs one Owner-authenticated ordinary log export. It validates
 ZIP sizes/CRC, streams the CSV and uniquely matches the task's `grind_uuid`,

@@ -22,6 +22,7 @@ python tools/test_command_coordinator.py
 python tools/test_quick_weight_control.py
 python tools/test_integrated_support.py
 python tools/test_state_selection.py
+python tools/test_scale_state.py
 python tools/test_display_preview.py
 python tools/test_recipe_log.py
 python tools/test_recipe_follow.py

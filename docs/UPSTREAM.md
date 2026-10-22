@@ -19,6 +19,10 @@ new upstream Generic WiFi field. It uses the authenticated grinder web export,
 exact task UUID matching and existing Hub command guards. The root lightweight
 firmware does not gain coffee-machine controls through a parser-only update.
 
+The scale-cache publication check fetched upstream again on 2026-10-22; main
+remained `ebaac65`, with no new delta to port. The cache fix belongs to the
+integrated Hub and does not change the Generic WiFi protocol or feedback rules.
+
 The integrated runtime source and its import pin are recorded in
 [`firmware/integrated/UPSTREAM.md`](../firmware/integrated/UPSTREAM.md).
 Both applications build from this public checkout. Keep reviewing relevant

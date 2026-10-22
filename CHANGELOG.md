@@ -2,6 +2,14 @@
 
 ## Unreleased - 2026-10-22
 
+- Fix integrated scale-state caching: publish fresh control preflight readings,
+  refresh the accessory through one bounded Dashboard GET every 30 seconds while
+  the machine is available, and expire observations after 60 seconds. Missing
+  fields stay unknown; foreground controls retain priority, failures back off,
+  and low internal memory postpones background reads. No device update is included.
+- Add the reverse 30 g -> 20 g real cup on `c88791b2`: 20.1 g / 25.053 s,
+  acknowledged grinder feedback, 192 successful samples and normal user completion.
+  Each direction has one successful cup; repeated alternation remains open.
 - Publish the complete integrated ESP32-S3 Hub, grinder and optional touchscreen
   application in `firmware/integrated`. A clone of this public repository now
   contains the runtime source needed for the integrated feature set; no private
@@ -19,8 +27,8 @@
   `c88791b2`: 30.2 g / 27.696 s, acknowledged feedback and user-confirmed physical
   adjustment. Publishing or rebuilding this source is not another hardware test.
 - Add integrated CI and board-specific first-install NVS sizing. Production
-  security certification, reliable live extraction-start protection, reverse
-  20 g following, E80, outages and endurance remain open.
+  security certification, reliable live extraction-start protection, scale-state
+  hardware acceptance, E80, outages and endurance remain open.
 
 ## 0.2.1 - 2026-10-17
 

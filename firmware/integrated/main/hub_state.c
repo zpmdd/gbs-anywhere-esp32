@@ -727,6 +727,7 @@ const char *hub_state_machine_state_json(void)
         "\"brewByWeightDose2\":null,"
         "\"brewByWeightMode\":null,"
         "\"scaleConnected\":null,"
+        "\"scaleObservedMs\":0,"
         "\"thingScaleConnected\":null,"
         "\"scaleBatteryLevel\":null,"
         "\"scaleCalibrationRequired\":null,"

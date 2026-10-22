@@ -165,6 +165,7 @@ static bool json_optional_bool(cJSON *j,const char *key) { return cJSON_IsTrue(c
 #define parse_steam_level(...) ((void)0)
 #define parse_prebrew(...) ((void)0)
 #define parse_thing_scale(...) ((void)0)
+static int64_t esp_timer_get_time(void) { return 1000000; }
 /* FUNCTIONS */
 int main(void) {
     const char *connections[]={"true","false","null"};
@@ -209,7 +210,7 @@ typedef struct { char access_token[1]; } cloud_tokens_t;
 typedef struct { int parsed; } cloud_snapshot_t;
 typedef struct { char *data; size_t len; } http_response_t;
 struct cJSON { int unused; };
-static int calls,scenario,invalidations;
+static int calls,scenario,invalidations,publishes;
 static int64_t clock_ms;
 static bool rebound;
 static int64_t esp_timer_get_time(void) { return clock_ms*1000; }
@@ -224,6 +225,7 @@ static void record_readonly_http_diag(int k,esp_err_t e,int s,int d,size_t n,int
 static bool cloud_http_retryable_error(esp_err_t e) { return e==ESP_ERR_HTTP_CONNECT||e==ESP_ERR_HTTP_FETCH_HEADER||e==ESP_ERR_TIMEOUT; }
 static void invalidate_cached_tokens(void) { ++invalidations; }
 static void schedule_command_auth_recovery(const hub_cloud_command_attempt_t *a) { (void)a; }
+static bool publish_scale_snapshot(const cloud_snapshot_t *s) { assert(s->parsed==1&&!rebound);++publishes;return true; }
 static cJSON *cJSON_Parse(const char *s) { static cJSON j;return s?&j:NULL; }
 static void cJSON_Delete(cJSON *j) { (void)j; }
 static const char *json_optional_string(cJSON *j,const char *key) { assert(j&&!strcmp(key,"serialNumber"));return scenario==7?"OTHER":"SYNTHETIC"; }
@@ -242,7 +244,7 @@ static esp_err_t cloud_http_request_no_retry(const char *url,int method,const in
 /* FUNCTIONS */
 int main(void) {
     for(scenario=0;scenario<8;++scenario) {
-        calls=invalidations=0;rebound=false;clock_ms=1000;
+        calls=invalidations=publishes=0;rebound=false;clock_ms=1000;
         hub_command_deadline_t d={.enforced=true,.client_ttl_present=true,.client_ttl_ms=scenario==4?3000:8000};
         assert(hub_command_deadline_accept(&d,clock_ms));
         cloud_snapshot_t out;
@@ -250,6 +252,7 @@ int main(void) {
         assert(calls==((scenario==1||scenario==2)?2:1));
         assert((error==ESP_OK)==(scenario<2));
         assert(out.parsed==(scenario<2)&&invalidations==(scenario==3));
+        assert(publishes==(scenario<2));
         assert(clock_ms<d.deadline_at_ms);
     }
     calls=0;cloud_snapshot_t out;

@@ -44,6 +44,7 @@ typedef struct {
     bool is_ready;
     bool refresh_pending;
     int64_t last_refresh_ms;
+    int64_t scale_observed_ms;
     double dose1, dose2;
 } hub_cloud_snapshot_status_t;
 
@@ -55,6 +56,8 @@ typedef struct {
 } hub_cloud_websocket_auth_t;
 
 esp_err_t hub_cloud_refresh(void);
+// Bounded accessory read on the existing keeper/Cloud IO path.
+esp_err_t hub_cloud_refresh_scale(void);
 esp_err_t hub_cloud_request_refresh(void);
 uint32_t hub_cloud_refresh_request_generation(void);
 void hub_cloud_complete_refresh_request(uint32_t generation);

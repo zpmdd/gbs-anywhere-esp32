@@ -22,13 +22,16 @@ KEEPER = r'''
 #include <assert.h>
 #include <setjmp.h>
 #include <stddef.h>
+#include <string.h>
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 #define pdMS_TO_TICKS(x) (x)
 static jmp_buf stop;
-static int64_t clock_ms, stop_ms, ble_after, refresh_times[32];
-static int refreshes;
-static bool cloud_online, recover_cloud;
+static int64_t clock_ms, stop_ms, ble_after, refresh_times[32], scale_times[64];
+static int64_t observed_ms, control_observation_ms, token_due_ms;
+static int refreshes, scale_reads;
+static esp_err_t scale_errors[64];
+static bool cloud_online, recover_cloud, complete_snapshot, full_observes_scale, scale_observes;
 static int64_t now_ms(void) { return clock_ms; }
 static bool hub_wifi_station_has_ip(void) { return true; }
 static bool hub_ble_has_cached_state(void) { return clock_ms >= ble_after; }
@@ -40,25 +43,47 @@ static void extend_active_window(void) {}
 static void hub_state_keeper_request_recovery(void) { assert(false); }
 static void vTaskDelay(uint32_t ms) { clock_ms+=ms; }
 static int xTaskNotifyWait(uint32_t a,uint32_t b,uint32_t *bits,uint32_t ms) {
-    (void)a;(void)b;(void)bits;assert(ms<=30000);
-    clock_ms+=ms; if(clock_ms>stop_ms)longjmp(stop,1); return 0;
+    (void)a;(void)b;(void)bits;assert(ms>0&&ms<=30000);
+    if(control_observation_ms>clock_ms&&control_observation_ms<=clock_ms+ms) {
+        clock_ms=control_observation_ms;observed_ms=clock_ms;control_observation_ms=0;
+    } else clock_ms+=ms;
+    if(clock_ms>stop_ms)longjmp(stop,1);
+    return 0;
 }
 void hub_cloud_get_snapshot_status(hub_cloud_snapshot_status_t *s)
-{ *s=(hub_cloud_snapshot_status_t){.has_cached_snapshot=true,.has_complete_bbw=true,.is_connected=cloud_online}; }
-int64_t hub_cloud_token_renewal_due_ms(void) { return 0; }
+{ *s=(hub_cloud_snapshot_status_t){.has_cached_snapshot=true,.has_complete_bbw=complete_snapshot,
+    .is_connected=cloud_online,.scale_observed_ms=observed_ms}; }
+int64_t hub_cloud_token_renewal_due_ms(void) { return token_due_ms; }
 uint32_t hub_cloud_refresh_request_generation(void) { return 0; }
 void hub_cloud_complete_refresh_request(uint32_t ticket) { (void)ticket; }
 bool hub_cloud_refresh_is_running(void) { return false; }
 esp_err_t hub_cloud_refresh(void) {
     assert(refreshes<32); refresh_times[refreshes++]=clock_ms;
     if(recover_cloud&&hub_ble_has_cached_state()) cloud_online=true;
+    if(full_observes_scale)observed_ms=clock_ms;
+    if(token_due_ms&&clock_ms>=token_due_ms)token_due_ms=0;
     return ESP_OK;
 }
+esp_err_t hub_cloud_refresh_scale(void) {
+    assert(scale_reads<64);
+    // A due token refresh always runs before a competing scale read.
+    assert(!token_due_ms||clock_ms<token_due_ms);
+    scale_times[scale_reads]=clock_ms;
+    esp_err_t err=scale_errors[scale_reads++];
+    if(err==ESP_OK)observed_ms=scale_observes?clock_ms:0;
+    return err;
+}
 /* FUNCTIONS */
-static void run(bool online,bool recover,int64_t local_after) {
-    clock_ms=1000;stop_ms=350000;refreshes=0;
+static void setup(bool online,bool recover,int64_t local_after) {
+    clock_ms=1000;stop_ms=350000;refreshes=scale_reads=0;
+    observed_ms=control_observation_ms=token_due_ms=0;
+    complete_snapshot=full_observes_scale=scale_observes=true;
+    memset(scale_errors,0,sizeof(scale_errors));
     cloud_online=online;recover_cloud=recover;ble_after=local_after;
-    if(!setjmp(stop))hub_state_keeper_task(NULL);
+}
+static void execute(void) { if(!setjmp(stop))hub_state_keeper_task(NULL); }
+static void run(bool online,bool recover,int64_t local_after) {
+    setup(online,recover,local_after);execute();
 }
 int main(void) {
     assert(ready_interval_ms(100,1,300000,false)==600000);
@@ -67,10 +92,44 @@ int main(void) {
     run(false,true,150000);
     assert(refreshes==2&&cloud_online&&refresh_times[1]>=150000&&refresh_times[1]<=180000);
     run(false,false,0);
-    assert(refreshes==6);
+    assert(refreshes==6&&scale_reads>0); // Local machine evidence permits scale refresh.
     for(int i=1;i<refreshes;++i)assert(refresh_times[i]-refresh_times[i-1]==60000);
-    run(false,false,INT64_MAX);assert(refreshes==1); // No fresh local evidence: retain idle policy.
-    run(true,false,0);assert(refreshes==1); // Local polling never floods an online Cloud.
+    run(false,false,INT64_MAX);
+    assert(refreshes==1&&scale_reads==0); // Offline without local evidence stays quiet.
+    setup(true,false,0);complete_snapshot=false;execute();
+    assert(scale_reads==0); // Finish normal machine setup before adding scale reads.
+
+    setup(true,false,0);stop_ms=125000;execute();
+    assert(refreshes==1&&scale_reads==4);
+    for(int i=0;i<scale_reads;++i)assert(scale_times[i]==32000+30000*i);
+
+    setup(true,false,0);stop_ms=125000;control_observation_ms=27000;execute();
+    assert(refreshes==1&&scale_reads==3&&scale_times[0]==57000);
+    for(int i=1;i<scale_reads;++i)assert(scale_times[i]-scale_times[i-1]==30000);
+
+    setup(true,false,0);stop_ms=45000;
+    scale_errors[0]=scale_errors[1]=ESP_ERR_INVALID_STATE;execute();
+    assert(refreshes==1&&scale_reads==3);
+    assert(scale_times[0]==32000&&scale_times[1]==37000&&scale_times[2]==42000);
+
+    setup(true,false,0);stop_ms=1360000;
+    for(int i=0;i<6;++i)scale_errors[i]=ESP_FAIL;
+    execute();assert(refreshes==1&&scale_reads==7);
+    const int64_t expected[]={32000,92000,212000,452000,752000,1052000,1352000};
+    for(int i=0;i<7;++i)assert(scale_times[i]==expected[i]);
+
+    setup(true,false,0);stop_ms=99000;
+    scale_errors[0]=ESP_FAIL;control_observation_ms=40000;execute();
+    assert(scale_reads==2&&scale_times[0]==32000&&scale_times[1]==70000);
+
+    setup(true,false,0);stop_ms=65000;token_due_ms=32000;execute();
+    assert(refreshes==2&&refresh_times[1]==32000);
+    assert(scale_reads==1&&scale_times[0]==62000);
+
+    setup(true,false,0);stop_ms=65000;full_observes_scale=scale_observes=false;execute();
+    assert(scale_reads==3&&scale_times[0]==2000&&scale_times[1]==32000&&scale_times[2]==62000);
+    setup(true,false,0);stop_ms=65000;scale_observes=false;execute();
+    assert(scale_reads==2&&scale_times[0]==32000&&scale_times[1]==62000);
     return 0;
 }
 '''
@@ -162,6 +221,7 @@ esp_err_t hub_config_get_bbw_selection(const hub_machine_selection_identity_t *t
 }
 static void json_safe_copy(char *out,size_t size,const char *in) { snprintf(out,size,"%s",in); }
 const char *hub_cloud_machine_name(void) { return "Synthetic"; }
+static int64_t esp_timer_get_time(void) { return 100000000; }
 /* FUNCTIONS */
 int main(void) {
     for(int i=0;i<2;++i) {
@@ -194,11 +254,11 @@ def main():
             functions(config, ["bbw_selection_valid", "hub_config_get_bbw_selection", "hub_config_save_bbw_selection"])))
         cloud = (ROOT / "main/hub_cloud.c").read_text()
         types = re.search(r"typedef struct\s*\{[^}]+\}\s*cloud_snapshot_t;", cloud).group()
-        body = "const char *hub_cloud_machine_state_json(void) {" + function_body(cloud, "hub_cloud_machine_state_json") + "}"
+        body = functions(cloud, ["scale_snapshot_fresh"]) + "\nconst char *hub_cloud_machine_state_json(void) {" + function_body(cloud, "hub_cloud_machine_state_json") + "}"
         json_dir = Path(os.environ["IDF_PATH"]) / "components/json/cJSON"
         compile_run(directory, "state", STATE.replace("/* TYPES */", types).replace("/* FUNCTIONS */", body),
             ["-I", json_dir, json_dir / "cJSON.c", "-Wno-deprecated-declarations"])
-    print("State selection PASS: bounded reconnection recovery, durable scoped confirmations, stale/replay/failure guards")
+    print("State selection PASS: bounded scale cadence/backoff/token priority, reconnection recovery, durable scoped confirmations, stale/replay/failure guards")
 
 
 if __name__ == "__main__":

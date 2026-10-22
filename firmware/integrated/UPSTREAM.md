@@ -24,7 +24,9 @@ changes do not alter the application running on the already-tested device.
 Subsequent local maintenance fixes the shared scale-state cache: fresh control
 reads publish accessory observations, a bounded keeper read refreshes them, and
 stale/missing values become unknown. This deliberately diverges from the archived
-runtime and has local regression/build evidence only until hardware acceptance.
+runtime. Source `975ebc5`, build `b923fa91`, subsequently passed an authorized
+1.69-inch OTA and one physical scale off/on/off cycle. Its [acceptance record](../../docs/SCALE_STATE_ACCEPTANCE.md)
+does not extend to a new-build cup, long-duration operation or other boards.
 
 The nested `integrated/` directory retains its original layout deliberately so
 the deployed source, imports and upstream patches can be compared directly.

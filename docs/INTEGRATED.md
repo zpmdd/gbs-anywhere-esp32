@@ -138,8 +138,9 @@ The refresh uses the existing shared IO owner, one HTTP attempt with a 4-second
 timeout, PSRAM context allocation and internal-heap admission. Pending controls
 defer it; busy retries wait 5 seconds and other failures back off from 60 to 300
 seconds. An already-started GET can finish before a newly arriving command.
-These changes are locally validated source; power-on/off hardware acceptance
-requires a separately authorized firmware update.
+An authorized 1.69-inch OTA and physical off/on/off cycle passed on build
+`b923fa91`; see the [exact-build acceptance record](SCALE_STATE_ACCEPTANCE.md).
+Long-duration operation, hardware fault cases and other-board acceptance remain open.
 
 Recipe following is opt-in. After successful `brewAccept` of a fresh grind,
 the worker performs one Owner-authenticated ordinary log export. It validates
@@ -168,6 +169,7 @@ cd firmware/integrated
 python tools/run_ota_update.py \
   --base-url http://lamabuddy-touch.local:8787 \
   --token-file /private/path/hub-token.txt \
+  --token-line 1 \
   --image build-integrated/lamabuddy_esp32_s3_hub.bin \
   --restart --wait-health
 ```
@@ -184,8 +186,10 @@ Git. No test or build step invokes these tools against a real device.
 
 ## Acceptance and remaining work
 
-One source-build cup passed automatic 20 g -> 30 g following before the lever,
-30.2 g / 27.696 s feedback and observed grinder adjustment. Read the
-[exact-build field report](RECIPE_FOLLOW_ACCEPTANCE.md) before treating a new
-binary as accepted. Reverse 20 g following, headless integrated hardware, E80,
-network faults, endurance and reliable extraction-start protection remain open.
+Build `c88791b2` passed one automatic-follow cup in each direction: 20 g -> 30 g
+and 30 g -> 20 g. The first cup also had user-confirmed pre-lever selection and
+physical grinder adjustment. Build `b923fa91` later passed OTA and a physical
+scale off/on/off cycle, without a new cup. Read the separate
+[cup report](RECIPE_FOLLOW_ACCEPTANCE.md) and [scale report](SCALE_STATE_ACCEPTANCE.md).
+New-build cups, repeated alternation, integrated-headless/other-board hardware,
+E80, network faults, endurance and reliable extraction-start protection remain open.

@@ -66,9 +66,9 @@ normally.
 During this cup, cached machine state still reported `scaleConnected: false`
 despite the user confirming scale connection and the valid measured result.
 That stale status is a separate defect: this cup does not validate the subsequent
-cache correction, which passed local regressions and both integrated build
-profiles and has not been installed on the device. Live scale power-on/off
-status acceptance remains open.
+cache correction. The later `b923fa91` OTA and physical scale off/on/off cycle
+passed in a [separate acceptance session](SCALE_STATE_ACCEPTANCE.md), without
+making another cup. Both cups in this report remain evidence for `c88791b2` only.
 
 ## Memory and transaction bounds
 
@@ -103,12 +103,11 @@ records the original automatic-follow milestone and its limitations.
 
 ## Still open
 
-1. Repeated alternating-handle tests beyond the single successful cup in each
-   direction.
+1. A real cup on the newer `b923fa91` scale-cache build, then repeated
+   alternating-handle tests beyond the single successful cup in each direction.
 2. Network/Cloud faults, cancellation timing and long-duration coexistence.
 3. A reliable real-time extraction-start input. The current timer check is not
    a proven physical extraction lock; wait for confirmed target selection.
 4. Integrated headless hardware, E80 and other boards/firmware versions.
-5. Scale connection-cache correction on hardware, scale-off selection retained
-   at scale power-on, complete client agreement, physical schedule edit/readback
-   and production security gates.
+5. Scale-off selection retained at scale power-on, complete client agreement,
+   physical schedule edit/readback and production security gates.

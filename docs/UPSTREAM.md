@@ -22,6 +22,9 @@ firmware does not gain coffee-machine controls through a parser-only update.
 The scale-cache publication check fetched upstream again on 2026-10-22; main
 remained `ebaac65`, with no new delta to port. The cache fix belongs to the
 integrated Hub and does not change the Generic WiFi protocol or feedback rules.
+The subsequent OTA/scale acceptance documentation publication fetched both
+remotes again on the same date. Companion main contained PR #3 (`4529319`), and
+Rust upstream remained `ebaac65`; no additional upstream port was needed.
 
 The integrated runtime source and its import pin are recorded in
 [`firmware/integrated/UPSTREAM.md`](../firmware/integrated/UPSTREAM.md).

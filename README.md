@@ -1,303 +1,161 @@
-# gbs-anywhere ESP32-S3 companion (experimental)
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.de.md">Deutsch</a>
+</p>
 
-[![ESP32-S3 CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
+# gbs-anywhere ESP32-S3
 
-Run E65/E80 Generic WiFi feedback and La Marzocco cloud polling on a USB-powered
-ESP32-S3, without leaving a computer or NAS running. The grinder calculates the
-adjustment; this firmware reports the measured shot time and weight.
+**Your grinder, espresso machine and coffee workflow — on one ESP32-S3.**
 
-The [integrated firmware](docs/INTEGRATED.md) now also runs the Hub, native
-touchscreen and guarded coffee-machine controls on that same ESP32-S3. After
-grinding, it can match the current recipe's target in the ordinary grinder CSV
-export and set the coffee-machine weight during puck preparation. One complete
-cup in each direction, 20 g -> 30 g and 30 g -> 20 g, passed on the source build; see the
-[field report and limits](docs/RECIPE_FOLLOW_ACCEPTANCE.md).
-The later scale-cache build passed an authorized 1.69-inch OTA and one physical
-off -> on -> off cycle; see [its separate acceptance record](docs/SCALE_STATE_ACCEPTANCE.md).
+[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-53694d)](LICENSE)
+[![Platform: ESP32-S3](https://img.shields.io/badge/platform-ESP32--S3-53694d)](docs/COMPATIBILITY.md)
+[![Status: experimental](https://img.shields.io/badge/status-experimental-b78c50)](docs/PROGRESS.md)
 
-Not affiliated with Mahlkönig or Hemro.
+<picture>
+  <source media="(max-width: 640px)" srcset="docs/images/project-cover-mobile.png">
+  <img src="docs/images/project-cover.png" alt="Native AMOLED control surface, rendered with synthetic demo data.">
+</picture>
 
-This is a separate ESP-IDF C application. Its protocol and cloud authentication
-are ported from [merged PR15](https://github.com/Skamba/gbs-anywhere/pull/15) and
-[PR16 at ba00c92](https://github.com/Skamba/gbs-anywhere/pull/16), with thanks to
-Skamba and erikp152. It is licensed under the repository's AGPL-3.0-or-later
-[license](LICENSE). ESP-IDF and its bundled libraries supply WiFi, TLS,
-HTTP, JSON, cryptography, NVS and the USB console; no Rust runtime is required
-on the board. This companion repository is maintained separately from the
-[desktop application](https://github.com/Skamba/gbs-anywhere). It was split from
-[PR18](https://github.com/Skamba/gbs-anywhere/pull/18); see [NOTICE](NOTICE) for provenance.
+Run Mahlkönig Generic WiFi grinder feedback and La Marzocco Cloud integration
+without an always-on computer, container or NAS. Choose a compact headless
+bridge or an integrated touchscreen with coffee-machine controls, recipe
+following and LAN updates. A computer is needed for initial setup and pairing.
 
-PR15 was merged on 2026-10-17. Initial pairing must use an upstream version
-containing its recovery and lost-accept fixes. Protocol compatibility was last
-reviewed through main `ebaac65` on 2026-10-22; see
-[the comparison and intentional differences](docs/UPSTREAM.md).
-This is an independent C port: upstream Rust changes are reviewed and ported,
-not merged wholesale. The companion's version numbers are independent.
+**[Get started](#getting-started)** · **[Compatible hardware](docs/COMPATIBILITY.md)** · **[Screen gallery](docs/GALLERY.md)** · **[Validation & roadmap](docs/PROGRESS.md)**
 
-## Choose a firmware
+> Experimental, with field-tested workflows on named builds. Internet access
+> and La Marzocco Cloud are required. The grinder decides whether to adjust;
+> an acknowledged result does not guarantee a physical grind change.
 
-| Build | Source and hardware | Role |
-| --- | --- | --- |
-| Lightweight companion | Repository root, 8 MB flash / 8 MB PSRAM | Existing grinder feedback bridge; default root build. |
-| External-Hub touchscreen preview | Repository root, `GBS_TOUCHSCREEN=ON`, 16 MB Waveshare 1.69-inch | Earlier display client that connects to another Hub. See [its guide](docs/TOUCHSCREEN.md). |
-| **Integrated touchscreen** | `firmware/integrated`, `touchscreen`, 16 MB / 8 MB PSRAM Waveshare 1.69-inch | Hub, grinder, approved native UI, recipe following and LAN OTA on one board. USB-C on the right. |
-| **Integrated headless** | `firmware/integrated`, `headless`, 8 MB flash / 8 MB PSRAM | Same Hub/grinder core without display tasks. Local build evidence; separate physical acceptance still needed. |
+## A cup, from grind to feedback
 
-For the complete single-device workflow, start with
-[integrated build, setup and update instructions](docs/INTEGRATED.md).
-The remaining instructions on this page describe the lightweight companion.
-Cloud access is required for machine controls and measured coffee results;
-other ESP chips, pinouts and memory configurations need their own verified profile.
+| Step | What happens |
+| --- | --- |
+| **1 · Grind** | The ESP accepts a fresh GbS task from the paired grinder. |
+| **2 · Sync the recipe** | Integrated firmware matches the current grind in the grinder's ordinary CSV export and applies the target beverage weight during puck preparation. |
+| **3 · Brew** | You pull the shot after checking the target. The machine/scale supplies measured time and beverage weight to Cloud. |
+| **4 · Send feedback** | The ESP reports that measured result to the grinder and shows whether delivery was acknowledged. |
 
-## Supported setup
+The lightweight build handles feedback without recipe or machine controls.
+[How the integrated application works →](docs/INTEGRATED.md)
 
-- ESP32-S3 with **8 MB flash and 8 MB octal PSRAM**, native USB Serial/JTAG.
-  Other boards and memory layouts have not been validated.
-- ESP-IDF **5.5**, with its Python environment, a host C compiler and Node.js
-  **18 or later** for the offline tests. Node is not needed on the board.
-- One E65/E80 Generic WiFi grinder, with a reserved **IPv4 address**.
-  E65W was used for the precursor's hardware test; E80 remains untested.
-- One La Marzocco cloud integration. Multiple machines on an account require
-  `serial` in the imported settings. Internet access and SNTP are required.
-- **Measured beverage weight** must be present in the cloud coffee record.
-  Missing weight is skipped; this port does not substitute recipe weight.
+## Built for daily coffee
 
-The default headless profile has no E64 server, manual shot-entry form, Half
-Decent Scale integration, new-pairing wizard, OTA, Bluetooth or device-control
-page. A computer is needed once for initial pairing, provisioning and flashing.
+| Feature | What you get |
+| --- | --- |
+| **Grinder linkage** | Fresh-task detection, measured shot feedback, monitor/active modes, reconnect diagnostics and a persistent no-replay journal. |
+| **Coffee controls** | Quick beverage weights, coffee temperature, steam levels, Brew-by-Weight doses/mode, prebrew, power and smart standby on the integrated profile. |
+| **Recipe following** | Target selection from the current grind's recipe, manual cancellation and distinct pending, completed and unknown outcomes. |
+| **Native interface** | LVGL screens, large numerals, color plus icons, cup details, coffee history and existing-schedule editing. |
+| **AMOLED battery sessions** | Scale battery inside one icon, separate device battery, retained history across shutdown, warm-up estimates, optional rotation, physical buttons and audible milestones. |
+| **Updates & diagnostics** | Authenticated LAN OTA, cached diagnostics and framebuffer preview on integrated builds. Application OTA preserves NVS configuration. |
 
-An optional [native touchscreen preview](docs/TOUCHSCREEN.md) adds a 240 x 280
-LVGL interface and an offline Mac/SDL simulator. It is a separate experimental
-16 MB build profile with an optional HTTPS v2 connection to an existing LamaBuddy
-Hub for dual temperatures, smart weight presets, steam, BBW editing, prebrew,
-power and smart standby. Its code and synthetic contracts are locally validated;
-live Hub and physical display
-acceptance remain pending. The 8 MB headless build remains the default.
-See [development progress and remaining work](docs/PROGRESS.md) for implemented
-features, validation evidence, hardware gates and the later feature backlog.
+AMOLED-specific features are available on the
+[`codex/amoled-216-local-adaptation` branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation).
+Its source is public; it has not yet been merged into `main`.
 
-Clone this companion before following the setup or Docker migration steps:
+## See the interface
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/amoled-link.png" width="400" alt="Native linkage detail showing a recipe synchronized from 20 to 30 grams"><br><strong>Recipe & linkage</strong></td>
+    <td align="center"><img src="docs/images/amoled-history.png" width="400" alt="Native coffee history list with measured shot weights and durations"><br><strong>Coffee history</strong></td>
+  </tr>
+</table>
+
+These are screenshots from the compiled LVGL renderer, with **synthetic demo
+data** and Chinese screen labels. They are not hardware photographs or proof
+of a new field test. [More screens, browser UI and image provenance →](docs/GALLERY.md)
+
+## Choose your hardware
+
+### ESP32-S3 boards
+
+| Board / build | Display · flash / PSRAM | Source | Evidence |
+| --- | --- | --- | --- |
+| **Waveshare ESP32-S3-Touch-LCD-1.69** · integrated | 240 × 280 · 16 MB / 8 MB | `main`, `touchscreen` | Physical touch, recipe-follow cups in both directions, OTA and scale-state cycle. |
+| **Waveshare ESP32-S3-Touch-AMOLED-2.16** · integrated | 480 × 480 · 16 MB / 8 MB | [AMOLED branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation), `amoled216` | Physical rotation/touch, PWR cycles, battery retention and cups; latest display-fix cup still pending. |
+| **ESP32-S3, no display** · lightweight | 8 MB / 8 MB octal | `main`, root application | Feedback-port hardware evidence; exact-build limits apply. |
+| **ESP32-S3, no display** · integrated | 8 MB / 8 MB octal | `main`, `headless` | Local build checks; dedicated physical acceptance pending. |
+| **1.69-inch external-Hub preview** | 240 × 280 · 16 MB / 8 MB | `main`, root `GBS_TOUCHSCREEN=ON` | Simulator/client validation; needs a separate Hub. |
+
+### Grinder, machine and scale
+
+| Device | Compatibility here |
+| --- | --- |
+| **Mahlkönig E65W GbS** | Real-cup feedback and integrated recipe following have field evidence. Generic WiFi pairing is required. |
+| **E65T / E80W / E80T GbS** | Same Generic WiFi protocol family; not field-validated by this ESP32 project. |
+| **La Marzocco Linea Mini R** | Field setup for controls, Cloud cup results and Brew-by-Weight workflow. |
+| **Machine-paired Brew-by-Weight scale** | Measured cups come through the machine/Cloud. AMOLED retains observed battery history; this is not direct scale-to-ESP pairing. |
+| **E64 WS / other machines** | Not implemented or independently validated here. The upstream desktop supports a different E64 WS path. |
+
+Board images are not interchangeable. See the
+[complete compatibility and feature matrix](docs/COMPATIBILITY.md) before choosing a build.
+
+## Getting started
+
+1. **Choose a profile** in the compatibility matrix and install its ESP-IDF toolchain.
+2. **Pair once** with the upstream desktop's supported E65/E80 flow, save the
+   integration and export the private configuration.
+3. **Stop the previous client.** One grinder identity must have one active owner.
+4. **Build and provision** using the matching guide. Fresh imports start in monitor mode.
+5. **Wait for readiness**, then test a new cup and verify the target before brewing.
+
+| Your goal | Start here |
+| --- | --- |
+| One device with controls and a 1.69-inch LCD | [Integrated build, provisioning and OTA](docs/INTEGRATED.md) |
+| Battery-powered 2.16-inch AMOLED | [AMOLED branch, build and field status](docs/AMOLED216.md) |
+| A small feedback bridge with browser status | [Lightweight companion setup](docs/COMPANION.md) |
+| A display connected to an existing Hub | [External-Hub preview](docs/TOUCHSCREEN.md) |
+
+For the integrated LCD build, from a clone with ESP-IDF **5.5.4** installed:
 
 ```sh
 git clone https://github.com/zpmdd/gbs-anywhere-esp32.git
 cd gbs-anywhere-esp32
+. "$HOME/esp/esp-idf/export.sh"
+cd firmware/integrated
+sh tools/check-integrated.sh
+sh tools/build-integrated.sh touchscreen
 ```
 
-## Migrating from Docker
+These commands build and test. Follow the board-specific guide for backup,
+initial provisioning and installation. Later application OTA uses the existing
+configuration; it is not a first-install NVS import.
 
-Keep the running ESP32 disconnected while pairing or preparing the desktop
-setup. Before exporting, **add and save exactly one La Marzocco cloud integration
-in the desktop app**. Integrations supplied only with `--la-marzocco-*` flags
-(or their environment-variable equivalents) are not saved in the settings file.
-An export without a saved integration causes `provision.py` to report
-`Exactly one La Marzocco integration is required`.
+## Languages
 
-After cloning this repository, stop the container and export both files into
-the ignored private directory. The usual Docker settings path is
-`/data/gbs-anywhere.json`; the default pairing file beside it is
-`/data/grinder-pairing.json`. Replace the container name or paths if customized:
+| Surface | Available languages |
+| --- | --- |
+| **Project overview** | [English](README.md), [简体中文](README.zh-CN.md), [Deutsch](README.de.md) |
+| **Lightweight browser status UI** | English, Deutsch, Français, Italiano, 日本語, 한국어, 简体中文, 繁體中文 |
+| **Native LCD / AMOLED UI** | Chinese labels in the current implementation. The eight browser translations do not apply to the native screens. |
+| **Technical guides** | English; contributions and translation corrections are welcome. |
 
-```sh
-umask 077
-mkdir -p .private/import
-docker stop gbs-anywhere
-docker cp gbs-anywhere:/data/gbs-anywhere.json .private/import/gbs-anywhere.json
-docker cp gbs-anywhere:/data/grinder-pairing.json .private/import/grinder-pairing.json
-chmod 600 .private/import/gbs-anywhere.json .private/import/grinder-pairing.json
-```
+The browser follows your preferred language, remembers manual selection and
+ships translations inside the firmware. No translation service is needed.
 
-`docker cp` works with a stopped container. Keep its data volume as a backup.
-The settings file contains credentials: do not commit or share either export.
-Pass these two paths as `--cloud-config` and `--pairing-file` in the setup below;
-the exported pairing identity is reused. Keep the container stopped while the
-ESP32 is active, and stop other clients on computers or a NAS too. A container
-restart policy may start it again when Docker or the host restarts, so confirm
-it remains stopped before each takeover. The local port check cannot discover
-another host.
+## Validation, limits and contributing
 
-## One-time setup
+- [LCD recipe following: one cup in each direction](docs/RECIPE_FOLLOW_ACCEPTANCE.md)
+- [LCD scale-state OTA and physical off/on/off cycle](docs/SCALE_STATE_ACCEPTANCE.md)
+- [AMOLED build-specific validation and remaining checks](docs/AMOLED216.md#validation-status-2026-10-23)
+- [Progress, open work and source boundaries](docs/PROGRESS.md)
+- [Contributing and reporting a hardware result](CONTRIBUTING.md)
 
-1. Follow the upstream [E65/E80 setup](https://github.com/Skamba/gbs-anywhere#set-up-an-e65e80-gbs)
-   using a version containing PR15's recovery fixes to complete pairing and add
-   La Marzocco cloud. This includes the three-minute silent period after an
-   unanswered pairing check on V01.36. Retain the files passed to `--config` and
-   `--grinder-pairing-file`. The latter must contain a saved `pairing_id` and
-   `brew_device_id`. A file with `pairing_id: null` and only `refused_pairing_id`
-   is not ready to import: finish pairing/recovery in the desktop app, then export
-   again. If pairing is cleared, Generic WiFi must be enabled again.
-2. Stop every desktop/container/test client that contacts this grinder. Keep
-   Generic WiFi enabled, select group head 1, and enable GbS on the recipe.
-   The ESP32 takes over the existing identity; it must not share it with another
-   active client. Stop the ESP32 before performing any future pairing procedure,
-   including during the grinder's three-minute recovery period.
-3. Export the grinder's certificate as PEM from its HTTPS connection using a
-   trusted local connection. Verify it belongs to your grinder. Keep this file
-   outside the repository; pass its path as `--grinder-cert`. It is stored in
-   private NVS configuration, not compiled into the public firmware. Certificate
-   trust is checked; hostname matching is skipped only for this grinder's
-   self-signed certificate. The cloud uses ESP-IDF's public CA bundle and normal
-   hostname verification. Redirects are disabled for both clients.
-4. Activate ESP-IDF and prepare configuration (example paths and address):
+This development firmware has no production Secure Boot / Flash Encryption
+certification. Protect NVS backups and credentials, use a trusted LAN and keep
+only one active bridge for a paired grinder. Endurance, outages and untested
+models remain open; a build or CI pass is not hardware acceptance.
 
-   ```sh
-   . "$HOME/esp/esp-idf/export.sh"
-   python tools/provision.py \
-     --cloud-config /path/to/gbs-anywhere.json \
-     --pairing-file /path/to/grinder-pairing.json \
-     --grinder 192.168.1.20 \
-     --grinder-cert /path/to/grinder.pem
-   ```
+## Credits & license
 
-   Enter the 2.4 GHz WiFi SSID and password at the prompts. The tool imports the
-   cloud credentials and derives the same installation identity as the desktop
-   integration. It writes a private `.private/config-nvs.bin` and makes no network
-   requests. It requires `cryptography` and `esp_idf_nvs_partition_gen` from the
-   ESP-IDF environment. `--reuse-wifi` reuses the local private WiFi settings.
-5. Build and test:
+An independent C / ESP-IDF companion to
+[Skamba/gbs-anywhere](https://github.com/Skamba/gbs-anywhere), with protocol work
+from Skamba, erikp152 and contributors. It is maintained separately from the
+Rust desktop application; their feature sets and version numbers differ.
 
-   ```sh
-   sh tools/check.sh
-   idf.py build
-   ```
-
-6. For a dedicated board whose contents you have backed up, flash the application
-   and then the initial NVS image. Replace `/dev/ttyACM0` with your board's port:
-
-   ```sh
-   idf.py -p /dev/ttyACM0 flash
-   python -m esptool --chip esp32s3 --port /dev/ttyACM0 \
-     write_flash 0x9000 .private/config-nvs.bin
-   ```
-
-   Reset once after provisioning. Initial mode is `monitor`. Reflashing the NVS
-   image resets configuration, mode and the task journal. **For later application
-   updates, use `idf.py flash` only and retain NVS.** The partition layout is fixed:
-   NVS `0x9000`/`0x16000`, PHY `0x1f000`, application `0x20000`/4 MB.
-
-## Verify and take over
-
-Read the status page at the address printed on USB, or record the USB console:
-
-```sh
-python tools/serial_log.py --port /dev/ttyACM0 --command status
-```
-
-The status page and `/api/state` are read-only and refresh every three seconds.
-They report connection, memory and shot status, but never return credentials.
-The page supports English, German, French, Italian, Japanese, Korean, Simplified
-Chinese and Traditional Chinese. It follows the browser's language preferences;
-the language selector overrides this and remembers the choice in that browser.
-Numbers, units, task states and outcomes are localized. Raw diagnostic strings remain available alongside the localized explanations.
-The JSON/USB interface preserves existing fields and adds per-link diagnostics. Translations are embedded in the
-firmware, so there is no external translation service or runtime dependency.
-The summary and connection badges use both text and color: green means ready or
-healthy, amber means waiting/reconnecting, blue means a shot is in progress or the
-bridge is in monitor mode, and red means attention is required. A failed page
-request replaces cached connection badges with Unknown. The page also shows the
-last delivered measurement, cloud coffee timestamp and remaining shot timeout.
-
-Grinder and cloud errors are tracked independently. A successful response clears
-that link's current error, while Connection details retains its last error,
-failure time and recovery time for this boot. Task-delivery errors remain separate:
-a recovered connection does not claim that an earlier result was delivered. HTTP
-status, operation and ESP-IDF error are retained without credentials or cloud
-response bodies. Diagnostics are in RAM and reset on an S3 restart.
-
-Monitor mode reads the grinder/cloud without accepting tasks or reporting results.
-Wait for WiFi, cloud and grinder to be connected before activating:
-
-```sh
-python tools/serial_log.py --port /dev/ttyACM0 --command 'mode active'
-```
-
-The helper checks local listeners at **80** (the usual Docker port) and **8089**
-(the usual desktop port). `--desktop-port 8888` adds another local port without
-removing those two checks. If any checked port is open, or its status cannot be
-determined, activation is refused before USB is opened. Any service on a checked
-port blocks activation, even if it is unrelated to gbs-anywhere; stop it before
-activating. This check cannot find services on another computer, an unlisted port,
-or a NAS: stopping all other clients remains your responsibility. The USB
-console also accepts `status`, `mode monitor`, and `mode active` directly.
-Mode is persisted. Wait for `status` to confirm the requested mode.
-
-After the grinder is switched on each day, wait for the green Ready summary
-before grinding. It can be mechanically ready before its network API responds.
-Ordinary connection failures retry after 2, 4, then at most 5 seconds, instead of
-increasing to a minute while the grinder is off. These are waits between requests,
-not a guaranteed recovery time: request timeouts and cloud calls add latency.
-Pairing refusals sustained for 60 seconds instead show an action-required message
-and check once a minute. A timeout or another response interrupts that refusal
-period. The saved pairing is never erased or recreated automatically.
-
-For each cup, grind with the GbS recipe, then pull the shot. The bridge queries
-jobs about every two seconds and cloud coffee every three seconds while waiting
-(60 seconds while idle; network calls can delay these intervals). After delivery,
-verify the time/weight on the grinder and its adjustment. Once configured, supply
-USB power from a charger; the computer is not part of the runtime path.
-
-To return to the desktop client, set `mode monitor`, confirm it, and disconnect
-power from the ESP32 before starting the desktop client. Monitor mode still sends
-read requests and must not run during initial pairing/recovery.
-
-## Delivery behavior
-
-Only new valid cloud records after the job baseline are eligible. The newest
-invalid record advances the watermark so an older valid cup cannot be substituted.
-The firmware keeps a bounded 32-job journal and timestamp watermark in NVS,
-records a job before accepting it, skips existing jobs at startup/takeover, and
-abandons an interrupted job after a reboot. This favors skipping a cup over
-replaying it. NVS failures disable further result delivery.
-
-A relisted current job is accepted again. A newer job cancels the old one before
-being taken. An unanswered brew times out after 180 seconds. Explicit
-`ClientErrorOngoingJobNotExisting` replies permit reaccepting and resending the
-same event while that task remains listed. Delivery expires when the grinder
-explicitly reports that the ongoing job is missing and the next job list does not
-contain it. An empty job list alone cannot distinguish a taken job from a missing
-one. After a lost accept reply, a pending result can therefore still be reported;
-an accept response saying the job is no longer listed is treated as possibly taken
-until `brewDone` says otherwise. An ambiguous `brewDone` transport failure becomes `delivery_unknown`
-and is not automatically replayed. These choices differ from the desktop's
-recipe-weight fallback and broader result retry behavior.
-
-## Security and validation limits
-
-This development build has no Secure Boot or Flash Encryption. The imported
-passwords and private signing key are stored in NVS; protect the board, `.private/`,
-NVS images and flash backups. Private files are excluded from Git and created with
-owner-only permissions on the supported POSIX host. The status page is unauthenticated
-and exposes coffee/device status to the local network; keep it on a trusted LAN.
-
-The precursor of this port completed four ESP32-S3 → La Marzocco cloud → E65W
-real-shot feedback cycles with the desktop service stopped. The first has a
-complete serial/API trace and an operator-observed grind adjustment. Three
-subsequent cups were recovered from the grinder's database after the recorder
-had ended; each has one result attached to its own grind, and the operator saw
-adjustments for the first two of those cups. The third result was received and
-stored without a visible adjustment. Successful delivery does not guarantee
-motor movement: the grinder decides whether to adjust.
-
-Versions 0.2.0 and 0.2.1 passed board upgrades, normal-boot recovery and live
-status-page checks while preserving configuration and task records. The 0.2.1
-application update also had byte-for-byte NVS readback verification. A real cup
-on 0.2.1 still needs validation; precursor results do not establish that behavior.
-See [the validation record](docs/UPSTREAM.md#validation) for the current boundary.
-Long-duration operation, real token expiry and all outage scenarios remain unverified.
-
-`tools/check.sh` runs the pure C protocol/coffee/journal tests with ASan/UBSan,
-upstream installation/proof vectors, malformed configuration tests, actual NVS
-image generation with synthetic credentials/certificate, and serial-helper tests.
-It also checks all eight UI dictionaries, language fallback/persistence, blocked
-browser storage, localized units and startup/offline states with Node's standard
-library. `GBS_NODE` can select the Node executable.
-It does not contact a grinder or the vendor cloud. The actual C worker is also compiled against in-memory services to test daily
-power-on, startup baselines, task reacceptance, lost accept replies, ambiguous
-result delivery, expired tasks, pairing refusals and NVS failure. This does not
-exercise real HTTP/TLS sockets or prove grinder firmware behavior. This firmware is
-an experimental contribution, with a separate build from the desktop Rust CI.
-
-The [companion CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
-runs these offline checks and builds the ESP32-S3 application using Espressif's
-[ESP-IDF CI action](https://github.com/espressif/esp-idf-ci-action) with ESP-IDF 5.5.
-It does not flash hardware or publish a firmware release. Build success is not
-hardware acceptance.
+**AGPL-3.0-or-later.** See [LICENSE](LICENSE), [NOTICE](NOTICE) and
+[upstream review notes](docs/UPSTREAM.md). LVGL, Noto Sans CJK, Inter, Tabler
+Icons and board components retain their own licenses. Not affiliated with
+Mahlkönig, Hemro, La Marzocco or Waveshare.

@@ -1,11 +1,29 @@
 # Development progress
 
-Updated 2026-10-22. The complete integrated firmware is published in this
+Updated 2026-10-23. The complete integrated firmware is published in this
 repository; the original lightweight and external-Hub display builds remain
 available. This update records both directions of real-cup recipe following,
 followed by the authorized 1.69-inch OTA and scale off/on/off acceptance. All
 variants remain experimental. This documentation publication performs no new
 device access or update.
+
+## AMOLED adaptation and project overview
+
+The 480 x 480 AMOLED adaptation is public on
+[`codex/amoled-216-local-adaptation`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation).
+It has not yet been merged into `main`; this documentation update publishes
+its overview and synthetic screenshots without changing the runtime on `main`.
+The [compatibility matrix](COMPATIBILITY.md) identifies the source and evidence
+for each board. [English](../README.md), [Chinese](../README.zh-CN.md) and
+[German](../README.de.md) introductions share the same feature boundaries.
+
+The AMOLED work adds optional rotation with matched touch, battery-session
+behavior, retained scale battery history, compact boiler warm-up estimates and
+clearer per-node cues. Real cups and audio were accepted on `f8b54b1a`;
+`211d2963` then corrected manual-weight display precedence after a completed cup
+and passed local UI, OTA and startup checks. Its physical consecutive-cup
+selection and the next natural cold-start boiler estimates remain pending.
+See the [exact-build status](AMOLED216.md#validation-status-2026-10-23).
 
 ## Latest milestone: one device and automatic recipe following
 

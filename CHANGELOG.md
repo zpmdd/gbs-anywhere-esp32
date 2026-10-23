@@ -1,5 +1,16 @@
 # Changelog
 
+## Documentation - 2026-10-23
+
+- Reorganize the project overview around the coffee workflow, native screenshots,
+  feature summaries and board/model compatibility.
+- Add Chinese and German introductions, a screenshot gallery and contributor guide.
+- Move detailed lightweight setup into a focused companion guide; preserve the
+  existing integrated and hardware-acceptance instructions.
+- Identify the AMOLED development branch explicitly and distinguish native-screen
+  language support, browser translations and build-specific field evidence.
+
+
 ## Unreleased - 2026-10-22
 
 - Record the authorized 1.69-inch OTA of source `975ebc5`, build `b923fa91`,

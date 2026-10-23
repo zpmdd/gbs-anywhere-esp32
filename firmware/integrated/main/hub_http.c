@@ -2575,7 +2575,7 @@ static esp_err_t grinder_recipe_probe_handler(httpd_req_t *req)
 static esp_err_t display_diagnostics_handler(httpd_req_t *req)
 {
     if(require_authorized(req)!=ESP_OK) return ESP_OK;
-    char body[512];
+    char body[1536];
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
     return gbs_display_diagnostics_json(body,sizeof(body))?hub_routes_send_json(req,body):
         hub_routes_send_service_unavailable(req,"display diagnostics unavailable");
@@ -2592,6 +2592,11 @@ static esp_err_t display_frame_handler(httpd_req_t *req)
     httpd_resp_set_type(req,"application/octet-stream");
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
     httpd_resp_set_hdr(req,"X-Display-Format","RGB565LE");
+    char width[8],height[8];
+    snprintf(width,sizeof(width),"%u",(unsigned)GBS_DISPLAY_WIDTH);
+    snprintf(height,sizeof(height),"%u",(unsigned)GBS_DISPLAY_HEIGHT);
+    httpd_resp_set_hdr(req,"X-Display-Width",width);
+    httpd_resp_set_hdr(req,"X-Display-Height",height);
     esp_err_t err=httpd_resp_send(req,frame,GBS_DISPLAY_FRAME_BYTES);
     free(frame); return err;
 }

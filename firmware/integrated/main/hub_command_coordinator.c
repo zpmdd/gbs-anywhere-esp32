@@ -18,6 +18,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hub_cloud.h"
 #ifdef HUB_GRINDER
 #include "recipe_follow.h"
 #endif
@@ -25,6 +26,7 @@
 #define HUB_COMMAND_COMPLETED_TTL_MS (10LL * 60LL * 1000LL)
 #define HUB_COMMAND_MUTEX_WAIT_MS 100
 #define HUB_COMMAND_WORKER_STACK_BYTES 12288
+#define HUB_COMMAND_IDLE_BACKGROUND_GRACE_MS 10000LL
 
 typedef struct {
     hub_command_request_t request;
@@ -61,6 +63,8 @@ static bool active_target_set;
 static uint32_t active_grinder_recipe;
 static portMUX_TYPE interactive_pending_lock = portMUX_INITIALIZER_UNLOCKED;
 static size_t interactive_pending_count;
+static bool manual_interactive_completed;
+static int64_t manual_interactive_completed_ms;
 
 static int64_t now_ms(void)
 {
@@ -183,6 +187,30 @@ bool hub_command_interactive_pending(void)
     bool pending = interactive_pending_count > 0;
     portEXIT_CRITICAL(&interactive_pending_lock);
     return pending;
+}
+
+bool hub_command_idle_background_deferred(void)
+{
+    portENTER_CRITICAL(&interactive_pending_lock);
+    bool pending = interactive_pending_count > 0;
+    bool completed = manual_interactive_completed;
+    int64_t completed_ms = manual_interactive_completed_ms;
+    portEXIT_CRITICAL(&interactive_pending_lock);
+    int64_t current_ms = now_ms();
+    return pending || (completed && current_ms >= completed_ms
+        && current_ms - completed_ms < HUB_COMMAND_IDLE_BACKGROUND_GRACE_MS);
+}
+
+static void complete_interactive_request(const hub_command_request_t *request)
+{
+    int64_t completed_ms = now_ms();
+    portENTER_CRITICAL(&interactive_pending_lock);
+    if (interactive_pending_count > 0) interactive_pending_count--;
+    if (request->grinder_recipe_generation == 0) {
+        manual_interactive_completed = true;
+        manual_interactive_completed_ms = completed_ms;
+    }
+    portEXIT_CRITICAL(&interactive_pending_lock);
 }
 
 static uint64_t fingerprint_bytes(uint64_t value, const void *bytes, size_t count)
@@ -613,7 +641,9 @@ static bool process_next(TickType_t wait_ticks)
         portENTER_CRITICAL(&target_guard_lock);
         active_grinder_recipe = item.request.grinder_recipe_generation;
         portEXIT_CRITICAL(&target_guard_lock);
+        hub_cloud_command_timing_begin(item.request.request_id);
         error = hub_control_execute_request(&item.request, &result);
+        hub_cloud_command_timing_end();
         clear_active_target();
         result.queue_delay_ms = (int)(started_ms - item.request.submitted_ms);
     }
@@ -680,7 +710,7 @@ static bool process_next(TickType_t wait_ticks)
         item.completion(item.request.request_id, error, &result, false, item.context);
     }
     if (request_is_interactive_priority(&item.request)) {
-        change_interactive_pending(-1);
+        complete_interactive_request(&item.request);
     }
     return true;
 }
@@ -1223,6 +1253,8 @@ void hub_command_coordinator_reset(void)
     }
     portENTER_CRITICAL(&interactive_pending_lock);
     interactive_pending_count = 0;
+    manual_interactive_completed = false;
+    manual_interactive_completed_ms = 0;
     portEXIT_CRITICAL(&interactive_pending_lock);
     if (!lock_commands()) {
         return;

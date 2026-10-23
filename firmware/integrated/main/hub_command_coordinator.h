@@ -148,5 +148,8 @@ void hub_command_coordinator_reset(void);
 bool hub_command_target_guard_get(hub_machine_selection_identity_t *target);
 bool hub_command_target_guard_matches(void);
 bool hub_command_interactive_pending(void);
+/* Idle-only reads yield while interactive work is pending or for 10 seconds after
+ * a manual interactive completion. This does not cancel an in-flight read. */
+bool hub_command_idle_background_deferred(void);
 bool hub_command_side_effect_allowed(void);
 bool hub_command_requires_online_machine(void);

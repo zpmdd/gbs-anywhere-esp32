@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture device 3's cached recipe targets and cup results without controls."""
+"""Capture cached recipe targets, scale observations and cup results without controls."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -25,6 +25,8 @@ FIELDS = {
     '/machine/state': (
         'connectionState', 'brewByWeightMode', 'brewByWeightDose1',
         'brewByWeightDose2', 'scaleConnected', 'lastUpdated',
+        'thingScaleConnected', 'scaleBatteryLevel', 'scaleObservedMs',
+        'scaleCalibrationRequired',
     ),
 }
 
@@ -84,7 +86,8 @@ def record(base_url, token, output, duration):
     if not 1 <= duration <= 3600:
         raise ValueError('duration_must_be_1_to_3600_seconds')
     health = read(base_url, token, '/health')
-    if health.get('data', {}).get('deviceModel') != 'lamabuddy-esp32s3-touch':
+    if health.get('data', {}).get('deviceModel') not in (
+            'lamabuddy-esp32s3-touch', 'lamabuddy-esp32s3-amoled216'):
         raise RuntimeError('touchscreen_device_not_verified')
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     summary = {'startedAt': utc_now(), 'readOnly': True, 'health': health,

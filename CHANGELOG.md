@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased - 2026-10-22
+## Unreleased - 2026-10-23
+
+- Add the experimental 2.16-inch AMOLED profile with a 480 x 480 interface,
+  USB-C-right orientation, optional automatic rotation, matched touch mapping,
+  physical buttons, battery sessions and authenticated LAN OTA.
+- Prioritize grinder linkage and machine status, followed by quick weights and
+  compact boiler controls. Add independent boiler warm-up estimates using the
+  existing Cloud snapshot.
+- Show scale state and battery in one icon, retain the last valid percentage
+  across disconnection and ESP power cycles, and keep the device's own battery
+  separate. Scale observations never gate quick weights or grinder feedback.
+- Improve display responsiveness and foreground command scheduling; add bounded
+  HTTP connection reuse and per-stage timing without replaying ambiguous writes.
+- Add clear success, failure and neutral cues at cup milestones, with bounded
+  audio queues, duplicate suppression and no startup replay. Preserve valid PMU
+  readings through brief failures without extending their freshness.
+- Fix manual weight feedback after a completed cup so old measurements cannot
+  mask a new setting or appear as a requested preset outline.
+- Record user-accepted cup and audio validation on `f8b54b1a`; the subsequent
+  display fix `211d2963` passed local regression and OTA/startup checks. Physical
+  cross-cup manual selection on that build and cold-start boiler countdowns
+  remain pending. See [AMOLED validation status](docs/AMOLED216.md#validation-status-2026-10-23).
 
 - Publish the complete integrated ESP32-S3 Hub, grinder and optional touchscreen
   application in `firmware/integrated`. A clone of this public repository now

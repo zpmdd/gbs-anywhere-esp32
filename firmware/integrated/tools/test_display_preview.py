@@ -28,19 +28,31 @@ def main():
 
     class Device(BaseHTTPRequestHandler):
         calls = 0
+        frame = b''
+        dimensions = None
         def log_message(self, *args): pass
         def do_GET(self):
             assert self.path == '/diagnostics/display/frame'
             assert self.headers['Authorization'] == 'Bearer synthetic'
             Device.calls += 1
-            self.send_response(200);self.send_header('X-Display-Format','RGB565LE');self.end_headers();self.wfile.write(frame)
+            self.send_response(200);self.send_header('X-Display-Format','RGB565LE')
+            if Device.dimensions:
+                self.send_header('X-Display-Width', str(Device.dimensions[0]))
+                self.send_header('X-Display-Height', str(Device.dimensions[1]))
+            self.end_headers()
+            try: self.wfile.write(Device.frame)
+            except (BrokenPipeError, ConnectionResetError): pass
+    Device.frame = frame
     device = ThreadingHTTPServer(('127.0.0.1',0),Device)
     viewer = ThreadingHTTPServer(('127.0.0.1',0),make_handler(f'http://127.0.0.1:{device.server_port}','synthetic'))
     for server in [device,viewer]: threading.Thread(target=server.serve_forever,daemon=True).start()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     base = f'http://127.0.0.1:{viewer.server_port}'
     try:
-        with opener.open(base+'/') as r: assert b'synthetic' not in r.read()
+        with opener.open(base+'/') as r:
+            page = r.read().decode()
+            assert 'synthetic' not in page and '设备 3' in page
+            assert '240 × 280' in page and '2.16 AMOLED' not in page
         with opener.open(base+'/frame.png') as r: assert r.read()==png and r.headers['Cache-Control']=='no-store'
         for path,headers,data,expected in [('/controls/power',{},b'{}',405),('/diagnostics/restart',{},None,404),('/',{'Host':'untrusted.example'},None,403)]:
             try: opener.open(urllib.request.Request(base+path,headers=headers,data=data))
@@ -49,6 +61,30 @@ def main():
         assert Device.calls==1
     finally:
         for server in [viewer,device]: server.shutdown();server.server_close()
-    print('Display preview PASS: RGB565 fidelity, bounded frames, token isolation and read-only forwarding')
+    Device.frame = b'\x00\xf8\xe0\x07\x1f\x00' + bytes(480 * 480 * 2 - 6)
+    Device.dimensions = (480, 480)
+    device = ThreadingHTTPServer(('127.0.0.1',0),Device)
+    viewer = ThreadingHTTPServer(('127.0.0.1',0),make_handler(f'http://127.0.0.1:{device.server_port}','synthetic',480,480))
+    for server in [device,viewer]: threading.Thread(target=server.serve_forever,daemon=True).start()
+    base = f'http://127.0.0.1:{viewer.server_port}'
+    try:
+        with opener.open(base+'/') as r:
+            page = r.read().decode()
+            assert '<title>LamaBuddy · 2.16 AMOLED 在线画面</title>' in page
+            assert '<h1>2.16 AMOLED<br>在线画面</h1>' in page
+            assert '480 × 480' in page and 'aspect-ratio:1/1' in page
+            assert all(old not in page for old in ('设备 3', '240 × 280', 'height:560px', 'synthetic'))
+        with opener.open(base+'/frame.png') as r:
+            large_png = r.read()
+            assert struct.unpack('>II', large_png[16:24]) == (480, 480)
+            assert large_png == rgb565_png(Device.frame,480,480)
+        for dimensions in [(240,280),None]:
+            Device.dimensions = dimensions
+            try: opener.open(base+'/frame.png')
+            except urllib.error.HTTPError as error: assert error.code == 502
+            else: raise AssertionError('mismatched board metadata accepted')
+    finally:
+        for server in [viewer,device]: server.shutdown();server.server_close()
+    print('Display preview PASS: both profiles, RGB565 fidelity, bounded frames, token isolation and read-only forwarding')
 
 if __name__=='__main__': main()

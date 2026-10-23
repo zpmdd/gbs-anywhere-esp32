@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -10,6 +11,10 @@
 #include "freertos/task.h"
 #include "hub_ble.h"
 #include "hub_cloud.h"
+#ifdef HUB_AMOLED_216
+#include "hub_command_coordinator.h"
+#include "hub_grinder.h"
+#endif
 #include "hub_state.h"
 #include "hub_wifi.h"
 
@@ -117,6 +122,40 @@ static uint32_t ready_interval_ms(int64_t now, int64_t activity_ms, int64_t acti
     return STABLE_INTERVAL_MS;
 }
 
+#ifdef HUB_AMOLED_216
+typedef struct {
+    hub_machine_selection_identity_t binding;
+    bool observed;
+    unsigned attempts;
+    int64_t next_ms;
+} scale_battery_reads_t;
+
+static void scale_battery_tick(scale_battery_reads_t *reads,
+                               const hub_cloud_snapshot_status_t *status, bool cloud_due)
+{
+    hub_machine_selection_identity_t binding = {0};
+    if (hub_config_get_machine_selection_identity(&binding) != ESP_OK) return;
+    int64_t now = now_ms();
+    if (reads->binding.generation != binding.generation
+        || strcmp(reads->binding.serial_number, binding.serial_number)) {
+        *reads = (scale_battery_reads_t){.binding = binding, .next_ms = now + 90000};
+    }
+    // Latch ordinary Dashboard observations before their 60-second freshness expires.
+    if (hub_cloud_has_fresh_scale_battery()
+        && hub_config_machine_selection_matches(&binding)) reads->observed = true;
+    if (cloud_due || reads->observed || reads->attempts >= 2 || now < reads->next_ms) return;
+    if (!status->is_ready || status->refresh_pending || !hub_wifi_station_has_ip()
+        || hub_command_idle_background_deferred() || hub_grinder_busy()) return;
+    bool attempted = false;
+    (void)hub_cloud_refresh_scale(&attempted);
+    if (attempted) ++reads->attempts;
+    reads->next_ms = now_ms() + (attempted ? 90000 : 30000);
+    // An in-flight TLS read cannot be preempted; do not reserve grinder admission.
+    if (hub_cloud_has_fresh_scale_battery()
+        && hub_config_machine_selection_matches(&binding)) reads->observed = true;
+}
+#endif
+
 static void hub_state_keeper_task(void *arg)
 {
     (void)arg;
@@ -143,6 +182,9 @@ static void hub_state_keeper_task(void *arg)
     size_t cold_attempt = 0;
     int64_t last_attempt_ms = 0;
     bool was_snapshot_ready = false;
+#ifdef HUB_AMOLED_216
+    scale_battery_reads_t scale_reads = {0};
+#endif
 
     while (true) {
         if (hub_state_process_pending_slow_cloud_read()) {
@@ -185,6 +227,12 @@ static void hub_state_keeper_task(void *arg)
             next_due_ms = token_due_ms;
         }
         bool due = initial_attempt || recovery || now >= next_due_ms;
+#ifdef HUB_AMOLED_216
+        scale_battery_tick(&scale_reads, &status,
+            due || (token_due_ms > 0 && token_due_ms <= now + 5000));
+        now = now_ms();
+        due = due || now >= next_due_ms;
+#endif
         if (!due) {
             uint32_t wait_ms = (uint32_t)(next_due_ms - now);
             if (wait_ms > LOCAL_STATE_POLL_MS) {

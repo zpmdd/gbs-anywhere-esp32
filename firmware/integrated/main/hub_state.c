@@ -727,6 +727,7 @@ const char *hub_state_machine_state_json(void)
         "\"brewByWeightDose2\":null,"
         "\"brewByWeightMode\":null,"
         "\"scaleConnected\":null,"
+        "\"scaleObservedMs\":0,"
         "\"thingScaleConnected\":null,"
         "\"scaleBatteryLevel\":null,"
         "\"scaleCalibrationRequired\":null,"
@@ -1268,7 +1269,7 @@ const char *hub_state_start_slow_cloud_read_json(const char *kind_name, int days
 
 const char *hub_state_slow_cloud_reads_json(void)
 {
-    static char body[2048];
+    static EXT_RAM_BSS_ATTR char body[6144];
     bool running[3] = {0};
     bool valid[3] = {0};
     int days[3] = {0};
@@ -1316,7 +1317,7 @@ const char *hub_state_slow_cloud_reads_json(void)
         ? "{\"deferred\":true}"
         : hub_cloud_readonly_diagnostics_json();
 
-    snprintf(
+    int written = snprintf(
         body,
         sizeof(body),
         "{"
@@ -1354,6 +1355,7 @@ const char *hub_state_slow_cloud_reads_json(void)
         (unsigned long)success_count[SLOW_CLOUD_READ_FIRMWARE],
         cloud_http_diagnostics
     );
+    if (written < 0 || (size_t)written >= sizeof(body)) return "{\"error\":\"diagnosticsTooLarge\"}";
     return body;
 }
 

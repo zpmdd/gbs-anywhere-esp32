@@ -20,6 +20,7 @@
 #include "hub_config.h"
 #include "hub_wifi.h"
 #include "hub_grinder.h"
+#include "hub_command_coordinator.h"
 #include "hub_version.h"
 #endif
 
@@ -27,6 +28,10 @@ static const char *TAG = "gbs";
 static atomic_bool wifi_online, desired_active;
 // One admission gate prevents an OTA from interrupting or accepting a grinder job.
 static atomic_int admission; // 0 idle, 1 job, 2 maintenance, 3 read-only recipe probe
+bool hub_grinder_busy(void)
+{
+    return atomic_load(&admission) != 0;
+}
 bool hub_grinder_begin_maintenance(void)
 {
     int idle=0;
@@ -50,7 +55,7 @@ void hub_grinder_end_recipe_probe(void)
 #ifndef GBS_WORKER_TEST
 static SemaphoreHandle_t state_mutex;
 static EXT_RAM_BSS_ATTR char state_json[6144];
-static atomic_bool configured;
+static atomic_bool configured, startup_failed;
 #endif
 static nvs_handle_t journal_nvs;
 static gbs_ledger_t ledger;
@@ -98,7 +103,8 @@ static void add_display_state(cJSON *j)
     cJSON_AddNumberToObject(j, "answer_deadline_ms", pending ? answer_deadline_us / 1000 : 0);
     cJSON_AddNumberToObject(j, "grinder_retry_at_ms", next_jobs / 1000);
     cJSON_AddBoolToObject(j, "mode_change_failed", !strcmp(issue, "mode persistence failed"));
-    if (!have_job && !canceled && answer.usable && !strcmp(ledger.last_outcome, "delivery_unknown")) {
+    if (!canceled && answer.usable &&
+        (pending || (!have_job && !strcmp(ledger.last_outcome, "delivery_unknown")))) {
         cJSON_AddNumberToObject(j, "unconfirmed_grams", answer.mass_mg / 1000.0);
         cJSON_AddNumberToObject(j, "unconfirmed_seconds", answer.duration_ms / 1000.0);
     }
@@ -172,6 +178,23 @@ static bool save_ledger(void)
         ESP_LOGE(TAG, "%s; refusing further result delivery", storage_issue);
     }
     return err == ESP_OK;
+}
+
+static void restore_ledger(esp_err_t read_error, size_t size)
+{
+    if (read_error == ESP_ERR_NVS_NOT_FOUND) { memset(&ledger, 0, sizeof(ledger)); ledger.version = 1; }
+    else if (read_error != ESP_OK || size != sizeof(ledger) || !gbs_ledger_valid(&ledger)) {
+        memset(&ledger, 0, sizeof(ledger));
+        storage_ok = false; strcpy(storage_issue, "invalid journal; result delivery disabled");
+    }
+    if (storage_ok && ledger.inflight[0]) {
+        gbs_remember(&ledger, ledger.inflight);
+        strcpy(ledger.last_outcome, "interrupted_by_restart");
+        ledger.inflight[0] = 0; save_ledger();
+    } else if (storage_ok && !strcmp(ledger.last_outcome, "success")) {
+        // Keep the last measurement as history, not a current cup after a cold boot.
+        ledger.last_outcome[0] = 0;
+    }
 }
 
 static void finish_job(const char *outcome)
@@ -389,6 +412,18 @@ static void coffee_tick(void)
     }
 }
 
+static void scheduled_coffee_tick(int64_t *next_cloud)
+{
+    int64_t now = esp_timer_get_time();
+    if (!cloud_initialized || (now < *next_cloud
+        && !(have_job && !pending && *next_cloud > now + 3000000))) return;
+    // Leave an overdue idle read due; live jobs and their baselines do not wait.
+    if (!have_job && !pending && hub_command_idle_background_deferred()) return;
+    coffee_tick();
+    *next_cloud = esp_timer_get_time()
+        + (have_job && !pending ? 3000000 : cloud_health.ok ? 60000000 : 10000000);
+}
+
 #ifndef GBS_WORKER_TEST
 static void apply_mode(void)
 {
@@ -443,11 +478,7 @@ static void worker(void *unused)
             gbs_coffee_t empty = {0};
             prepare_answer(&empty, true); send_answer();
         }
-        // Idle reads refresh the display; pending shots always use the faster cloud poll.
-        if (cloud_initialized && (now >= next_cloud || (have_job && !pending && next_cloud > now + 3000000))) {
-            coffee_tick();
-            next_cloud = esp_timer_get_time() + (have_job && !pending ? 3000000 : cloud_health.ok ? 60000000 : 10000000);
-        }
+        scheduled_coffee_tick(&next_cloud);
         publish(!storage_ok ? "storage_error" : pairing_problem ? "pairing_required" :
                 pending ? "sending" : have_job ? "waiting_for_coffee" :
                 !grinder_health.ok ? "grinder_waiting" : !cloud_health.ok ? "cloud_waiting" : "ready");
@@ -464,6 +495,12 @@ static void worker(void *unused)
 
 bool hub_grinder_state(char *buffer, size_t size)
 {
+    // Failed startup has no worker or writer; report it even if the mutex allocation failed.
+    if (atomic_load(&startup_failed)) {
+        if (!buffer || strlen(state_json) >= size) return false;
+        strcpy(buffer, state_json);
+        return true;
+    }
     if (!state_mutex || !buffer || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
     bool fits = strlen(state_json) < size;
     if (fits) strcpy(buffer, state_json);
@@ -478,42 +515,57 @@ bool hub_grinder_set_active(bool enabled)
     atomic_store(&desired_active,enabled); return true;
 }
 
+static esp_err_t grinder_startup_failure(const char *stage, esp_err_t error)
+{
+    unsigned free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    unsigned largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const char *name = esp_err_to_name(error);
+    // No allocations: this path must remain observable when internal RAM is exhausted.
+    if (state_mutex) xSemaphoreTake(state_mutex, portMAX_DELAY);
+    snprintf(state_json, sizeof(state_json),
+             "{\"phase\":\"startup_failed\",\"startup_stage\":\"%s\",\"startup_error\":\"%s\","
+             "\"startup_internal_free\":%u,\"startup_largest_internal\":%u,"
+             "\"have_job\":false,\"pending\":false,\"baseline_pending\":true,"
+             "\"issue_source\":\"startup\",\"issue\":\"Grinder startup failed: %s (%s)\"}",
+             stage, name, free_internal, largest_internal, stage, name);
+    atomic_store(&configured, false);
+    atomic_store(&desired_active, false);
+    atomic_store(&startup_failed, true);
+    if (state_mutex) xSemaphoreGive(state_mutex);
+    ESP_LOGE(TAG, "startup stage=%s error=%s internal_free=%u largest=%u",
+             stage, name, free_internal, largest_internal);
+    return error;
+}
+
 esp_err_t hub_grinder_start(void)
 {
     state_mutex = xSemaphoreCreateMutex();
-    if (!state_mutex) return ESP_ERR_NO_MEM;
+    if (!state_mutex) return grinder_startup_failure("state_mutex", ESP_ERR_NO_MEM);
     strcpy(state_json,"{\"phase\":\"booting\"}");
     esp_err_t err = gbs_load_config();
     if (err != ESP_OK) {
+        if (err == ESP_ERR_NO_MEM) return grinder_startup_failure("configuration", err);
         strcpy(state_json, "{\"phase\":\"configuration_required\"}");
         ESP_LOGI(TAG, "Grinder not configured; Hub and touchscreen remain available");
         return ESP_OK;
     }
     err = nvs_open("gbs_run", NVS_READWRITE, &journal_nvs);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) return grinder_startup_failure("journal_open", err);
     size_t size = sizeof(ledger);
     err = nvs_get_blob(journal_nvs, "ledger", &ledger, &size);
-    if (err == ESP_ERR_NVS_NOT_FOUND) { memset(&ledger, 0, sizeof(ledger)); ledger.version = 1; }
-    else if (err != ESP_OK || size != sizeof(ledger) || !gbs_ledger_valid(&ledger)) {
-        memset(&ledger, 0, sizeof(ledger));
-        storage_ok = false; strcpy(storage_issue, "invalid journal; result delivery disabled");
-    }
-    if (storage_ok && ledger.inflight[0]) {
-        gbs_remember(&ledger, ledger.inflight);
-        strcpy(ledger.last_outcome, "interrupted_by_restart");
-        ledger.inflight[0] = 0; save_ledger();
-    }
+    restore_ledger(err, size);
     nvs_handle_t settings;
     err = nvs_open("gbs_cfg", NVS_READONLY, &settings);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) return grinder_startup_failure("settings_open", err);
     uint8_t saved = 0;
     err = nvs_get_u8(settings, "active", &saved);
     nvs_close(settings);
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return err;
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return grinder_startup_failure("mode_read", err);
     active = saved == 1; atomic_store(&desired_active, active);
     err = gbs_recipe_follow_init();
-    if (err != ESP_OK) return err;
-    if (xTaskCreate(worker, "hub_grinder", 12288, NULL, 3, NULL) != pdPASS) return ESP_ERR_NO_MEM;
+    if (err != ESP_OK) return grinder_startup_failure("recipe_init", err);
+    if (xTaskCreate(worker, "hub_grinder", 12288, NULL, 3, NULL) != pdPASS)
+        return grinder_startup_failure("worker_task", ESP_ERR_NO_MEM);
     atomic_store(&configured,true);
     return ESP_OK;
 }

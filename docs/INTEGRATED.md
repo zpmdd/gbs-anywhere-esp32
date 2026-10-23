@@ -12,6 +12,15 @@ always-on computer is needed at runtime. La Marzocco Cloud is still required.
 | --- | --- | --- | --- |
 | `touchscreen` | Waveshare ESP32-S3-Touch-LCD-1.69, 16 MB / 8 MB octal | `build-integrated` | `0x15000` |
 | `headless` | ESP32-S3, 8 MB / 8 MB octal | `build-integrated-headless` | `0x6000` |
+| `amoled216` (experimental) | Waveshare ESP32-S3-Touch-AMOLED-2.16, 16 MB / 8 MB octal | `build-integrated-amoled216` | `0x15000` |
+
+The AMOLED profile is a separate 480 x 480 adaptation with CO5300/CST9220,
+AXP2101 power telemetry, QMI8658 orientation and optional short audio cues.
+See [AMOLED local validation and hardware boundaries](AMOLED216.md). Its
+device model is `lamabuddy-esp32s3-amoled216`; it is not a drop-in image for
+the LCD or headless board. Field validation covers rotation/touch, power cycles,
+scale battery retention and real cups; the latest display fix has separate
+local and startup evidence. See the profile's exact-build validation status.
 
 The touchscreen is 240 x 280, with **USB-C on the right**. ST7789 pins are
 DC4/CS5/SCLK6/MOSI7/RST8/BL15; CST816 pins are SDA11/SCL10/RST13/INT14.
@@ -41,6 +50,8 @@ sh tools/check-integrated.sh
 sh tools/build-integrated.sh touchscreen
 # Use this instead for the integrated headless board:
 sh tools/build-integrated.sh headless
+# Compile the new AMOLED board without contacting hardware:
+sh tools/build-integrated.sh amoled216
 ```
 
 `sdkconfig` is scoped to each build directory. The dependency lock is included;
@@ -113,6 +124,35 @@ client that does not print tokens or passwords.
 | `POST /diagnostics/grinder/recipe-probe` | Read-only historical log match by `grindUuid`, while idle; does not set machine weight or prove a new-cup flow. |
 | `GET /diagnostics/display` and `GET /diagnostics/display/frame` | Touch/display diagnostics and actual RGB565 framebuffer; no remote touch injection. |
 
+### Scale observations
+
+`/machine/state` exposes optional `scaleConnected`, `thingScaleConnected`,
+`scaleBatteryLevel`, `scaleCalibrationRequired` and `scaleName` alongside
+`scaleObservedMs`. The timestamp is milliseconds since **this ESP boot**, not
+Unix time; zero means no valid connection observation. Compare it with the same
+device's uptime and never carry it across reboot or machine selection.
+
+The shared keeper retains its original full-refresh and token-renewal schedule;
+there is no additional periodic scale GET. Existing successful Dashboard reads
+and control preflight reads publish scale fields, with control preflight
+publication leaving temperature and preset freshness unchanged. The touchscreen
+still offers a coalesced manual refresh through the existing Cloud owner.
+GET `/machine/state` itself does no Cloud IO. An idle observation can expire
+before the next existing refresh; the UI then shows unavailable or expired data.
+
+Observations expire at 60 seconds. Missing/invalid connection fields, an offline
+machine or expired observations produce `null` scale values instead of a stale
+online/offline claim. Battery and calibration are shown only for a fresh connected
+scale; battery must be finite and within 0..100. The two connection fields retain
+their separate upstream meanings, with BBW connection taking precedence for
+battery availability. This is Cloud-observed state, not direct scale telemetry.
+
+The standalone `hub_cloud_refresh_scale()` API is retained but has no automatic
+caller. Its optional one-GET path still uses the shared IO owner and foreground
+admission checks. Removing the extra scale cadence restores the existing
+scheduling boundary; it does not establish control latency or scale power-state
+acceptance on the current board. Record those results against the installed build.
+
 Recipe following is opt-in. After successful `brewAccept` of a fresh grind,
 the worker performs one Owner-authenticated ordinary log export. It validates
 ZIP sizes/CRC, streams the CSV and uniquely matches the task's `grind_uuid`,
@@ -127,9 +167,41 @@ most 8 seconds per command; the 180-second countdown waits for the shot result.
 Unknown outcomes are not automatically replayed.
 
 There is not yet a reliable live extraction-start signal. **Wait for the target
-weight to be highlighted and recipe synchronization confirmed before pulling
-the lever.** A failed or unconfirmed sync needs the operator to check the weight.
+weight to be highlighted and the recipe command to complete before pulling
+the lever.** A completed successful Cloud command displays `已同步`; it does not
+add an operator verification step or require the scale to be online. A failed or
+unconfirmed sync still needs the operator to check the weight.
 Measured shot time/weight then follow the existing Cloud-to-`brewDone` path.
+
+### Cloud control connections and timing
+
+Guarded BBW mode, dose and paired prebrew settings reuse one HTTPS client for
+their fresh Dashboard read and following write, within the existing command
+lock. Each request has a new signature and the existing deadline; the client
+is released before unlocking. Background reads, authentication and unrelated
+controls retain their existing connection policy. Scoped requests do not
+follow redirects or retry authentication internally. Only the existing
+connect-before-write failure may retry; ambiguous writes are never replayed.
+Scale connection state remains independent of manual Cloud weight settings.
+
+Periodic idle coffee-record reads yield while interactive commands are pending
+and for ten seconds after a manual interactive command finishes. The original
+due time is retained, so an overdue read resumes after the window; deferral is
+not a Cloud failure. Startup and new-job baselines, active-job polling,
+authentication and result delivery keep their existing behavior. This window
+does not interrupt a GET that has already started, so an initial interaction
+can still wait for an in-flight background read.
+
+The protected `/diagnostics/slow-cloud-reads` response includes the last
+executed coordinator command's `cloudHttp.commandTiming`, correlated by
+`requestId` with `/diagnostics/commands?id=...`. It records lock, cooldown,
+heap wait, context, signing, HTTP and local-save timings. Missing stages are
+`null`; at most four HTTP records are retained, with explicit truncation.
+`connectMs`, `headersSentMs` and `firstResponseMs` are milestones measured from
+the start of `perform`, not additive durations. `connectMs` includes DNS/TCP/TLS.
+`reusedHandle` alone does not prove connection reuse: check `connectionEvents`
+and response completion too. Timing does not change terminal command status,
+extend the deadline or establish independent machine-state confirmation.
 
 ## LAN updates and observation
 
@@ -151,6 +223,9 @@ must be reconciled through status, rather than blindly uploading again.
 
 `tools/display_preview.py` reads actual screen pixels and serves a local preview;
 `tools/record_grinder_recipe.py` captures bounded, redacted cached-state samples.
+The recorder retains both scale connection fields, battery percentage and
+`scaleObservedMs` so a stale observation can be distinguished from a fresh
+disconnect. Recording does not trigger a Cloud refresh.
 Use `--help` for their local arguments. Captures and credentials stay outside
 Git. No test or build step invokes these tools against a real device.
 

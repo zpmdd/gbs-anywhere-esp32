@@ -5,6 +5,7 @@ gbs_config_t gbs_config;
 static int64_t now_us;
 static bool brewing, interactive, download_fail, download_busy, cancel_during_download, completed;
 static unsigned downloads, commands;
+static uint8_t saved_follow=1;
 static hub_cloud_snapshot_status_t snapshot;
 static hub_command_request_t captured;
 static esp_err_t completion_error;
@@ -17,7 +18,7 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t m, TickType_t t) { (void)m; (void)t;
 BaseType_t xSemaphoreGive(SemaphoreHandle_t m) { (void)m; return pdTRUE; }
 esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *out) { (void)name; (void)mode; *out = 1; return ESP_OK; }
 void nvs_close(nvs_handle_t n) { (void)n; }
-esp_err_t nvs_get_u8(nvs_handle_t n, const char *key, uint8_t *value) { (void)n; (void)key; *value = 1; return ESP_OK; }
+esp_err_t nvs_get_u8(nvs_handle_t n, const char *key, uint8_t *value) { (void)n; assert(!strcmp(key,"recipe_follow")); *value = saved_follow; return ESP_OK; }
 esp_err_t nvs_set_u8(nvs_handle_t n, const char *key, uint8_t value) { (void)n; (void)key; (void)value; return ESP_OK; }
 esp_err_t nvs_get_str(nvs_handle_t n, const char *key, char *out, size_t *size) { (void)n; (void)key; (void)out; *size = 5; return ESP_OK; }
 esp_err_t nvs_set_str(nvs_handle_t n, const char *key, const char *value) { (void)n; (void)key; (void)value; return ESP_OK; }
@@ -51,6 +52,7 @@ hub_command_lookup_status_t hub_command_lookup(const char *id, esp_err_t *err, h
 }
 static void reset(void)
 {
+    saved_follow=1;
     now_us = 1000000; brewing = interactive = download_fail = download_busy = cancel_during_download = completed = false;
     downloads = commands = 0; completion_error = ESP_OK; completion_result = (hub_control_result_t){.ok = true};
     snapshot = (hub_cloud_snapshot_status_t){.has_cached_snapshot = true, .has_complete_bbw = true,
@@ -58,8 +60,24 @@ static void reset(void)
     strcpy(gbs_config.serial, "selected-machine");
     assert(gbs_recipe_follow_init() == ESP_OK); gbs_recipe_follow_begin(ID);
 }
+static void cold_boot(void)
+{
+    // A cold boot zeroes RAM; only the enable preference is read from NVS.
+    atomic_store(&enabled,false); atomic_store(&permit_until_ms,0); atomic_store(&job_generation,0);
+    probe_mutex=NULL; probe_requested[0]=job_uuid[0]=command_id[0]=0;
+    attempted=probe=false; memset(&match,0,sizeof(match)); phase="disabled";
+    bytes=elapsed_ms=0; last_error=ESP_OK; probe_requested_us=0;
+    snapshot=(hub_cloud_snapshot_status_t){0};
+    now_us=1000000; downloads=commands=0;
+    assert(gbs_recipe_follow_init()==ESP_OK);
+    assert(!gbs_recipe_follow_can_write()&&!gbs_recipe_follow_generation_can_write(1));
+    assert(!strcmp(phase,saved_follow?"ready":"disabled"));
+    gbs_recipe_follow_tick(true); gbs_recipe_follow_tick(false);
+    assert(!downloads&&!commands&&!job_uuid[0]&&!command_id[0]);
+}
 int main(void)
 {
+    cold_boot(); // Restoring an enabled preference alone cannot submit a weight.
     reset(); gbs_recipe_follow_tick(false); assert(!downloads && !commands);
     gbs_recipe_follow_tick(true); assert(downloads == 1 && commands == 1);
     assert(captured.grinder_recipe_generation && captured.deadline.enforced && captured.kind == HUB_COMMAND_BBW_MODE);
@@ -71,6 +89,14 @@ int main(void)
     gbs_recipe_follow_tick(true); assert(downloads == 1 && commands == 1);
     reset(); snapshot.dose2 = 40; gbs_recipe_follow_tick(true);
     assert(captured.kind == HUB_COMMAND_QUICK_WEIGHT && captured.value.quick_weight.require_no_stored_match && captured.value.quick_weight.grams == 30);
+    cold_boot(); // A pre-cut pending quick-weight and its permit are not persisted or replayed.
+    gbs_recipe_follow_begin(ID); gbs_recipe_follow_tick(true);
+    assert(!commands&&downloads==1&&!strcmp(phase,"machine_unavailable"));
+    snapshot=(hub_cloud_snapshot_status_t){.has_cached_snapshot=true,.has_complete_bbw=true,.dose1=20,.dose2=40};
+    gbs_recipe_follow_begin(ID); gbs_recipe_follow_tick(true);
+    assert(commands==1&&downloads==2); // A new job and a new source snapshot are both required.
+    saved_follow=0; cold_boot();
+    gbs_recipe_follow_begin(ID); gbs_recipe_follow_tick(true); assert(!downloads&&!commands);
     reset(); brewing = true; gbs_recipe_follow_tick(true); assert(!commands && !downloads);
     reset(); interactive = true; gbs_recipe_follow_tick(true); assert(!commands && !downloads);
     interactive = false; now_us += 16000000; gbs_recipe_follow_tick(true); assert(!commands && !downloads);

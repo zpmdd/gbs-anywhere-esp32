@@ -76,6 +76,8 @@ static int exchange(void *unused,const char *path,const char *body,char *reply,s
             "\"brewByWeightDose1\":%.0f,\"brewByWeightDose2\":%.0f,\"brewByWeightMode\":\"%s\","
             "\"prebrew\":{\"mode\":\"%s\",\"onTime\":%.1f,\"offTime\":%.1f},\"machineMode\":\"%s\","
             "\"smartStandby\":{\"enabled\":%s,\"minutes\":%d,\"mode\":\"%s\"},"
+            "\"thingScaleConnected\":null,\"scaleConnected\":null,\"scaleBatteryLevel\":null,\"scaleObservedMs\":0,"
+            "\"coffeeBoilerReadyTime\":null,\"steamBoilerReadyTime\":null,\"lastUpdated\":null,"
             "\"activeDose\":\"dose1\",\"cloudCommandReadiness\":\"%s\"}",config.hub_id,
             fake.missing_measurement?"null":"91.5",fake.coffee,fake.missing_measurement?"null":"127",fake.steam,
             fake.enabled?"true":"false",fake.dose1,fake.dose2,bbw_modes[fake.mode],
@@ -144,6 +146,99 @@ static gbs_ui_machine_t initial(void)
 static gbs_ui_control_t run(gbs_ui_machine_t *m,gbs_ui_action_t action,double value)
 {
     return gbs_hub_execute(&config,&io,action,value,ID,fake.now+5000,m);
+}
+static void scale_observations(void)
+{
+    gbs_ui_machine_t m=initial();
+    assert(!m.scale_connected_known&&!m.scale_battery_known&&m.scale_stale&&m.scale_observed_ms==0);
+    const struct { const char *patch; bool known,connected,battery,stale; unsigned percent; int64_t observed; } cases[]={
+        {"{\"thingScaleConnected\":true,\"scaleConnected\":false,\"scaleBatteryLevel\":1,\"scaleObservedMs\":900}",true,false,true,false,1,900},
+        {"{\"thingScaleConnected\":false,\"scaleConnected\":true,\"scaleBatteryLevel\":0,\"scaleObservedMs\":900}",true,true,true,false,0,900},
+        {"{\"thingScaleConnected\":true,\"scaleConnected\":null,\"scaleBatteryLevel\":42,\"scaleObservedMs\":900}",true,true,true,false,42,900},
+        {"{\"thingScaleConnected\":true,\"scaleConnected\":\"false\",\"scaleObservedMs\":900}",true,true,false,false,0,900},
+        {"{\"scaleConnected\":true,\"scaleBatteryLevel\":100,\"scaleObservedMs\":900}",true,true,true,false,100,900},
+        {"{\"thingScaleConnected\":\"true\",\"scaleConnected\":false,\"scaleObservedMs\":900}",true,false,false,false,0,900},
+        {"{\"scaleConnected\":1,\"scaleObservedMs\":900}",false,false,false,false,0,900},
+        {"{\"thingScaleConnected\":true,\"scaleBatteryLevel\":100.1,\"scaleObservedMs\":900}",true,true,false,false,0,900},
+        {"{\"thingScaleConnected\":true,\"scaleBatteryLevel\":-0.1,\"scaleObservedMs\":900}",true,true,false,false,0,900},
+        {"{\"thingScaleConnected\":true,\"scaleBatteryLevel\":\"78\",\"scaleObservedMs\":900}",true,true,false,false,0,900},
+        {"{\"thingScaleConnected\":true,\"scaleBatteryLevel\":78,\"scaleObservedMs\":999999}",true,true,true,true,78,0},
+        {"{\"thingScaleConnected\":true,\"scaleBatteryLevel\":78,\"scaleObservedMs\":900.5}",true,true,true,true,78,0},
+        {"{\"thingScaleConnected\":true,\"scaleBatteryLevel\":78}",true,true,true,true,78,0}
+    };
+    for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);++i) {
+        m=initial(); fake.state_patch=cases[i].patch;
+        assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m));
+        assert(m.scale_connected_known==cases[i].known&&m.scale_connected==cases[i].connected);
+        assert(m.scale_battery_known==cases[i].battery&&m.scale_battery_percent==cases[i].percent);
+        assert(m.scale_stale==cases[i].stale&&m.scale_observed_ms==cases[i].observed);
+    }
+    m=initial(); fake.state_patch=cases[0].patch;
+    assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m)&&!m.scale_stale);
+    fake.now=900+GBS_UI_SCALE_FRESH_MS;
+    assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m));
+    assert(m.scale_stale&&m.scale_observed_ms==900&&m.scale_battery_percent==1);
+    fake.state_patch="{\"thingScaleConnected\":true,\"scaleObservedMs\":61000}";
+    assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m)&&!m.scale_stale);
+    fake.auth_fail=true;
+    assert(!gbs_hub_refresh(&config,&io,fake.now+10000,&m)&&m.scale_stale&&m.scale_observed_ms==61000);
+    fake.auth_fail=false; fake.state_patch="{}";
+    assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m));
+    assert(!m.scale_connected_known&&!m.scale_battery_known&&m.scale_stale&&m.scale_observed_ms==0);
+    char path[96],body[256]; m=initial();
+    assert(!gbs_hub_prepare(GBS_ACTION_ROTATION_AUTO,1,&m,ID,path,sizeof(path),body,sizeof(body)));
+    assert(!gbs_hub_prepare(GBS_ACTION_SOUND,1,&m,ID,path,sizeof(path),body,sizeof(body)));
+}
+static void boiler_ready_times(void)
+{
+    gbs_ui_machine_t m=initial();
+    assert(!m.coffee_ready_unix&&!m.steam_ready_unix&&!m.boiler_observed_unix);
+    fake.state_patch="{\"coffeeBoilerReadyTime\":\"2026-10-23T00:43:14Z\","
+        "\"steamBoilerReadyTime\":\"2026-10-23T00:46:34Z\",\"lastUpdated\":\"2026-10-23T00:40:00Z\"}";
+    assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m));
+    assert(m.coffee_ready_unix==1792716194&&m.steam_ready_unix==1792716394&&m.boiler_observed_unix==1792716000);
+    assert(gbs_ui_boiler_warmup_minutes(&m,false,1792716000)==4);
+    assert(gbs_ui_boiler_warmup_minutes(&m,true,1792716000)==7);
+    assert(!fake.posts&&m.writable==GBS_UI_MACHINE_ACTIONS);
+    const struct { const char *stamp; int64_t epoch; } cases[]={
+        {"1970-01-01T00:00:01Z",1}, {"2000-02-29T23:59:59Z",951868799},
+        {"2000-03-01T00:00:00Z",951868800}, {"2100-03-01T00:00:00Z",4107542400LL},
+        {"2024-02-29T12:34:56Z",1709210096}, {"2025-02-29T00:00:00Z",0},
+        {"2100-02-29T00:00:00Z",0}, {"2026-04-31T00:00:00Z",0},
+        {"2026-10-23T24:00:00Z",0}, {"2026-10-23T00:00:00+08:00",0},
+        {"2026-10-23T00:00:00Zjunk",0}, {"2026-10-23T00:00:00z",0}, {"",0}
+    };
+    for(unsigned i=0;i<sizeof(cases)/sizeof(*cases);++i) {
+        char patch[128]; snprintf(patch,sizeof(patch),"{\"coffeeBoilerReadyTime\":\"%s\"}",cases[i].stamp);
+        fake.state_patch=patch; assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m));
+        assert(m.coffee_ready_unix==cases[i].epoch&&!m.steam_ready_unix&&!m.boiler_observed_unix);
+    }
+    fake.state_patch="{\"coffeeBoilerReadyTime\":12,\"steamBoilerReadyTime\":false}";
+    assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m)&&!m.coffee_ready_unix&&!m.steam_ready_unix);
+}
+static void scale_does_not_gate_weight(void)
+{
+    const struct { const char *patch; int64_t now; bool known,connected,stale; } states[]={
+        {"{\"scaleConnected\":false,\"scaleObservedMs\":900}",2000,true,false,false},
+        {"{}",2000,false,false,true},
+        {"{\"scaleConnected\":true,\"scaleObservedMs\":900}",62000,true,true,true}
+    };
+    const struct { double grams; const char *route; } targets[]={
+        {40,"/controls/bbw/mode"}, {35,"/controls/quick-weight"}
+    };
+    for(unsigned i=0;i<sizeof(states)/sizeof(states[0]);++i) {
+        for(unsigned j=0;j<sizeof(targets)/sizeof(targets[0]);++j) {
+            gbs_ui_machine_t m=initial(); fake.state_patch=states[i].patch; fake.now=states[i].now;
+            assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m));
+            assert(m.scale_connected_known==states[i].known&&m.scale_connected==states[i].connected);
+            assert(m.scale_stale==states[i].stale);
+            // Scale telemetry does not gate a Cloud setting or imply physical confirmation.
+            assert(run(&m,GBS_ACTION_WEIGHT,targets[j].grams)==GBS_UI_CONTROL_CONFIRMED);
+            assert(fake.posts==1&&!strcmp(fake.path,targets[j].route)&&m.weight==targets[j].grams);
+            assert(m.scale_connected_known==states[i].known&&m.scale_connected==states[i].connected);
+            assert(m.scale_stale==states[i].stale);
+        }
+    }
 }
 static void daily_controls(void)
 {
@@ -248,6 +343,9 @@ static void configuration(void)
 int main(void)
 {
     configuration();
+    scale_observations();
+    boiler_ready_times();
+    scale_does_not_gate_weight();
     daily_controls();
     gbs_ui_machine_t m=initial();
     assert(run(&m,GBS_ACTION_WEIGHT,40)==GBS_UI_CONTROL_CONFIRMED);

@@ -1,6 +1,11 @@
 #pragma once
 
-#ifdef HUB_TOUCHSCREEN
+#ifdef HUB_AMOLED_216
+#define LAMABUDDY_DEVICE_MODEL "lamabuddy-esp32s3-amoled216"
+#define LAMABUDDY_FIRMWARE_VERSION "0.3.0-amoled216-dev.1"
+#define LAMABUDDY_MDNS_HOSTNAME "lamabuddy-amoled216"
+#define LAMABUDDY_MDNS_INSTANCE "LamaBuddy AMOLED 2.16"
+#elif defined(HUB_TOUCHSCREEN)
 #define LAMABUDDY_DEVICE_MODEL "lamabuddy-esp32s3-touch"
 #define LAMABUDDY_FIRMWARE_VERSION "0.2.0-integrated.1"
 #define LAMABUDDY_MDNS_HOSTNAME "lamabuddy-touch"

@@ -19,20 +19,69 @@ LV_FONT_DECLARE(gbs_number_32);
 LV_FONT_DECLARE(gbs_number_34);
 LV_FONT_DECLARE(gbs_number_36);
 LV_FONT_DECLARE(gbs_number_40);
+#ifdef HUB_AMOLED_216
+LV_FONT_DECLARE(gbs_font_18);
+LV_FONT_DECLARE(gbs_font_20);
+LV_FONT_DECLARE(gbs_font_24);
+LV_FONT_DECLARE(gbs_font_24_bold);
+LV_FONT_DECLARE(gbs_font_28_bold);
+LV_FONT_DECLARE(gbs_font_34_bold);
+LV_FONT_DECLARE(gbs_number_48);
+LV_FONT_DECLARE(gbs_number_56);
+LV_FONT_DECLARE(gbs_number_60);
+LV_FONT_DECLARE(gbs_number_64);
+LV_FONT_DECLARE(gbs_number_68);
+LV_FONT_DECLARE(gbs_number_108);
+LV_FONT_DECLARE(gbs_number_18);
+LV_FONT_DECLARE(gbs_battery_18);
+LV_FONT_DECLARE(gbs_number_27);
+LV_FONT_DECLARE(gbs_number_30);
+LV_FONT_DECLARE(gbs_number_52);
+LV_FONT_DECLARE(gbs_number_55);
+LV_FONT_DECLARE(gbs_number_70);
+LV_FONT_DECLARE(gbs_number_76);
+LV_FONT_DECLARE(gbs_font_19);
+LV_FONT_DECLARE(gbs_font_23);
+LV_FONT_DECLARE(gbs_font_25_bold);
+LV_FONT_DECLARE(gbs_font_32);
+LV_FONT_DECLARE(gbs_unit_24);
+LV_FONT_DECLARE(gbs_unit_27);
+LV_FONT_DECLARE(gbs_unit_36);
+#endif
 // RGB565-friendly values preserve the neutral charcoal and warm ivory on the LCD.
-enum { BG = 0x101610, SURFACE = 0x202420, LINE = 0x343734, TEXT = 0xf4f0e4,
-       MUTED = 0xbabdb6, GOLD = 0xe3bb83, GREEN = 0x9fd2aa, WARN = 0xf0c178, RED = 0xeaa28d };
+#ifdef HUB_AMOLED_216
+enum { DEFAULT_BRIGHTNESS = 60, DEFAULT_DIM = false };
+enum { BG = 0x101410, SURFACE = 0x202420, LINE = 0x383c38, TEXT = 0xf4f0e4, MUTED = 0xb6beb3,
+#else
+enum { DEFAULT_BRIGHTNESS = 75, DEFAULT_DIM = true };
+enum { BG = 0x101610, SURFACE = 0x202420, LINE = 0x343734, TEXT = 0xf4f0e4, MUTED = 0xbabdb6,
+#endif
+       GOLD = 0xe3bb83, GREEN = 0x9fd2aa, WARN = 0xf0c178, RED = 0xeaa28d };
 enum { BACK = 100, MINUS, PLUS, APPLY, CONFIRM, DISCARD, KEEP,
        MODE_MONITOR, MODE_ACTIVE, BRIGHTNESS, DIM, DISPLAY_SAVE, STEAM_TOGGLE,
+       ROTATION_TOGGLE, SOUND_TOGGLE, SCALE_REFRESH, DIM_SAVE,
        DATA_REFRESH, DATA_PREVIOUS, DATA_NEXT, PLAN_ENABLED, PLAN_STEAM, PLAN_APPLY, PLAN_SEND,
        HOUR_MINUS, HOUR_PLUS, MINUTE_MINUS, MINUTE_PLUS, PRESET = 200, CHOICE = 400, DATA_ROW = 500, PLAN_DAY = 600 };
 enum { F_COFFEE, F_COFFEE_TARGET, F_STEAM, F_STEAM_CURRENT, F_STEAM_TARGET, F_WEIGHT, F_STAGE,
        F_DETAIL, F_TIME, F_TIMER_CAPTION, F_TARGET, F_RESULT, F_CONTROL,
        F_DRAFT, F_CONFLICT, F_WIFI, F_GRINDER, F_CLOUD, F_MEMORY, F_MODE,
-       F_SECOND_RESULT, F_HOME_HINT, F_HUB, F_BRIGHTNESS, F_PARAMETER0, F_PARAMETER1, F_PARAMETER2, F_COUNT };
+       F_SECOND_RESULT, F_HOME_HINT, F_HUB, F_BRIGHTNESS, F_PARAMETER0, F_PARAMETER1, F_PARAMETER2,
+       F_GLANCE_VALUE, F_GLANCE_UNIT, F_GLANCE_STAGE, F_GLANCE_CAPTION, F_GLANCE_PATH, F_SCALE, F_BATTERY, F_DEVICE_NOTE, F_PATH_OLD, F_PATH_NEW, F_PATH_HINT, F_BATTERY_DARK, F_BATTERY_LARGE, F_EDITOR_UNIT, F_EDITOR_CURRENT, F_COUNT };
 static struct {
     gbs_ui_bridge_t bridge;
     gbs_ui_machine_t machine, edit_snapshot;
+    gbs_device_status_t device;
+    bool auto_rotate, sound, native_layout, manual_weight, home_requested;
+    char preference_notice[80];
+    int64_t preference_notice_until;
+    lv_obj_t *preference_toast;
+    gbs_tone_t tones[4];
+    unsigned tone_count, cup_tone_nodes;
+    char tone_job_id[64];
+    lv_obj_t *scale_shape, *battery_shape, *battery_fill, *battery_clip, *battery_terminal, *battery_charging, *phase_icon, *grinder_icon, *grinder_dot, *cloud_icon;
+    lv_obj_t *path_icon, *path_arrow, *path_rule;
+    lv_obj_t *preset_units[4];
+    double previous_weight;
     gbs_ui_page_t page, stack[12];
     unsigned depth, brightness;
     bool dim, dirty, discard, confirm, conflict;
@@ -42,6 +91,7 @@ static struct {
     gbs_ui_action_t action;
     gbs_ui_submit_t submit;
     gbs_ui_read_t reader;
+    bool (*scale_refresh)(void *);
     gbs_ui_data_t *data;
     gbs_ui_schedule_submit_t schedule_submit;
     bool schedule_submitted;
@@ -61,8 +111,19 @@ static gbs_ui_data_t *collections;
 static const int presets[] = {20, 30, 35, 40};
 static void render(void);
 static void refresh(void);
+static void queue_tone(gbs_tone_t tone)
+{
+    if(!ui.sound) return;
+    if(ui.tone_count==4) { memmove(ui.tones,ui.tones+1,3*sizeof(*ui.tones)); --ui.tone_count; }
+    ui.tones[ui.tone_count++]=tone;
+}
+#ifdef HUB_AMOLED_216
+static void amoled_refresh(void);
+static lv_obj_t *fallback_heading, *fallback_back;
+#endif
 static void event(lv_event_t *event);
 static void set(unsigned field_id, const char *text);
+static void value(unsigned id,double number,const char *format);
 static bool plan_editor(void) { return ui.page>=GBS_PAGE_SCHEDULE_EDIT&&ui.page<=GBS_PAGE_SCHEDULE_DAYS; }
 static bool data_page(void) { return ui.page==GBS_PAGE_SCHEDULE||ui.page==GBS_PAGE_COFFEES; }
 static gbs_ui_data_kind_t data_kind(void) { return ui.page==GBS_PAGE_SCHEDULE?GBS_DATA_SCHEDULE:GBS_DATA_HISTORY; }
@@ -129,12 +190,40 @@ static bool needs_confirmation(gbs_ui_action_t action)
     return action==GBS_ACTION_POWER||(action>=GBS_ACTION_STANDBY_ENABLED&&action<=GBS_ACTION_STANDBY_MODE);
 }
 
+/* LVGL 8.4 cannot transform A8 images. Resample once per size, then draw at 1:1. */
+struct icon_mask { gbs_icon_t name; int width; lv_img_dsc_t image; uint8_t pixels[]; };
+static void icon_delete(lv_event_t *e)
+{
+    struct icon_mask *mask=lv_obj_get_user_data(lv_event_get_target(e));
+    if(mask) {lv_img_cache_invalidate_src(&mask->image);lv_mem_free(mask);}
+}
+static void icon_source(lv_obj_t *o,gbs_icon_t name,int width)
+{
+    struct icon_mask *old=lv_obj_get_user_data(o);
+    if(old&&old->name==name&&old->width==width) return;
+    const lv_img_dsc_t *src=gbs_icons[name];
+    unsigned height=width*src->header.h/src->header.w;
+    struct icon_mask *mask=lv_mem_alloc(sizeof(*mask)+width*height);
+    if(!mask) return;
+    memset(mask,0,sizeof(*mask)); mask->name=name;mask->width=width;
+    mask->image.header.cf=LV_IMG_CF_ALPHA_8BIT;mask->image.header.w=width;mask->image.header.h=height;
+    mask->image.data=mask->pixels;mask->image.data_size=width*height;
+    for(unsigned y=0;y<height;++y) for(unsigned x=0;x<(unsigned)width;++x) {
+        unsigned sx=x*(src->header.w-1)*256/(width>1?width-1:1), sy=y*(src->header.h-1)*256/(height>1?height-1:1);
+        unsigned x0=sx/256,y0=sy/256,x1=x0+1<src->header.w?x0+1:x0,y1=y0+1<src->header.h?y0+1:y0;
+        unsigned fx=sx%256,fy=sy%256;
+        unsigned a=src->data[y0*src->header.w+x0]*(256-fx)+src->data[y0*src->header.w+x1]*fx;
+        unsigned b=src->data[y1*src->header.w+x0]*(256-fx)+src->data[y1*src->header.w+x1]*fx;
+        mask->pixels[y*width+x]=(a*(256-fy)+b*fy+32768)/65536;
+    }
+    lv_obj_set_user_data(o,mask);lv_img_set_zoom(o,LV_IMG_ZOOM_NONE);lv_img_set_src(o,&mask->image);
+    if(old) {lv_img_cache_invalidate_src(&old->image);lv_mem_free(old);}
+}
 static lv_obj_t *icon(lv_obj_t *parent, gbs_icon_t name, int x, int y, int size, uint32_t color)
 {
     lv_obj_t *o = lv_img_create(parent);
-    lv_img_set_src(o, gbs_icons[name]);
-    lv_img_set_pivot(o, 0, 0);
-    lv_img_set_zoom(o, size * 256 / gbs_icons[name]->header.w);
+    icon_source(o,name,size);
+    lv_obj_add_event_cb(o,icon_delete,LV_EVENT_DELETE,NULL);
     lv_obj_set_pos(o, x, y);
     lv_obj_set_style_img_recolor(o, lv_color_hex(color), 0);
     lv_obj_set_style_img_recolor_opa(o, LV_OPA_COVER, 0);
@@ -227,8 +316,15 @@ static lv_obj_t *ring(lv_obj_t *parent, int x, int y, int size, bool progress)
 
 static void header(const char *title, bool record)
 {
+#ifdef HUB_AMOLED_216
+    fallback_back=icon_button(lv_scr_act(), GBS_ICON_CHEVRON_LEFT, 0, 0, BACK);
+#else
     icon_button(lv_scr_act(), GBS_ICON_CHEVRON_LEFT, 0, 0, BACK);
+#endif
     lv_obj_t *heading = label(lv_scr_act(), title, 44, 10, record ? 137 : 192, &gbs_font_16_bold, TEXT);
+#ifdef HUB_AMOLED_216
+    fallback_heading=heading;
+#endif
     if (record) centered(heading);
     if (record) {
         lv_obj_t *b = button(lv_scr_act(), "记录", 188, 0, 48, 44, GBS_PAGE_RECORD, false);
@@ -296,9 +392,9 @@ static void enter(gbs_ui_page_t page)
 {
     ui.page = page;
     if(!plan_editor()) ui.dirty=ui.conflict=false;
-    ui.discard=ui.confirm=false;
+    ui.discard=ui.confirm=ui.home_requested=false;
     if (page == GBS_PAGE_MODE) ui.mode_draft = ui.bridge.active;
-    if (page == GBS_PAGE_DISPLAY) { ui.brightness_draft = ui.brightness; ui.dim_draft = ui.dim; }
+    if (page == GBS_PAGE_DISPLAY || page == GBS_PAGE_BRIGHTNESS) { ui.brightness_draft = ui.brightness; ui.dim_draft = ui.dim; }
     if (editor()) {
         ui.initial = current_value();
         ui.draft = isfinite(ui.initial) ? ui.initial : parameter()->low;
@@ -318,7 +414,7 @@ void gbs_ui_show(gbs_ui_page_t page)
 
 static void back(void)
 {
-    if (ui.discard || ui.confirm) { ui.discard = ui.confirm = false; render(); return; }
+    if (ui.discard || ui.confirm) { ui.discard = ui.confirm = ui.home_requested = false; render(); return; }
     if(plan_editor()&&ui.page!=GBS_PAGE_SCHEDULE_EDIT) { enter(ui.depth?ui.stack[--ui.depth]:GBS_PAGE_SCHEDULE_EDIT); return; }
     if (ui.dirty) { ui.discard = true; render(); return; }
     enter(ui.depth ? ui.stack[--ui.depth] : GBS_PAGE_HOME);
@@ -334,10 +430,27 @@ static void send(gbs_ui_action_t action, double value)
     if (!++request_sequence) ++request_sequence;
     ui.request_id = request_sequence; ui.action = action; ui.requested = value;
     const gbs_ui_machine_t *expected=editor()?&ui.edit_snapshot:&ui.machine;
-    if (!ui.submit(action, value, ui.request_id, expected, ui.context)) { ui.control = GBS_UI_CONTROL_FAILED; ui.confirm=false; render(); return; }
+    if (!ui.submit(action, value, ui.request_id, expected, ui.context)) { ui.control = GBS_UI_CONTROL_FAILED; queue_tone(GBS_TONE_FAILURE); ui.confirm=false; render(); return; }
     ui.schedule_submitted=false;
+    if(action==GBS_ACTION_WEIGHT) ui.previous_weight=ui.machine.available&&!ui.machine.stale?ui.machine.weight:NAN;
+    if(action==GBS_ACTION_WEIGHT) ui.manual_weight=true;
     ui.control = GBS_UI_CONTROL_PENDING; ui.submitted_ms = ui.now; ui.submitted_observation = ui.bridge.observed_ms;
     ui.dirty = ui.confirm = false; render();
+}
+
+static void toggle_device_setting(int action)
+{
+    bool rotation=action==ROTATION_TOGGLE;
+    bool requested=rotation?!ui.auto_rotate:!ui.sound;
+    bool ok=ui.submit&&ui.submit(rotation?GBS_ACTION_ROTATION_AUTO:GBS_ACTION_SOUND,requested,0,NULL,ui.context);
+    if(ok) {
+        if(rotation) ui.auto_rotate=requested; else { ui.sound=requested; ui.tone_count=0; }
+        queue_tone(GBS_TONE_SUCCESS);
+    } else queue_tone(GBS_TONE_FAILURE);
+    snprintf(ui.preference_notice,sizeof(ui.preference_notice),"%s",!ok?"保存失败，请重试":
+        rotation?(requested?"自动旋转已开启":"已锁定当前方向"):(requested?"提示音已开启":"已静音"));
+    ui.preference_notice_until=ui.now+2500;
+    render();
 }
 
 static void event(lv_event_t *e)
@@ -352,6 +465,19 @@ static void event(lv_event_t *e)
     }
     if (a < GBS_PAGE_COUNT) { gbs_ui_show((gbs_ui_page_t)a); return; }
     if (a == BACK) { back(); return; }
+    if(a==SCALE_REFRESH) {
+        bool ok=ui.scale_refresh&&ui.scale_refresh(ui.context);
+        set(F_DEVICE_NOTE,ok?"正在刷新":"暂时无法刷新");
+        if(!ok) queue_tone(GBS_TONE_FAILURE);
+        return;
+    }
+    if(a==DIM_SAVE) {
+        bool ok=ui.submit&&ui.submit(GBS_ACTION_DIM,!ui.dim,0,NULL,ui.context);
+        if(ok) ui.dim=ui.dim_draft=!ui.dim;
+        queue_tone(ok?GBS_TONE_SUCCESS:GBS_TONE_FAILURE);
+        snprintf(ui.preference_notice,sizeof(ui.preference_notice),"%s",ok?"已保存":"保存失败，请重试");ui.preference_notice_until=ui.now+2500;render();return;
+    }
+    if(a==ROTATION_TOGGLE||a==SOUND_TOGGLE) { toggle_device_setting(a); return; }
     if(data_page()) {
         gbs_ui_data_kind_t kind=data_kind(); gbs_ui_data_t *data=&ui.data[kind];
         if(a==DATA_REFRESH) { request_data(); render(); return; }
@@ -401,8 +527,13 @@ static void event(lv_event_t *e)
             ui.schedule_draft.days^=1u<<(a-PLAN_DAY); ui.dirty=true; render(); return;
         }
     }
-    if (a == DISCARD) { ui.dirty = ui.discard = false; back(); return; }
-    if (a == KEEP) { ui.discard = false; render(); return; }
+    if (a == DISCARD) {
+        bool home_requested=ui.home_requested;
+        ui.dirty = ui.discard = ui.home_requested = false;
+        if(home_requested) { ui.depth=0; enter(GBS_PAGE_HOME); } else back();
+        return;
+    }
+    if (a == KEEP) { ui.discard = ui.home_requested = false; render(); return; }
     if (a >= PRESET && a < PRESET + 4) { send(GBS_ACTION_WEIGHT, presets[a - PRESET]); return; }
     if (a == MINUS || a == PLUS) {
         if (ui.control == GBS_UI_CONTROL_PENDING || !parameter() || ui.machine.stale ||
@@ -431,6 +562,7 @@ static void event(lv_event_t *e)
         bool dim_ok = ui.submit(GBS_ACTION_DIM, ui.dim_draft, 0, NULL, ui.context);
         if (dim_ok) ui.dim = ui.dim_draft;
         ui.dirty = !(brightness_ok && dim_ok);
+        queue_tone(ui.dirty?GBS_TONE_FAILURE:GBS_TONE_SUCCESS);
         set(F_DETAIL, ui.dirty ? "保存未完成，请重试" : "已保存，首次触摸仅唤醒");
     } else if (a == STEAM_TOGGLE) {
         send(GBS_ACTION_STEAM_ENABLED, !ui.machine.steam_enabled);
@@ -443,6 +575,8 @@ static void event(lv_event_t *e)
     }
 }
 
+
+#ifndef HUB_AMOLED_216
 static void dial(int x, bool steam)
 {
     ring(lv_scr_act(), x, 34, 108, false);
@@ -505,6 +639,8 @@ static void home(void)
         }
     }
 }
+
+#endif
 
 static void bottom(const char *title, int action, bool filled)
 {
@@ -570,6 +706,8 @@ static void choice_page(void)
     bottom(needs_confirmation(p->action)?"继续确认":"应用",APPLY,true);
 }
 
+
+#ifndef HUB_AMOLED_216
 static void edit_page(void)
 {
     const struct parameter *p=parameter();
@@ -606,6 +744,9 @@ static void edit_page(void)
         bottom(ui.control == GBS_UI_CONTROL_CONFIRMED ? "完成" : "返回", p->action>=GBS_ACTION_DOSE1?BACK:GBS_PAGE_HOME, ui.control == GBS_UI_CONTROL_CONFIRMED);
     }
 }
+
+
+#endif
 
 static void linked_page(void)
 {
@@ -864,10 +1005,59 @@ static void schedule_editor(void)
         lv_obj_add_state(save,LV_STATE_DISABLED);
 }
 
-static void render(void)
+/* Refresh only the exact local selector; computed values may come from another state. */
+static void refresh_color(lv_obj_t *obj,lv_style_prop_t prop,lv_color_t color,lv_style_selector_t selector)
+{
+#ifdef HUB_AMOLED_216
+    lv_style_value_t old;
+    if(lv_obj_get_local_style_prop(obj,prop,&old,selector)==LV_STYLE_RES_FOUND&&old.color.full==color.full) return;
+#endif
+    lv_obj_set_local_style_prop(obj,prop,(lv_style_value_t){.color=color},selector);
+}
+
+static void refresh_num(lv_obj_t *obj,lv_style_prop_t prop,int32_t number,lv_style_selector_t selector)
+{
+#ifdef HUB_AMOLED_216
+    lv_style_value_t old;
+    if(lv_obj_get_local_style_prop(obj,prop,&old,selector)==LV_STYLE_RES_FOUND&&old.num==number) return;
+#endif
+    lv_obj_set_local_style_prop(obj,prop,(lv_style_value_t){.num=number},selector);
+}
+
+#ifdef HUB_AMOLED_216
+static void refresh_font(lv_obj_t *obj,const lv_font_t *font,lv_style_selector_t selector)
+{
+    lv_style_value_t old;
+    if(lv_obj_get_local_style_prop(obj,LV_STYLE_TEXT_FONT,&old,selector)==LV_STYLE_RES_FOUND&&old.ptr==font) return;
+    lv_obj_set_local_style_prop(obj,LV_STYLE_TEXT_FONT,(lv_style_value_t){.ptr=font},selector);
+}
+
+static void refresh_hidden(lv_obj_t *obj,bool hidden)
+{
+    if(lv_obj_has_flag(obj,LV_OBJ_FLAG_HIDDEN)==hidden) return;
+    if(hidden) lv_obj_add_flag(obj,LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(obj,LV_OBJ_FLAG_HIDDEN);
+}
+#endif
+
+static void refresh_label(lv_obj_t *obj,const char *text)
+{
+#ifdef HUB_AMOLED_216
+    if(!strcmp(lv_label_get_text(obj),text)) return;
+#endif
+    lv_label_set_text(obj,text);
+}
+
+#ifdef HUB_AMOLED_216
+#include "gbs_ui_amoled.inc"
+#endif
+
+static void render_content(void)
 {
     memset(ui.fields, 0, sizeof(ui.fields)); memset(ui.presets, 0, sizeof(ui.presets));
     ui.apply = ui.body = ui.ring = ui.steam_toggle = ui.confirm_button = NULL;
+    ui.scale_shape=ui.battery_shape=ui.battery_fill=ui.phase_icon=ui.grinder_icon=ui.cloud_icon=ui.preference_toast=NULL;
+    ui.battery_clip=ui.battery_terminal=ui.battery_charging=ui.path_icon=ui.path_arrow=ui.path_rule=ui.grinder_dot=NULL;
+    memset(ui.preset_units,0,sizeof(ui.preset_units));
     memset(ui.choices,0,sizeof(ui.choices));
     memset(ui.mode_radio, 0, sizeof(ui.mode_radio));
     memset(ui.connection_dots, 0, sizeof(ui.connection_dots));
@@ -909,9 +1099,30 @@ static void render(void)
         button(screen, "确认切换", 124, 224, 104, 44, CONFIRM, true);
         return;
     }
-    if (ui.page == GBS_PAGE_HOME) { home(); refresh(); return; }
+    if (ui.page == GBS_PAGE_HOME) {
+#ifdef HUB_AMOLED_216
+        amoled_home();
+#else
+        home();
+#endif
+        refresh(); return;
+    }
+#ifdef HUB_AMOLED_216
+    if(amoled_settings_page()||amoled_details_build()){refresh();return;}
+    if(ui.page==GBS_PAGE_STEAM){amoled_edit();refresh();return;}
+    if(ui.page==GBS_PAGE_SCALE||ui.page==GBS_PAGE_DEVICE_BATTERY||ui.page==GBS_PAGE_ORIENTATION||ui.page==GBS_PAGE_SOUND) {
+        amoled_device_page(); refresh(); return;
+    }
+#endif
     if(parameter()&&choice_label(parameter()->action,0)) { choice_page(); refresh(); return; }
-    if (editor() && ui.page != GBS_PAGE_STEAM) { edit_page(); refresh(); return; }
+    if (editor() && ui.page != GBS_PAGE_STEAM) {
+#ifdef HUB_AMOLED_216
+        amoled_edit();
+#else
+        edit_page();
+#endif
+        refresh(); return;
+    }
     switch (ui.page) {
     case GBS_PAGE_LINK:
     case GBS_PAGE_TASK:
@@ -938,7 +1149,15 @@ static void render(void)
         row("连接与系统", NULL, 2, GBS_PAGE_CONNECTIONS);
         row("屏幕设置", NULL, 3, GBS_PAGE_DISPLAY);
         row("出杯记录", NULL, 4, GBS_PAGE_COFFEES);
+        #ifdef HUB_AMOLED_216
+        row("A 秤", NULL, 5, GBS_PAGE_SCALE);
+        row("设备电量", NULL, 6, GBS_PAGE_DEVICE_BATTERY);
+        row("屏幕方向", NULL, 7, GBS_PAGE_ORIENTATION);
+        row("提示音", NULL, 8, GBS_PAGE_SOUND);
+        row("关于", "版本和上游来源", 9, GBS_PAGE_ABOUT);
+#else
         row("关于", "版本和上游来源", 5, GBS_PAGE_ABOUT);
+#endif
         break;
     case GBS_PAGE_MACHINE:
         header("咖啡机设置", false); list_body();
@@ -1112,6 +1331,83 @@ static void render(void)
     refresh();
 }
 
+#ifdef HUB_AMOLED_216
+static void amoled_fallback_style(lv_obj_t *parent,bool disabled)
+{
+    for(unsigned i=0;i<lv_obj_get_child_cnt(parent);++i) {
+        lv_obj_t *child=lv_obj_get_child(parent,i);
+        bool child_disabled=disabled || lv_obj_has_state(child,LV_STATE_DISABLED);
+        lv_obj_set_style_bg_grad_dir(child,LV_GRAD_DIR_NONE,0);
+        lv_obj_set_style_bg_grad_dir(child,LV_GRAD_DIR_NONE,LV_STATE_DISABLED);
+        lv_coord_t radius=lv_obj_get_style_radius(child,0);
+        if(radius>0 && radius!=LV_RADIUS_CIRCLE) lv_obj_set_style_radius(child,12,0);
+        if(lv_obj_has_flag(child,LV_OBJ_FLAG_CLICKABLE))
+            lv_obj_set_style_opa(child,LV_OPA_COVER,LV_STATE_DISABLED);
+        if(lv_obj_check_type(child,&lv_label_class)) {
+            const lv_font_t *font=lv_obj_get_style_text_font(child,0);
+            if(font==&gbs_font_18 || font==&gbs_font_20 || font==&gbs_font_20_bold)
+                lv_obj_set_style_text_font(child,&gbs_font_20,0);
+            else if(font==&gbs_font_24 || font==&gbs_font_24_bold ||
+                    font==&gbs_font_28_bold || font==&gbs_font_34_bold)
+                lv_obj_set_style_text_font(child,&gbs_font_23,0);
+            if(child_disabled) lv_obj_set_style_text_color(child,lv_color_hex(MUTED),0);
+        } else if(lv_obj_check_type(child,&lv_img_class)) {
+            struct icon_mask *mask=lv_obj_get_user_data(child);
+            if(mask) {
+                int before=mask->width;
+                int size=mask->name==GBS_ICON_CHEVRON_LEFT || mask->name==GBS_ICON_CHEVRON_RIGHT ? 24 :
+                    before<=48 && before>32 ? 32 : before;
+                if(size!=before) {
+                    lv_coord_t x=lv_obj_get_x(child),y=lv_obj_get_y(child);
+                    icon_source(child,mask->name,size);
+                    lv_obj_set_pos(child,x+(before-size)/2,y+(before-size)/2);
+                }
+            }
+        } else if(child_disabled && lv_obj_get_style_bg_opa(child,0)>LV_OPA_TRANSP) {
+            lv_obj_set_style_bg_color(child,lv_color_hex(SURFACE),0);
+            lv_obj_set_style_border_color(child,lv_color_hex(LINE),0);
+        }
+        amoled_fallback_style(child,child_disabled);
+    }
+}
+#endif
+
+static void render(void)
+{
+    ui.native_layout=false;
+#ifdef HUB_AMOLED_216
+    fallback_heading=fallback_back=NULL;
+#endif
+    render_content();
+#ifdef HUB_AMOLED_216
+    if(!ui.native_layout) {
+        lv_obj_update_layout(lv_scr_act());
+        amoled_resize_children(lv_scr_act());
+        lv_obj_update_layout(lv_scr_act());
+        amoled_fallback_style(lv_scr_act(),false);
+        if(fallback_heading) {
+            lv_obj_set_pos(fallback_heading,92,29);
+            lv_obj_set_style_text_font(fallback_heading,&gbs_font_25_bold,0);
+            lv_obj_set_width(fallback_heading,lv_obj_get_width(fallback_heading)>300?350:274);
+        }
+        if(fallback_back) {
+            lv_obj_set_pos(fallback_back,16,14);lv_obj_set_size(fallback_back,64,64);
+            lv_obj_t *chevron=lv_obj_get_child(fallback_back,1);
+            lv_obj_set_pos(chevron,20,20);
+        }
+        if(ui.body) {lv_obj_set_pos(ui.body,28,92);lv_obj_set_size(ui.body,424,372);}
+    }
+    if(ui.preference_notice_until>ui.now) {
+        ui.preference_toast=box(lv_scr_act(),28,396,424,68,SURFACE);
+        lv_obj_add_flag(ui.preference_toast,LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_border_width(ui.preference_toast,1,0);
+        lv_obj_set_style_border_color(ui.preference_toast,lv_color_hex(GOLD),0);
+        lv_obj_t *notice=label(ui.preference_toast,ui.preference_notice,8,0,408,&gbs_font_24,TEXT);
+        centered(notice); lv_obj_center(notice);
+    }
+#endif
+}
+
 static void set(unsigned field_id, const char *text)
 {
     if (ui.fields[field_id] && strcmp(lv_label_get_text(ui.fields[field_id]), text)) lv_label_set_text(ui.fields[field_id], text);
@@ -1126,6 +1422,11 @@ static void value(unsigned id, double number, const char *format)
 
 static void refresh(void)
 {
+    bool native_home=false,native_editor=false;
+#ifdef HUB_AMOLED_216
+    native_home=ui.page==GBS_PAGE_HOME&&ui.native_layout;
+    native_editor=editor()&&ui.fields[F_EDITOR_CURRENT];
+#endif
     static const char *titles[] = {"准备中", "账本需要处理", "身份需要处理", "正在校时", "恢复任务基线",
         "等待结果", "回传中", "取消处理中", "回传未确认", "联动已中断", "联动已结束", "任务已结束",
         "Wi-Fi 离线", "磨豆机离线", "云端异常", "仅监测", "已就绪", "已接收", "萃取记录异常"};
@@ -1135,8 +1436,8 @@ static void refresh(void)
     gbs_ui_stage_t stage = gbs_ui_stage(&ui.bridge);
     bool unconfigured=!strcmp(ui.bridge.phase,"configuration_required");
     set(F_STAGE, unconfigured?"联动待配置":titles[stage]);
-    if (ui.fields[F_STAGE]) lv_obj_set_style_text_color(ui.fields[F_STAGE], lv_color_hex(ui.page == GBS_PAGE_HOME ? MUTED : TEXT), 0);
-    if (ui.page != GBS_PAGE_DISPLAY) set(F_DETAIL, unconfigured?"咖啡机功能可独立使用":details[stage]);
+    if (ui.fields[F_STAGE]) refresh_color(ui.fields[F_STAGE],LV_STYLE_TEXT_COLOR, lv_color_hex(ui.page == GBS_PAGE_HOME ? MUTED : TEXT), 0);
+    if (ui.page != GBS_PAGE_DISPLAY && ui.page != GBS_PAGE_BRIGHTNESS) set(F_DETAIL, unconfigured?"咖啡机功能可独立使用":details[stage]);
     const char *caption = "";
     int64_t deadline = 0;
     if (ui.bridge.job) { deadline = ui.bridge.pending ? ui.bridge.answer_deadline_ms : ui.bridge.job_deadline_ms;
@@ -1180,15 +1481,23 @@ static void refresh(void)
         value(F_SECOND_RESULT, ui.bridge.successes ? ui.bridge.result_grams : NAN, "%.1f");
     }
     set(F_HOME_HINT, stage == GBS_UI_READY ? "等待新任务" : stage == GBS_UI_RECEIVED ? "查看最近结果" : "查看详情");
-    value(F_COFFEE, ui.machine.coffee, "%.1f");
-    double steam_level = ui.machine.steam_target == 126 ? 1 : ui.machine.steam_target == 128 ? 2 : ui.machine.steam_target == 131 ? 3 : NAN;
-    value(F_STEAM, ui.page == GBS_PAGE_HOME ? steam_level : ui.machine.steam, "%.0f");
-    value(F_STEAM_CURRENT, ui.machine.steam, "当前 %.0f°");
-    value(F_COFFEE_TARGET, ui.machine.coffee_target, ui.page == GBS_PAGE_MACHINE ? "%.1f°" : "目标 %.1f°");
-    value(F_STEAM_TARGET, ui.machine.steam_target, ui.page == GBS_PAGE_MACHINE ? "%.0f°" : "目标 %.0f°");
+    if(!native_home) {
+        value(F_COFFEE, ui.machine.coffee, "%.1f");
+        double steam_level = ui.machine.steam_target == 126 ? 1 : ui.machine.steam_target == 128 ? 2 : ui.machine.steam_target == 131 ? 3 : NAN;
+        value(F_STEAM, ui.page == GBS_PAGE_HOME ? steam_level : ui.machine.steam, "%.0f");
+        value(F_STEAM_CURRENT, ui.machine.steam, "当前 %.0f°");
+        value(F_COFFEE_TARGET, ui.machine.coffee_target, ui.page == GBS_PAGE_MACHINE ? "%.1f°" : "目标 %.1f°");
+        value(F_STEAM_TARGET, ui.machine.steam_target, ui.page == GBS_PAGE_MACHINE ? "%.0f°" : "目标 %.0f°");
+    }
     value(F_WEIGHT, ui.machine.weight, ui.page == GBS_PAGE_MACHINE ? "%.0fg" : "当前 %.0fg");
-    const char *controls[] = {"", "已提交，等待确认", "已确认", "未能提交，请检查连接", "部分应用，请检查机器", "结果未确认，请检查机器"};
-    set(F_CONTROL, ui.action == GBS_ACTION_MODE ? controls[ui.control] : "");
+    const char *controls[] = {"", "已提交，等待确认",
+#ifdef HUB_AMOLED_216
+        "已设定",
+#else
+        "已确认",
+#endif
+        "未能提交，请检查连接", "部分应用，请检查机器", "结果未确认，请检查机器"};
+    if(!native_editor) set(F_CONTROL, ui.action == GBS_ACTION_MODE ? controls[ui.control] : "");
     if(ui.page==GBS_PAGE_BBW||ui.page==GBS_PAGE_PREBREW||ui.page==GBS_PAGE_STANDBY) {
         gbs_ui_action_t first=ui.page==GBS_PAGE_BBW?GBS_ACTION_DOSE1:ui.page==GBS_PAGE_PREBREW?GBS_ACTION_PREBREW_MODE:GBS_ACTION_STANDBY_ENABLED;
         for(unsigned i=0;i<3;++i) {
@@ -1210,44 +1519,53 @@ static void refresh(void)
         const struct parameter *p=parameter(); gbs_ui_action_t field_action=p->action;
         bool unresolved=field_action>=GBS_ACTION_DOSE1&&ui.action==field_action&&!ui.dirty&&
             ui.control!=GBS_UI_CONTROL_IDLE&&ui.control!=GBS_UI_CONTROL_CONFIRMED;
-        value(F_DRAFT, unresolved?ui.requested:!isfinite(ui.initial)&&!ui.dirty?NAN:ui.draft, p->step<1 ? "%.1f" : "%.0f");
-        const char *short_control[] = {"", "已提交 · 待确认", "已确认", "应用失败", "部分应用", "结果未确认"};
+        if(!native_editor) value(F_DRAFT, unresolved?ui.requested:!isfinite(ui.initial)&&!ui.dirty?NAN:ui.draft, p->step<1 ? "%.1f" : "%.0f");
+        const char *short_control[] = {"", "已提交 · 待确认",
+#ifdef HUB_AMOLED_216
+            "已设定",
+#else
+            "已确认",
+#endif
+            "应用失败", "部分应用", "结果未确认"};
         const char *warning=!ui.machine.available?"咖啡机未接入":ui.machine.stale?"数据已过期":
             ui.conflict?"设置已变化，请返回":!(ui.machine.writable&(1u<<field_action))?"当前控制不可用":NULL;
-        if(warning) set(F_CONFLICT,warning);
+        bool native_caption=native_editor&&
+            ((ui.machine.available&&!ui.machine.stale&&!ui.conflict&&(ui.control==GBS_UI_CONTROL_IDLE||ui.action!=field_action||ui.dirty))||
+             (ui.action==field_action&&ui.control==GBS_UI_CONTROL_CONFIRMED&&!ui.dirty));
+        if(warning) { if(!native_caption) set(F_CONFLICT,warning); }
         else if (ui.control != GBS_UI_CONTROL_IDLE && ui.action == field_action && !ui.dirty) {
-            set(F_CONFLICT, short_control[ui.control]);
+            if(!native_editor||ui.control!=GBS_UI_CONTROL_CONFIRMED) set(F_CONFLICT, short_control[ui.control]);
             if(field_action>=GBS_ACTION_DOSE1) {
                 char current[64]; parameter_text(field_action,current_value(),current,sizeof(current));
                 snprintf(text,sizeof(text),"当前确认值 %s",current); set(F_HOME_HINT,text);
             } else value(F_HOME_HINT, current_value(), ui.page == GBS_PAGE_WEIGHT ? "原确认值 %.0fg" : "原确认值 %.1f°");
             set(F_DETAIL, ui.control == GBS_UI_CONTROL_CONFIRMED ? "当前目标已更新" : "正在核对机器状态");
-            if (ui.fields[F_CONFLICT]) lv_obj_set_style_text_color(ui.fields[F_CONFLICT], lv_color_hex(ui.control == GBS_UI_CONTROL_CONFIRMED ? GREEN : WARN), 0);
-        } else if(field_action>=GBS_ACTION_DOSE1) {
+            if (!native_editor&&ui.fields[F_CONFLICT]) refresh_color(ui.fields[F_CONFLICT],LV_STYLE_TEXT_COLOR, lv_color_hex(ui.control == GBS_UI_CONTROL_CONFIRMED ? GREEN : WARN), 0);
+        } else if(!native_editor&&field_action>=GBS_ACTION_DOSE1) {
             char current[64]; parameter_text(field_action,current_value(),current,sizeof(current));
             snprintf(text,sizeof(text),"当前 %s",current); set(F_CONFLICT,field_action==GBS_ACTION_POWER?"选择后确认":text);
-        } else value(F_CONFLICT, current_value(), ui.page == GBS_PAGE_WEIGHT ? "当前 %.0fg" : "当前 %.1f°");
+        } else if(!native_editor) value(F_CONFLICT, current_value(), ui.page == GBS_PAGE_WEIGHT ? "当前 %.0fg" : "当前 %.1f°");
         if(ui.confirm_button) {
             set(F_CONTROL,warning?warning:"确认后生效");
             if(warning||ui.control==GBS_UI_CONTROL_PENDING) lv_obj_add_state(ui.confirm_button,LV_STATE_DISABLED);
             else lv_obj_clear_state(ui.confirm_button,LV_STATE_DISABLED);
-            lv_obj_set_style_opa(ui.confirm_button,LV_OPA_COVER,LV_STATE_DISABLED);
-            lv_obj_set_style_bg_color(ui.confirm_button,lv_color_hex(SURFACE),LV_STATE_DISABLED);
-            lv_obj_set_style_bg_grad_color(ui.confirm_button,lv_color_hex(SURFACE),LV_STATE_DISABLED);
-            lv_obj_set_style_border_color(ui.confirm_button,lv_color_hex(LINE),LV_STATE_DISABLED);
-            lv_obj_set_style_text_color(lv_obj_get_child(ui.confirm_button,0),lv_color_hex(warning?MUTED:BG),0);
+            refresh_num(ui.confirm_button,LV_STYLE_OPA,LV_OPA_COVER,LV_STATE_DISABLED);
+            refresh_color(ui.confirm_button,LV_STYLE_BG_COLOR,lv_color_hex(SURFACE),LV_STATE_DISABLED);
+            refresh_color(ui.confirm_button,LV_STYLE_BG_GRAD_COLOR,lv_color_hex(SURFACE),LV_STATE_DISABLED);
+            refresh_color(ui.confirm_button,LV_STYLE_BORDER_COLOR,lv_color_hex(LINE),LV_STATE_DISABLED);
+            refresh_color(lv_obj_get_child(ui.confirm_button,0),LV_STYLE_TEXT_COLOR,lv_color_hex(warning?MUTED:BG),0);
         }
         if (ui.page == GBS_PAGE_STEAM) {
             set(F_CONTROL, ui.machine.stale ? "数据已过期" :
                 (ui.action == GBS_ACTION_STEAM || ui.action == GBS_ACTION_STEAM_ENABLED) ? short_control[ui.control] : "");
-            lv_obj_set_style_text_color(ui.fields[F_CONTROL],lv_color_hex(!ui.machine.stale&&ui.control==GBS_UI_CONTROL_CONFIRMED?GREEN:WARN),0);
+            refresh_color(ui.fields[F_CONTROL],LV_STYLE_TEXT_COLOR,lv_color_hex(!ui.machine.stale&&ui.control==GBS_UI_CONTROL_CONFIRMED?GREEN:WARN),0);
         }
-        if (ui.apply) {
+        if (ui.apply&&!native_editor) {
             if (ui.page == GBS_PAGE_STEAM) snprintf(text, sizeof(text), "应用 %d 档", ui.draft == 126 ? 1 : ui.draft == 128 ? 2 : 3);
             else if(needs_confirmation(field_action)) snprintf(text,sizeof(text),"继续确认");
             else if(choice_label(field_action,0)) snprintf(text,sizeof(text),"应用模式");
             else snprintf(text,sizeof(text),p->step<1?"应用 %.1f%s":"应用 %.0f%s",ui.draft,p->unit);
-            lv_label_set_text(lv_obj_get_child(lv_obj_get_child(ui.apply, 1), 0), text);
+            refresh_label(lv_obj_get_child(lv_obj_get_child(ui.apply, 1), 0), text);
         }
     }
 
@@ -1260,27 +1578,29 @@ static void refresh(void)
         gbs_ui_action_t action = parameter()->action;
         bool disabled = blocked || !ui.dirty || !isfinite(ui.initial) || !(ui.machine.writable & (1u << action));
         if (disabled) lv_obj_add_state(ui.apply, LV_STATE_DISABLED); else lv_obj_clear_state(ui.apply, LV_STATE_DISABLED);
-        lv_obj_set_style_opa(ui.apply, LV_OPA_COVER, LV_STATE_DISABLED);
+        refresh_num(ui.apply,LV_STYLE_OPA, LV_OPA_COVER, LV_STATE_DISABLED);
         lv_obj_t *face = lv_obj_get_child(ui.apply, 1);
-        lv_obj_set_style_bg_color(face, lv_color_hex(disabled ? SURFACE : GOLD), 0);
-        lv_obj_set_style_bg_grad_color(face, lv_color_hex(disabled ? 0x1a1e1a : 0xddb477), 0);
-        lv_obj_set_style_border_color(face, lv_color_hex(disabled ? LINE : 0xf0cb91), 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(face, 0), lv_color_hex(disabled ? MUTED : BG), 0);
+        refresh_color(face,LV_STYLE_BG_COLOR, lv_color_hex(disabled ? SURFACE : GOLD), 0);
+        refresh_color(face,LV_STYLE_BG_GRAD_COLOR, lv_color_hex(disabled ? 0x1a1e1a : 0xddb477), 0);
+        refresh_color(face,LV_STYLE_BORDER_COLOR, lv_color_hex(disabled ? LINE : 0xf0cb91), 0);
+        refresh_color(lv_obj_get_child(face, 0),LV_STYLE_TEXT_COLOR, lv_color_hex(disabled ? MUTED : BG), 0);
     }
     for(unsigned i=0;i<4;++i) if(ui.choices[i]) {
         lv_obj_t *b=ui.choices[i]; bool selected=isfinite(ui.initial)&&ui.draft==i;
         bool disabled=blocked||!(ui.machine.writable&(1u<<parameter()->action));
         if(disabled) lv_obj_add_state(b,LV_STATE_DISABLED); else lv_obj_clear_state(b,LV_STATE_DISABLED);
-        lv_obj_set_style_opa(b,LV_OPA_COVER,LV_STATE_DISABLED);
-        lv_obj_set_style_border_color(b,lv_color_hex(selected?GOLD:LINE),0);
-        lv_obj_set_style_text_color(lv_obj_get_child(b,1),lv_color_hex(selected?GOLD:disabled?MUTED:TEXT),0);
+        refresh_num(b,LV_STYLE_OPA,LV_OPA_COVER,LV_STATE_DISABLED);
+        refresh_color(b,LV_STYLE_BORDER_COLOR,lv_color_hex(selected?GOLD:LINE),0);
+        refresh_color(lv_obj_get_child(b,1),LV_STYLE_TEXT_COLOR,lv_color_hex(selected?GOLD:disabled?MUTED:TEXT),0);
     }
     for (unsigned i = 0; i < 4; ++i) if (ui.presets[i]) {
-        bool selected = ui.machine.available && ui.machine.weight == presets[i];
-        lv_obj_set_style_bg_color(ui.preset_faces[i], lv_color_hex(selected ? GOLD : SURFACE), 0);
-        lv_obj_set_style_bg_grad_color(ui.preset_faces[i], lv_color_hex(selected ? 0xddb477 : 0x1a1e1a), 0);
-        lv_obj_set_style_border_color(ui.preset_faces[i], lv_color_hex(selected ? 0xf2cc91 : LINE), 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(ui.preset_faces[i], 0), lv_color_hex(selected ? BG : TEXT), 0);
+        if(!native_home) {
+            bool selected = ui.machine.available && ui.machine.weight == presets[i];
+            refresh_color(ui.preset_faces[i],LV_STYLE_BG_COLOR, lv_color_hex(selected ? GOLD : SURFACE), 0);
+            refresh_color(ui.preset_faces[i],LV_STYLE_BG_GRAD_COLOR, lv_color_hex(selected ? 0xddb477 : 0x1a1e1a), 0);
+            refresh_color(ui.preset_faces[i],LV_STYLE_BORDER_COLOR, lv_color_hex(selected ? 0xf2cc91 : LINE), 0);
+            refresh_color(lv_obj_get_child(ui.preset_faces[i], 0),LV_STYLE_TEXT_COLOR, lv_color_hex(selected ? BG : TEXT), 0);
+        }
         if (blocked || !(ui.machine.writable & (1u << GBS_ACTION_WEIGHT))) lv_obj_add_state(ui.presets[i], LV_STATE_DISABLED); else lv_obj_clear_state(ui.presets[i], LV_STATE_DISABLED);
     }
     set(F_MODE, ui.bridge.active ? "当前：联动" : "当前：仅监测");
@@ -1292,12 +1612,16 @@ static void refresh(void)
     set(F_HUB, !ui.machine.available ? "未接入" : ui.machine.stale ? "已过期" : "已接入");
     const bool connected[] = {ui.bridge.wifi, ui.machine.available && !ui.machine.stale, ui.bridge.cloud, ui.bridge.grinder};
     for (unsigned i = 0; i < 4; ++i) if (ui.connection_dots[i])
-        lv_obj_set_style_bg_color(ui.connection_dots[i], lv_color_hex(connected[i] ? GREEN : WARN), 0);
-    if (ui.page == GBS_PAGE_DISPLAY) {
+        refresh_color(ui.connection_dots[i],LV_STYLE_BG_COLOR, lv_color_hex(connected[i] ? GREEN : WARN), 0);
+    if (ui.page == GBS_PAGE_DISPLAY || ui.page == GBS_PAGE_BRIGHTNESS) {
         snprintf(text, sizeof(text), "%u%%", ui.brightness_draft); set(F_BRIGHTNESS, text);
     }
     snprintf(text, sizeof(text), "内部空闲  %u KiB\n最大连续块  %u KiB", ui.bridge.free_internal / 1024, ui.bridge.largest_internal / 1024);
     set(F_MEMORY, text);
+#ifdef HUB_AMOLED_216
+    amoled_refresh();
+    amoled_details_refresh();
+#endif
 }
 
 void gbs_ui_init(gbs_ui_submit_t submit, void *context)
@@ -1307,7 +1631,7 @@ void gbs_ui_init(gbs_ui_submit_t submit, void *context)
     memset(collections,0,sizeof(*collections)*GBS_DATA_COUNT);
     memset(&ui, 0, sizeof(ui)); ui.data=collections; ui.submit = submit; ui.context = context;
     ui.machine = (gbs_ui_machine_t){.coffee=NAN, .coffee_target=NAN, .steam=NAN, .steam_target=NAN, .weight=NAN};
-    ui.brightness = 75; ui.dim = true; render();
+    ui.previous_weight=NAN; ui.brightness = DEFAULT_BRIGHTNESS; ui.dim = DEFAULT_DIM; render();
 }
 void gbs_ui_set_reader(gbs_ui_read_t reader) { ui.reader=reader; }
 void gbs_ui_set_schedule_submit(gbs_ui_schedule_submit_t submit) { ui.schedule_submit=submit; }
@@ -1325,16 +1649,78 @@ void gbs_ui_set_data(const gbs_ui_data_t *data)
     if(ui.data_page[data->kind]>=pages) ui.data_page[data->kind]=pages-1;
     if((data_page()&&data_kind()==data->kind)||plan_editor()) render();
 }
+#ifdef HUB_AMOLED_216
+static void cup_tone_once(unsigned bit,gbs_tone_t tone,bool audible)
+{
+    if(ui.cup_tone_nodes&bit) return;
+    ui.cup_tone_nodes|=bit;
+    if(audible) queue_tone(tone);
+}
+
+static void cup_progress_tones(const gbs_ui_bridge_t *s)
+{
+    if(!s->valid) return;
+    bool audible=ui.bridge.valid;
+    if(s->job&&s->job_id[0]) {
+        if(strcmp(ui.tone_job_id,s->job_id)) {
+            strcpy(ui.tone_job_id,s->job_id); ui.cup_tone_nodes=0;
+        }
+        cup_tone_once(1,GBS_TONE_NOTICE,audible);
+        if(s->recipe_enabled&&s->recipe_current) {
+            if(!strcmp(s->recipe_phase,"applied")) cup_tone_once(2,GBS_TONE_SUCCESS,audible);
+            else if(!strcmp(s->recipe_phase,"failed")) cup_tone_once(2,GBS_TONE_FAILURE,audible);
+            else if(!strcmp(s->recipe_phase,"unconfirmed")) cup_tone_once(2,GBS_TONE_NOTICE,audible);
+        }
+        if(s->pending&&!s->canceling&&!s->invalid_coffee&&s->unconfirmed_grams>0&&s->unconfirmed_seconds>0)
+            cup_tone_once(4,GBS_TONE_NOTICE,audible);
+    }
+    // A fast acknowledgement can arrive between UI polls; preserve both completed milestones.
+    if(s->successes>ui.bridge.successes&&gbs_ui_stage(s)==GBS_UI_RECEIVED&&ui.tone_job_id[0])
+        cup_tone_once(4,GBS_TONE_NOTICE,audible);
+}
+#endif
+
 void gbs_ui_set_bridge(const gbs_ui_bridge_t *s)
 {
     gbs_ui_stage_t old_stage = gbs_ui_stage(&ui.bridge);
+#ifdef HUB_AMOLED_216
+    cup_progress_tones(s);
+    if(s->successes>ui.bridge.successes) ui.manual_weight=false;
+#endif
+    if(ui.bridge.valid&&s->valid) {
+        if(s->successes>ui.bridge.successes&&gbs_ui_stage(s)==GBS_UI_RECEIVED) queue_tone(GBS_TONE_SUCCESS);
+        else if((ui.bridge.job||ui.bridge.pending)&&old_stage!=gbs_ui_stage(s)&&
+                (gbs_ui_stage(s)==GBS_UI_INVALID||!strcmp(s->outcome,"delivery_refused"))) queue_tone(GBS_TONE_FAILURE);
+#ifdef HUB_AMOLED_216
+        else if((ui.bridge.job||ui.bridge.pending)&&old_stage!=gbs_ui_stage(s)&&
+                (gbs_ui_stage(s)==GBS_UI_UNKNOWN||gbs_ui_stage(s)==GBS_UI_EXPIRED||gbs_ui_stage(s)==GBS_UI_INTERRUPTED||gbs_ui_stage(s)==GBS_UI_REFUSED))
+            queue_tone(GBS_TONE_NOTICE);
+#endif
+    }
+    bool recipe_changed=strcmp(ui.bridge.recipe_phase,s->recipe_phase)!=0;
+    if(recipe_changed&&ui.bridge.valid&&ui.bridge.job&&s->job&&ui.bridge.job_deadline_ms==s->job_deadline_ms&&
+       (!strcmp(ui.bridge.recipe_phase,"reading")||!strcmp(ui.bridge.recipe_phase,"applying"))&&
+       !strcmp(s->recipe_phase,"failed")) {
+#ifdef HUB_AMOLED_216
+        if(!s->job_id[0]) queue_tone(GBS_TONE_FAILURE);
+#else
+        queue_tone(GBS_TONE_FAILURE);
+#endif
+    }
+    if(s->job&&(!ui.bridge.job||s->job_deadline_ms!=ui.bridge.job_deadline_ms)) {
+        ui.manual_weight=false; ui.previous_weight=ui.machine.available&&!ui.machine.stale?ui.machine.weight:NAN;
+    }
     ui.bridge = *s;
     if (ui.control == GBS_UI_CONTROL_PENDING && ui.action == GBS_ACTION_MODE &&
         s->observed_ms > ui.submitted_ms && s->observed_ms > ui.submitted_observation) {
         if (s->active == (ui.requested != 0)) ui.control = GBS_UI_CONTROL_CONFIRMED;
         else if (s->mode_failed) ui.control = GBS_UI_CONTROL_FAILED;
+#ifdef HUB_AMOLED_216
+        if(ui.control==GBS_UI_CONTROL_CONFIRMED) queue_tone(GBS_TONE_SUCCESS);
+        else if(ui.control==GBS_UI_CONTROL_FAILED) queue_tone(GBS_TONE_FAILURE);
+#endif
     }
-    if (old_stage != gbs_ui_stage(s) && (ui.page == GBS_PAGE_HOME || ui.page == GBS_PAGE_LINK || ui.page == GBS_PAGE_TASK)) render();
+    if ((old_stage != gbs_ui_stage(s) || recipe_changed) && (ui.page == GBS_PAGE_HOME || ui.page == GBS_PAGE_LINK || ui.page == GBS_PAGE_TASK)) render();
     else refresh();
 }
 void gbs_ui_set_machine(const gbs_ui_machine_t *s)
@@ -1355,6 +1741,15 @@ void gbs_ui_control_result(uint32_t request_id, gbs_ui_control_t result)
 {
     if (ui.control != GBS_UI_CONTROL_PENDING || request_id != ui.request_id) return;
     ui.control = result;
+    if(result==GBS_UI_CONTROL_FAILED) queue_tone(GBS_TONE_FAILURE);
+#ifdef HUB_AMOLED_216
+    // A completed control sounds once, matching the displayed completion status.
+    if(result==GBS_UI_CONTROL_CONFIRMED) queue_tone(GBS_TONE_SUCCESS);
+    else if(result==GBS_UI_CONTROL_UNKNOWN||result==GBS_UI_CONTROL_PARTIAL) queue_tone(GBS_TONE_NOTICE);
+#else
+    // Machine acknowledgements may contain optimistic cache values, not physical readback.
+    if(result==GBS_UI_CONTROL_CONFIRMED&&!gbs_ui_machine_action(ui.action)&&!ui.schedule_submitted) queue_tone(GBS_TONE_SUCCESS);
+#endif
     if (result == GBS_UI_CONTROL_CONFIRMED) {
         if(ui.schedule_submitted) { ui.selected_schedule=ui.schedule_draft; ui.selected_stale=false; }
         ui.conflict=false;
@@ -1365,13 +1760,53 @@ void gbs_ui_control_result(uint32_t request_id, gbs_ui_control_t result)
 void gbs_ui_tick(int64_t now_ms)
 {
     ui.now = now_ms;
+    if(ui.preference_toast&&now_ms>=ui.preference_notice_until) {
+        lv_obj_del(ui.preference_toast); ui.preference_toast=NULL; ui.preference_notice_until=0;
+    }
     // This bounds the UI wait, not execution: a missing reply is never a safe retry.
     if (ui.control == GBS_UI_CONTROL_PENDING && now_ms - ui.submitted_ms >= GBS_UI_CONTROL_WAIT_MS) {
-        ui.control = GBS_UI_CONTROL_UNKNOWN; render();
+        ui.control = GBS_UI_CONTROL_UNKNOWN;
+#ifdef HUB_AMOLED_216
+        queue_tone(GBS_TONE_NOTICE);
+#endif
+        render();
     } else refresh();
 }
 gbs_ui_page_t gbs_ui_page(void) { return ui.page; }
 bool gbs_ui_keep_awake(void) { return gbs_ui_busy(&ui.bridge, ui.control, ui.confirm || ui.discard); }
-void gbs_ui_set_preferences(unsigned brightness, bool dim) { ui.brightness = brightness >= 25 && brightness <= 100 ? brightness : 75; ui.dim = dim; }
+void gbs_ui_set_preferences(unsigned brightness, bool dim) { ui.brightness = brightness >= 25 && brightness <= 100 ? brightness : DEFAULT_BRIGHTNESS; ui.dim = dim; }
 unsigned gbs_ui_brightness(void) { return ui.brightness; }
 bool gbs_ui_dim_enabled(void) { return ui.dim; }
+
+void gbs_ui_set_device(const gbs_device_status_t *device)
+{
+    if(!device) return;
+    ui.device=*device;
+    refresh();
+}
+void gbs_ui_set_device_preferences(bool auto_rotate,bool sound)
+{
+    ui.auto_rotate=auto_rotate; ui.sound=sound;
+    if(!sound) ui.tone_count=0;
+}
+bool gbs_ui_rotation_auto(void) { return ui.auto_rotate; }
+bool gbs_ui_sound_enabled(void) { return ui.sound; }
+gbs_tone_t gbs_ui_take_tone(void)
+{
+    if(!ui.tone_count) return GBS_TONE_NONE;
+    gbs_tone_t tone=ui.tones[0];
+    --ui.tone_count; memmove(ui.tones,ui.tones+1,ui.tone_count*sizeof(*ui.tones));
+    return tone;
+}
+
+void gbs_ui_set_scale_refresh(bool (*refresh)(void *context)) { ui.scale_refresh=refresh; }
+
+void gbs_ui_home_safe(void)
+{
+    if(ui.page==GBS_PAGE_HOME) return;
+    if(ui.dirty) {
+        ui.home_requested=ui.discard=true; ui.confirm=false; render(); return;
+    }
+    ui.depth=0; enter(GBS_PAGE_HOME);
+}
+void gbs_ui_toggle_rotation(void) { toggle_device_setting(ROTATION_TOGGLE); }

@@ -11,6 +11,7 @@
 #else
 #define LV_MEM_SIZE (192 * 1024U)
 #endif
+#define LV_USE_FONT_COMPRESSED 1
 #define LV_FONT_MONTSERRAT_12 1
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_20 1

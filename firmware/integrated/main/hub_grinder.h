@@ -6,6 +6,8 @@
 esp_err_t hub_grinder_start(void);
 bool hub_grinder_state(char *buffer, size_t size);
 bool hub_grinder_set_active(bool enabled);
+// Read-only guard for optional work; never reserves or delays job admission.
+bool hub_grinder_busy(void);
 
 bool hub_grinder_begin_maintenance(void);
 void hub_grinder_end_maintenance(void);

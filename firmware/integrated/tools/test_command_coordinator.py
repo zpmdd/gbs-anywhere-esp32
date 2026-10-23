@@ -129,7 +129,9 @@ HARNESS = r"""
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hub_command_coordinator.h"
+#include "hub_cloud.h"
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -148,6 +150,9 @@ typedef struct {
 static int64_t fake_now_ms;
 static uint32_t fake_random_value = 1;
 static int executor_calls;
+static int timing_begins, timing_ends;
+static bool timing_active;
+static char timing_request_id[HUB_COMMAND_REQUEST_ID_CAPACITY];
 static unsigned recipe_cancels;
 static bool recipe_permitted = true, observed_permission, observed_online_required;
 bool gbs_recipe_follow_generation_can_write(uint32_t generation) { return generation == 7 && recipe_permitted; }
@@ -306,11 +311,27 @@ uint32_t esp_random(void)
     return fake_random_value++;
 }
 
+void hub_cloud_command_timing_begin(const char *request_id)
+{
+    assert(!timing_active && hub_command_request_id_valid(request_id));
+    timing_active = true;
+    ++timing_begins;
+    snprintf(timing_request_id, sizeof(timing_request_id), "%s", request_id);
+}
+
+void hub_cloud_command_timing_end(void)
+{
+    assert(timing_active && timing_begins == executor_calls);
+    timing_active = false;
+    ++timing_ends;
+}
+
 esp_err_t hub_control_execute_request(
     const struct hub_command_request *request,
     hub_control_result_t *result
 )
 {
+    assert(timing_active && !strcmp(timing_request_id, request->request_id));
     if (executor_calls < HUB_COMMAND_QUEUE_CAPACITY) {
         executed_kinds[executor_calls] = request->kind;
     }
@@ -363,6 +384,7 @@ static void capture_completion(
     void *context
 )
 {
+    assert(!timing_active && timing_begins == executor_calls && timing_ends == executor_calls);
     completion_capture_t *capture = context;
     capture->calls++;
     capture->error = error;
@@ -435,6 +457,9 @@ static hub_command_submit_status_t submit(
 
 static void reset(void)
 {
+    assert(!timing_active && timing_begins == executor_calls && timing_ends == executor_calls);
+    timing_begins = timing_ends = 0;
+    timing_request_id[0] = '\0';
     hub_command_coordinator_reset();
     executor_calls = 0; recipe_cancels = 0; recipe_permitted = true;
     executor_advance_ms = 0;
@@ -457,6 +482,32 @@ static void test_submit_returns_without_running_executor_inline(void)
     require_true(executor_calls == 1 && capture.calls == 1, "worker did not complete command");
 }
 
+static void test_cold_boot_reset_drops_queued_manual_quick_weight(void)
+{
+    reset();
+    completion_capture_t capture = {0};
+    hub_command_submission_t submission = {0};
+    hub_control_result_t result = {0};
+    hub_command_request_t command = v2_request(
+        "00000000-0000-4000-8000-000000000301", HUB_COMMAND_QUICK_WEIGHT, 8000
+    );
+    command.value.quick_weight.grams = 35;
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED,
+                 "manual quick weight was not queued");
+    require_true(hub_command_interactive_pending() && executor_calls == 0,
+                 "manual quick weight did not remain queued before reset");
+    // Model loss of volatile coordinator state without resetting the execution counters.
+    hub_command_coordinator_reset();
+    require_true(!hub_command_coordinator_process_next_for_test(),
+                 "cold boot replayed a queued manual quick weight");
+    require_true(executor_calls == 0 && capture.calls == 0
+                 && timing_begins == 0 && timing_ends == 0,
+                 "reset or recovery executed the old manual command");
+    require_true(!hub_command_interactive_pending(), "reset retained interactive work");
+    require_true(hub_command_lookup(command.request_id, NULL, &result) == HUB_COMMAND_LOOKUP_NOT_FOUND,
+                 "reset retained the old manual request");
+}
+
 static void test_same_completed_request_id_returns_cached_result(void)
 {
     reset();
@@ -470,6 +521,86 @@ static void test_same_completed_request_id_returns_cached_result(void)
     require_true(executor_calls == 1, "completed duplicate executed twice");
     require_true(submission.result.ok && submission.result.deduplicated,
                  "completed duplicate did not return cached result metadata");
+}
+
+static void test_idle_background_defer_window(void)
+{
+    reset();
+    require_true(!hub_command_idle_background_deferred(), "boot created a false idle grace window");
+    completion_capture_t capture = {0};
+    hub_command_submission_t submission = {0};
+    hub_command_request_t command = v2_request(
+        "00000000-0000-4000-8000-000000000302", HUB_COMMAND_QUICK_WEIGHT, 8000
+    );
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED,
+                 "manual command was not queued");
+    require_true(hub_command_idle_background_deferred(), "pending interactive work did not defer idle reads");
+    require_true(hub_command_coordinator_process_next_for_test(), "manual command did not complete");
+    require_true(fake_now_ms == 0 && !hub_command_interactive_pending()
+                 && hub_command_idle_background_deferred(), "completion at zero uptime lost grace window");
+    fake_now_ms = 9999;
+    require_true(hub_command_idle_background_deferred(), "grace window ended early");
+    fake_now_ms = 10000;
+    require_true(!hub_command_idle_background_deferred(), "grace window exceeded ten seconds");
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_DUPLICATE_COMPLETE
+                 && !hub_command_idle_background_deferred(), "cached result restarted grace window");
+
+    reset(); fake_now_ms = 1000; executor_unknown = true;
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED
+                 && hub_command_coordinator_process_next_for_test(), "failed command did not complete");
+    require_true(!capture.result.ok && hub_command_idle_background_deferred(),
+                 "unsuccessful manual completion did not defer idle reads");
+    hub_command_coordinator_reset();
+    require_true(!hub_command_idle_background_deferred(), "cold boot retained completion grace window");
+
+    reset(); command = request("00000000-0000-4000-8000-000000000303", HUB_COMMAND_BBW_DOSE);
+    command.grinder_recipe_generation = 7;
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED
+                 && hub_command_idle_background_deferred(), "automatic pending work lost existing priority");
+    require_true(hub_command_coordinator_process_next_for_test()
+                 && !hub_command_idle_background_deferred(), "automatic completion created a manual grace window");
+
+    reset(); command.grinder_recipe_generation = 0;
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED
+                 && hub_command_coordinator_process_next_for_test(), "manual baseline did not complete");
+    fake_now_ms = 9000;
+    command = request("00000000-0000-4000-8000-000000000306", HUB_COMMAND_BBW_DOSE);
+    command.grinder_recipe_generation = 7;
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED
+                 && hub_command_coordinator_process_next_for_test(), "automatic follow-up did not complete");
+    fake_now_ms = 10000;
+    require_true(!hub_command_idle_background_deferred(), "automatic completion extended manual grace window");
+
+    reset(); command = v2_request("00000000-0000-4000-8000-000000000307", HUB_COMMAND_QUICK_WEIGHT, 8000);
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED, "expired case was not queued");
+    fake_now_ms = 8000;
+    require_true(hub_command_coordinator_process_next_for_test() && executor_calls == 0
+                 && !capture.result.ok && hub_command_idle_background_deferred(),
+                 "expired manual completion did not defer idle reads");
+
+    reset(); command = request("00000000-0000-4000-8000-000000000308", HUB_COMMAND_BBW_DOSE);
+    hub_command_request_t second = request("00000000-0000-4000-8000-000000000309", HUB_COMMAND_BBW_DOSE);
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED
+                 && submit(&second, &capture, &submission) == HUB_COMMAND_ACCEPTED, "interactive pair not queued");
+    require_true(hub_command_coordinator_process_next_for_test(), "first interactive command not completed");
+    fake_now_ms = 10000;
+    require_true(hub_command_interactive_pending() && hub_command_idle_background_deferred(),
+                 "expired grace window ignored remaining interactive work");
+    require_true(hub_command_coordinator_process_next_for_test(), "second interactive command not completed");
+    fake_now_ms = 19999; require_true(hub_command_idle_background_deferred(), "latest completion lost its full window");
+    fake_now_ms = 20000; require_true(!hub_command_idle_background_deferred(), "latest window did not expire");
+
+    reset(); command = request("00000000-0000-4000-8000-000000000304", HUB_COMMAND_SCHEDULE);
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED
+                 && !hub_command_idle_background_deferred(), "normal queue created interactive protection");
+    require_true(hub_command_coordinator_process_next_for_test()
+                 && !hub_command_idle_background_deferred(), "normal completion created interactive protection");
+
+    reset(); command = v2_request("00000000-0000-4000-8000-000000000305", HUB_COMMAND_QUICK_WEIGHT, 8000);
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED, "reset case was not queued");
+    hub_command_coordinator_reset();
+    require_true(!hub_command_idle_background_deferred() && !hub_command_coordinator_process_next_for_test()
+                 && executor_calls == 0, "cold boot retained pending work or protection");
 }
 
 static void test_same_inflight_request_id_does_not_execute_twice(void)
@@ -1168,6 +1299,8 @@ int main(void)
     test_v2_status_without_deadline();
     require_true(hub_command_coordinator_start() == ESP_OK, "coordinator failed to start");
     test_submit_returns_without_running_executor_inline();
+    test_cold_boot_reset_drops_queued_manual_quick_weight();
+    test_idle_background_defer_window();
     test_same_completed_request_id_returns_cached_result();
     test_same_inflight_request_id_does_not_execute_twice();
     test_queue_depth_is_bounded_at_four();
@@ -1241,7 +1374,7 @@ def main() -> None:
         subprocess.run(command, cwd=ROOT, check=True)
         subprocess.run([str(binary_path)], cwd=ROOT, check=True)
 
-    print("command coordinator host tests passed (31 cases including automatic recipe guard)")
+    print("command coordinator host tests passed (33 cases including idle-read grace boundaries, cold-boot queue reset and request-scoped timing)")
 
 
 if __name__ == "__main__":

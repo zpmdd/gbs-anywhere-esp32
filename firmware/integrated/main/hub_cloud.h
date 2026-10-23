@@ -44,6 +44,7 @@ typedef struct {
     bool is_ready;
     bool refresh_pending;
     int64_t last_refresh_ms;
+    int64_t scale_observed_ms;
     double dose1, dose2;
 } hub_cloud_snapshot_status_t;
 
@@ -55,6 +56,9 @@ typedef struct {
 } hub_cloud_websocket_auth_t;
 
 esp_err_t hub_cloud_refresh(void);
+// Bounded accessory read on the existing keeper/Cloud IO path.
+esp_err_t hub_cloud_refresh_scale(bool *request_attempted);
+bool hub_cloud_has_fresh_scale_battery(void);
 esp_err_t hub_cloud_request_refresh(void);
 uint32_t hub_cloud_refresh_request_generation(void);
 void hub_cloud_complete_refresh_request(uint32_t generation);
@@ -65,6 +69,9 @@ esp_err_t hub_cloud_get_websocket_auth(hub_cloud_websocket_auth_t *out);
 void hub_cloud_clear_websocket_auth(hub_cloud_websocket_auth_t *auth);
 bool hub_cloud_controls_available(void);
 const char *hub_cloud_command_readiness(void);
+// Bound Cloud timing to one coordinator execution without changing its result.
+void hub_cloud_command_timing_begin(const char *request_id);
+void hub_cloud_command_timing_end(void);
 bool hub_cloud_readonly_available(void);
 // Share outbound TLS capacity with background grinder traffic; controls take priority.
 esp_err_t hub_cloud_background_io_begin(void);

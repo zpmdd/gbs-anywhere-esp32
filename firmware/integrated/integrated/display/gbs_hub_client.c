@@ -4,6 +4,11 @@
 #include "hub_touchscreen.h"
 #include "hub_config.h"
 #include "esp_log.h"
+#ifdef HUB_AMOLED_216
+#include "gbs_scale_battery_cache.h"
+#include "hub_command_coordinator.h"
+#include "hub_grinder.h"
+#endif
 
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -23,6 +28,11 @@ static const char *TAG="gbs_hub";
 // Reserve internal stacks before Wi-Fi/BLE fragment the heap during startup.
 static StackType_t data_stack[8192 / sizeof(StackType_t)];
 static StaticTask_t data_task_storage;
+#ifdef HUB_AMOLED_216
+static gbs_scale_battery_cache_t scale_battery_cache;
+_Static_assert(GBS_SCALE_BATTERY_SERIAL_SIZE == HUB_CONFIG_MAX_MACHINE_SERIAL_LEN + 1,
+    "Scale battery binding must fit the selected machine serial");
+#endif
 static struct {
     gbs_hub_config_t *config;
     hub_machine_selection_identity_t selection;
@@ -40,6 +50,8 @@ static struct {
     gbs_ui_schedule_t schedule_expected,schedule_requested;
     unsigned data_pending, data_refresh;
     int64_t data_deadline[GBS_DATA_COUNT], data_poll[GBS_DATA_COUNT];
+    bool scale_refresh_queued;
+    int64_t scale_refresh_after;
     char *reply;
 } hub;
 
@@ -59,6 +71,34 @@ static void request_uuid(char out[37])
         bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],
         bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]);
 }
+#ifdef HUB_AMOLED_216
+static void update_scale_battery(gbs_ui_machine_t *machine)
+{
+    if (!hub_config_machine_selection_matches(&hub.selection)) {
+        machine->scale_battery_last_known=false;
+        machine->scale_battery_last_percent=0;
+        machine->scale_battery_last_observed_unix=0;
+        return;
+    }
+    gbs_scale_battery_cache_observe(&scale_battery_cache,hub.selection.serial_number,
+        hub.selection.generation,machine,now(NULL),(int64_t)time(NULL));
+    gbs_scale_battery_cache_apply(&scale_battery_cache,machine);
+}
+
+static void save_scale_battery_when_idle(void)
+{
+    if (!hub_config_machine_selection_matches(&hub.selection)
+        || hub_command_idle_background_deferred()) return;
+    if (hub_grinder_busy()) return;
+    xSemaphoreTake(hub.mutex,portMAX_DELAY);
+    bool idle=!hub.busy&&!hub.queued;
+    xSemaphoreGive(hub.mutex);
+    if (!idle || !hub_config_machine_selection_matches(&hub.selection)) return;
+    // Flash writes stay outside the model mutex and never change command results.
+    esp_err_t err=gbs_scale_battery_cache_save(&scale_battery_cache,now(NULL),idle);
+    if (err!=ESP_OK) ESP_LOGW(TAG,"Scale battery history save deferred: %s",esp_err_to_name(err));
+}
+#endif
 static void task(void *unused)
 {
     (void)unused;
@@ -69,6 +109,7 @@ static void task(void *unused)
         xSemaphoreTake(hub.mutex,portMAX_DELAY);
         bool queued=hub.queued; hub.queued=false;
         bool schedule_queued=hub.schedule_queued; hub.schedule_queued=false;
+        bool scale_refresh_queued=hub.scale_refresh_queued;
         gbs_ui_machine_t machine=queued?hub.submitted_machine:hub.machine;
         gbs_ui_action_t action=hub.action; double value=hub.value;
         uint32_t request_id=hub.request_id; int64_t deadline=hub.deadline;
@@ -82,10 +123,18 @@ static void task(void *unused)
             hub_config_get_machine_selection_identity(&selected);
             if(strcmp(selected.serial_number,hub.config->serial)||selected.generation!=hub.selection.generation) {
                 online=!queued;
-                hub.selection=selected;
+#ifdef HUB_AMOLED_216
+                gbs_scale_battery_cache_bind(&scale_battery_cache,selected.serial_number,
+                    selected.generation,(int64_t)time(NULL));
+#endif
                 snprintf(hub.config->serial,sizeof(hub.config->serial),"%s",selected.serial_number);
                 xSemaphoreTake(hub.mutex,portMAX_DELAY);
-                memset(&hub.machine,0,sizeof(hub.machine)); hub.machine.stale=true;
+                hub.selection=selected;
+                memset(&hub.machine,0,sizeof(hub.machine)); hub.machine.stale=hub.machine.scale_stale=true;
+#ifdef HUB_AMOLED_216
+                gbs_scale_battery_cache_apply(&scale_battery_cache,&hub.machine);
+#endif
+                hub.scale_refresh_queued=scale_refresh_queued=false; hub.scale_refresh_after=0;
                 for(unsigned i=0;i<GBS_DATA_COUNT;++i) {
                     uint32_t revision=hub.data[i].revision+1;
                     memset(&hub.data[i],0,sizeof(hub.data[i]));
@@ -103,6 +152,9 @@ static void task(void *unused)
             if(online) result=schedule_queued?
                 gbs_hub_execute_schedule(hub.config,&io,&hub.schedule_expected,&hub.schedule_requested,id,deadline,data):
                 gbs_hub_execute(hub.config,&io,action,value,id,deadline,&machine);
+#ifdef HUB_AMOLED_216
+            update_scale_battery(&machine);
+#endif
             xSemaphoreTake(hub.mutex,portMAX_DELAY);
             hub.machine=machine; hub.result=result; hub.completed_id=request_id; hub.busy=false;
             if(schedule_queued) {
@@ -112,8 +164,16 @@ static void task(void *unused)
             }
             xSemaphoreGive(hub.mutex);
             next_poll=now(NULL)+1000;
+        } else if(scale_refresh_queued) {
+            xSemaphoreTake(hub.mutex,portMAX_DELAY); hub.scale_refresh_queued=false; xSemaphoreGive(hub.mutex);
+            // This only wakes the existing Cloud owner; it never performs a network read here.
+            if(online) exchange(NULL,"/diagnostics/cloud/refresh","{}",hub.reply,REPLY_SIZE,now(NULL)+2000);
+            next_poll=0;
         } else if(now(NULL)>=next_poll) {
             if(!online||!gbs_hub_refresh(hub.config,&io,now(NULL)+12000,&machine)) machine.stale=true;
+#ifdef HUB_AMOLED_216
+            update_scale_battery(&machine);
+#endif
             xSemaphoreTake(hub.mutex,portMAX_DELAY); hub.machine=machine; xSemaphoreGive(hub.mutex);
             next_poll=now(NULL)+1000;
         } else if(kind<GBS_DATA_COUNT) {
@@ -143,8 +203,24 @@ static void task(void *unused)
             hub.data[kind]=*data;
             xSemaphoreGive(hub.mutex);
         }
+#ifdef HUB_AMOLED_216
+        save_scale_battery_when_idle();
+#endif
         ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(250));
     }
+}
+bool gbs_hub_request_scale_refresh(void)
+{
+    if(!hub.task||xSemaphoreTake(hub.mutex,pdMS_TO_TICKS(10))!=pdTRUE) return false;
+    int64_t current=now(NULL);
+    bool allowed=!hub.busy&&!hub.scale_refresh_queued&&current>=hub.scale_refresh_after;
+    if(allowed) {
+        hub.scale_refresh_queued=true;
+        hub.scale_refresh_after=current+30000;
+    }
+    xSemaphoreGive(hub.mutex);
+    if(allowed) xTaskNotifyGive(hub.task);
+    return allowed;
 }
 bool gbs_hub_request_data(gbs_ui_data_kind_t kind)
 {
@@ -194,8 +270,19 @@ bool gbs_hub_read(gbs_ui_machine_t *machine,uint32_t *request_id,gbs_ui_control_
 {
     if(!hub.task||xSemaphoreTake(hub.mutex,pdMS_TO_TICKS(10))!=pdTRUE) return false;
     *machine=hub.machine; *request_id=hub.completed_id; *result=hub.result;
+#ifdef HUB_AMOLED_216
+    hub_machine_selection_identity_t selection=hub.selection;
+#endif
     xSemaphoreGive(hub.mutex);
+#ifdef HUB_AMOLED_216
+    if (!hub_config_machine_selection_matches(&selection)) {
+        machine->scale_battery_last_known=false;
+        machine->scale_battery_last_percent=0;
+        machine->scale_battery_last_observed_unix=0;
+    }
+#endif
     if(machine->available&&now(NULL)-machine->observed_ms>=GBS_UI_MACHINE_FRESH_MS) machine->stale=true;
+    if(gbs_ui_scale_is_stale(machine,now(NULL))) machine->scale_stale=true;
     return true;
 }
 bool gbs_hub_running(void) { return hub.task != NULL; }

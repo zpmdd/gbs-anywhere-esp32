@@ -7,11 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <sys/time.h>
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
@@ -28,6 +30,9 @@
 #include "hub_command_coordinator.h"
 #include "hub_http_response.h"
 #include "hub_state_keeper.h"
+#ifdef HUB_GRINDER
+#include "hub_grinder.h"
+#endif
 #include "miniz.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/ctr_drbg.h"
@@ -129,6 +134,7 @@ typedef struct {
     bool thing_scale_connected;
     bool scale_battery_level_set;
     double scale_battery_level;
+    int64_t scale_observed_ms;
     bool scale_calibration_required_set;
     bool scale_calibration_required;
     char scale_name[64];
@@ -183,6 +189,69 @@ static portMUX_TYPE auth_diag_lock = portMUX_INITIALIZER_UNLOCKED;
 static readonly_http_diag_t readonly_http_diags[READONLY_DIAG_COUNT] = {0};
 static portMUX_TYPE readonly_http_diag_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool cached_snapshot_matches_selection(void);
+
+typedef enum {
+    TIMING_READY, TIMING_LOCK, TIMING_COOLDOWN, TIMING_HEAP,
+    TIMING_READ_CONTEXT, TIMING_READ_PARSE, TIMING_WRITE_CONTEXT,
+    TIMING_LOCAL_SAVE, TIMING_RETRY, TIMING_PHASE_COUNT
+} cloud_timing_phase_t;
+typedef struct {
+    int method, status, error, connection_close;
+    bool reused_handle;
+    uint32_t connection_events;
+    int32_t connect_us, headers_us, first_response_us;
+    uint32_t sign_us, internal_free_before, internal_largest_before;
+    int32_t init_us, perform_us, finish_us;
+} cloud_http_timing_t;
+enum { CLOUD_TIMING_HTTP_CAPACITY = 4 };
+typedef struct {
+    char request_id[HUB_COMMAND_REQUEST_ID_CAPACITY];
+    int64_t started_us, completed_ms;
+    uint32_t phase_us[TIMING_PHASE_COUNT], phases, execution_us, http_count;
+    cloud_http_timing_t http[CLOUD_TIMING_HTTP_CAPACITY];
+} cloud_command_timing_t;
+static EXT_RAM_BSS_ATTR cloud_command_timing_t command_timing, completed_timing;
+static atomic_uintptr_t timing_owner;
+static portMUX_TYPE command_timing_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static bool cloud_timing_owned(void)
+{
+    return atomic_load(&timing_owner) == (uintptr_t)xTaskGetCurrentTaskHandle();
+}
+
+void hub_cloud_command_timing_begin(const char *request_id)
+{
+    if (!hub_command_request_id_valid(request_id)) return;
+    memset(&command_timing, 0, sizeof(command_timing));
+    snprintf(command_timing.request_id, sizeof(command_timing.request_id), "%s", request_id);
+    command_timing.started_us = esp_timer_get_time();
+    atomic_store(&timing_owner, (uintptr_t)xTaskGetCurrentTaskHandle());
+}
+
+void hub_cloud_command_timing_end(void)
+{
+    if (!cloud_timing_owned()) return;
+    int64_t now = esp_timer_get_time();
+    command_timing.execution_us = (uint32_t)(now - command_timing.started_us);
+    command_timing.completed_ms = now / 1000;
+    portENTER_CRITICAL(&command_timing_lock);
+    completed_timing = command_timing;
+    portEXIT_CRITICAL(&command_timing_lock);
+    atomic_store(&timing_owner, 0);
+}
+
+static void cloud_timing_add(cloud_timing_phase_t phase, int64_t started_us)
+{
+    if (!cloud_timing_owned()) return;
+    command_timing.phase_us[phase] += (uint32_t)(esp_timer_get_time() - started_us);
+    command_timing.phases |= 1U << phase;
+}
+
+typedef struct {
+    http_response_t *response;
+    cloud_http_timing_t timing;
+    int64_t perform_started_us;
+} cloud_http_event_context_t;
 
 static void copy_snapshot(cloud_snapshot_t *out, bool *has_cached_snapshot)
 {
@@ -402,10 +471,12 @@ static esp_err_t cloud_command_io_lock(
         return ESP_ERR_TIMEOUT;
     }
     set_cloud_command_waiting(true);
+    int64_t stage_started = esp_timer_get_time();
     BaseType_t taken = xSemaphoreTake(
         refresh_mutex,
         pdMS_TO_TICKS((uint32_t)lock_wait_ms)
     );
+    cloud_timing_add(TIMING_LOCK, stage_started);
     if (taken != pdTRUE) {
         set_cloud_command_waiting(false);
         return ESP_ERR_TIMEOUT;
@@ -420,12 +491,16 @@ static esp_err_t cloud_command_io_lock(
             cloud_command_io_cancel_lock();
             return ESP_ERR_TIMEOUT;
         }
+        stage_started = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS((uint32_t)cooldown_ms));
+        cloud_timing_add(TIMING_COOLDOWN, stage_started);
     }
+    stage_started = esp_timer_get_time();
     esp_err_t settle_err = cloud_command_wait_for_internal_heap(
         deadline,
         required_after_ms
     );
+    cloud_timing_add(TIMING_HEAP, stage_started);
     if (settle_err != ESP_OK) {
         cloud_command_io_cancel_lock();
         return settle_err;
@@ -955,16 +1030,25 @@ static esp_err_t generate_signed_headers(
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
-    if (evt->event_id != HTTP_EVENT_ON_DATA || evt->data == NULL || evt->data_len <= 0) {
-        return ESP_OK;
+    cloud_http_event_context_t *context = evt->user_data;
+    if (context == NULL) return ESP_OK;
+    int32_t elapsed = (int32_t)(esp_timer_get_time() - context->perform_started_us);
+    if (evt->event_id == HTTP_EVENT_ON_CONNECTED) {
+        context->timing.connection_events++;
+        if (context->timing.connect_us < 0) context->timing.connect_us = elapsed;
     }
-
-    http_response_t *response = (http_response_t *)evt->user_data;
-    if (response == NULL) {
-        return ESP_OK;
+    if (evt->event_id == HTTP_EVENT_HEADERS_SENT && context->timing.headers_us < 0)
+        context->timing.headers_us = elapsed;
+    if ((evt->event_id == HTTP_EVENT_ON_HEADER || evt->event_id == HTTP_EVENT_ON_DATA)
+        && context->timing.first_response_us < 0) context->timing.first_response_us = elapsed;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->header_key && evt->header_value
+        && !strcasecmp(evt->header_key, "Connection")) {
+        if (!strcasecmp(evt->header_value, "close")) context->timing.connection_close = 1;
+        else if (!strcasecmp(evt->header_value, "keep-alive")) context->timing.connection_close = 0;
     }
-
-    return hub_http_response_append(response, evt->data, (size_t)evt->data_len);
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data && evt->data_len > 0)
+        return hub_http_response_append(context->response, evt->data, (size_t)evt->data_len);
+    return ESP_OK;
 }
 
 static bool http_response_is_gzip(const http_response_t *response)
@@ -1144,58 +1228,146 @@ static esp_err_t cloud_http_request_once(
     const char *body,
     http_response_t *response,
     int *status_code,
-    int timeout_ms
+    int timeout_ms,
+    esp_http_client_handle_t *session,
+    bool *request_started
 )
 {
+    int64_t stage_started = esp_timer_get_time();
+    esp_http_client_handle_t client = session ? *session : NULL;
+    if (request_started) *request_started = false;
+    if (session && status_code) *status_code = 0;
+    cloud_http_event_context_t context = {.response = response,
+        .timing = {.method = method, .connect_us = -1, .headers_us = -1,
+                   .first_response_us = -1, .connection_close = -1,
+                   .init_us = -1, .perform_us = -1, .finish_us = -1,
+                   .reused_handle = client != NULL}};
+    context.timing.internal_free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    context.timing.internal_largest_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     char timestamp[24] = {0};
     char nonce[40] = {0};
     char signature[160] = {0};
-    ESP_RETURN_ON_ERROR(generate_signed_headers(key, timestamp, sizeof(timestamp), nonce, sizeof(nonce), signature, sizeof(signature)), TAG, "signed headers failed");
+    esp_err_t err = generate_signed_headers(key, timestamp, sizeof(timestamp), nonce, sizeof(nonce), signature, sizeof(signature));
+    context.timing.sign_us = (uint32_t)(esp_timer_get_time() - stage_started);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "signed headers failed: %s", esp_err_to_name(err));
+        stage_started = esp_timer_get_time();
+        goto complete;
+    }
+    stage_started = esp_timer_get_time();
 
-    esp_http_client_config_t config = {
-        .url = url,
-        .method = method,
-        .timeout_ms = timeout_ms,
-        .event_handler = http_event_handler,
-        .user_data = response,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .buffer_size = CLOUD_HTTP_CLIENT_BUFFER_BYTES,
-        .buffer_size_tx = CLOUD_HTTP_CLIENT_BUFFER_BYTES,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
-        return ESP_ERR_NO_MEM;
+        esp_http_client_config_t config = {
+            .url = url,
+            .method = method,
+            .timeout_ms = timeout_ms,
+            .event_handler = http_event_handler,
+            .user_data = &context,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size = CLOUD_HTTP_CLIENT_BUFFER_BYTES,
+            .buffer_size_tx = CLOUD_HTTP_CLIENT_BUFFER_BYTES,
+            .disable_auto_redirect = session != NULL,
+            .max_authorization_retries = session ? -1 : 0,
+        };
+        client = esp_http_client_init(&config);
+        if (client == NULL) {
+            err = ESP_ERR_NO_MEM;
+            context.timing.init_us = (uint32_t)(esp_timer_get_time() - stage_started);
+            goto complete;
+        }
     }
 
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "X-App-Installation-Id", key->installation_id);
-    esp_http_client_set_header(client, "X-Timestamp", timestamp);
-    esp_http_client_set_header(client, "X-Nonce", nonce);
-    esp_http_client_set_header(client, "X-Request-Signature", signature);
+    /* Legacy callers retain their setup policy; scoped controls fail before sending. */
+#define CLOUD_HTTP_CONFIGURE(call) do { \
+    esp_err_t setup_err = (call); \
+    if (session && setup_err != ESP_OK) { err = setup_err; goto setup_failed; } \
+} while (0)
+    if (session) {
+        CLOUD_HTTP_CONFIGURE(esp_http_client_set_url(client, url));
+        CLOUD_HTTP_CONFIGURE(esp_http_client_set_method(client, method));
+        CLOUD_HTTP_CONFIGURE(esp_http_client_set_timeout_ms(client, timeout_ms));
+        CLOUD_HTTP_CONFIGURE(esp_http_client_set_user_data(client, &context));
+        err = esp_http_client_set_post_field(client, NULL, 0);
+        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) goto setup_failed;
+        /* This IDF checks allocation for new headers, not replacement values. */
+        static const char *request_headers[] = {"X-App-Installation-Id", "X-Timestamp",
+            "X-Nonce", "X-Request-Signature", "Authorization"};
+        for (unsigned i = 0; i < sizeof(request_headers) / sizeof(request_headers[0]); ++i) {
+            err = esp_http_client_delete_header(client, request_headers[i]);
+            if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) goto setup_failed;
+        }
+    }
+    CLOUD_HTTP_CONFIGURE(esp_http_client_set_header(client, "Content-Type", "application/json"));
+    CLOUD_HTTP_CONFIGURE(esp_http_client_set_header(client, "X-App-Installation-Id", key->installation_id));
+    CLOUD_HTTP_CONFIGURE(esp_http_client_set_header(client, "X-Timestamp", timestamp));
+    CLOUD_HTTP_CONFIGURE(esp_http_client_set_header(client, "X-Nonce", nonce));
+    CLOUD_HTTP_CONFIGURE(esp_http_client_set_header(client, "X-Request-Signature", signature));
     if (access_token != NULL && access_token[0] != '\0') {
         char auth_header[HUB_CONFIG_MAX_CLOUD_TOKEN_LEN + 16] = {0};
         snprintf(auth_header, sizeof(auth_header), "Bearer %s", access_token);
-        esp_http_client_set_header(client, "Authorization", auth_header);
+        CLOUD_HTTP_CONFIGURE(esp_http_client_set_header(client, "Authorization", auth_header));
+    } else if (session) {
+        err = esp_http_client_delete_header(client, "Authorization");
+        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) goto setup_failed;
     }
     if (body != NULL) {
-        esp_http_client_set_post_field(client, body, strlen(body));
+        CLOUD_HTTP_CONFIGURE(esp_http_client_set_post_field(client, body, strlen(body)));
     }
+#undef CLOUD_HTTP_CONFIGURE
 
-    esp_err_t err = esp_http_client_perform(client);
+    context.timing.init_us = (uint32_t)(esp_timer_get_time() - stage_started);
+    int previous_status = session ? esp_http_client_get_status_code(client) : 0;
+    context.perform_started_us = esp_timer_get_time();
+    if (request_started) *request_started = true;
+    err = esp_http_client_perform(client);
+    context.timing.perform_us = (uint32_t)(esp_timer_get_time() - context.perform_started_us);
+    stage_started = esp_timer_get_time();
     int64_t expected_bytes = esp_http_client_get_content_length(client);
     bool chunked = esp_http_client_is_chunked_response(client);
-    if (status_code != NULL) {
-        *status_code = esp_http_client_get_status_code(client);
-    }
+    int current_status = esp_http_client_get_status_code(client);
+    /* IDF leaves the preceding GET status intact until fetch_headers starts. */
+    if (session && err != ESP_OK && context.timing.first_response_us < 0
+        && previous_status > 0 && current_status == previous_status) current_status = 0;
+    if (session && current_status < 0) current_status = 0;
+    if (status_code != NULL) *status_code = current_status;
+    context.timing.status = current_status;
     if (err == ESP_OK) {
         err = hub_http_response_finish(response, expected_bytes, chunked);
     }
     if (err == ESP_OK) {
         err = inflate_http_response_if_needed(response);
     }
-    esp_http_client_cleanup(client);
+    goto complete;
+setup_failed:
+    context.timing.init_us = (uint32_t)(esp_timer_get_time() - stage_started);
+    stage_started = esp_timer_get_time();
+complete:
+    if (client != NULL) {
+        /* A retained client must not keep this stack context or a borrowed body. */
+        if (session) {
+            (void)esp_http_client_set_post_field(client, NULL, 0);
+            (void)esp_http_client_set_user_data(client, NULL);
+        }
+        if (session == NULL || err != ESP_OK) {
+            esp_http_client_cleanup(client);
+            client = NULL;
+        }
+        context.timing.finish_us = (uint32_t)(esp_timer_get_time() - stage_started);
+    }
+    if (session) *session = client;
+    context.timing.error = err;
+    if (cloud_timing_owned()) {
+        unsigned index = command_timing.http_count++;
+        if (index < CLOUD_TIMING_HTTP_CAPACITY) command_timing.http[index] = context.timing;
+    }
     return err;
+}
+
+static void cloud_http_session_cleanup(esp_http_client_handle_t *session)
+{
+    if (*session == NULL) return;
+    esp_http_client_cleanup(*session);
+    *session = NULL;
 }
 
 static esp_err_t cloud_http_request_no_retry(
@@ -1206,7 +1378,9 @@ static esp_err_t cloud_http_request_no_retry(
     const char *body,
     http_response_t *response,
     int *status_code,
-    int timeout_ms
+    int timeout_ms,
+    esp_http_client_handle_t *session,
+    bool *request_started
 )
 {
     if (status_code != NULL) {
@@ -1223,7 +1397,9 @@ static esp_err_t cloud_http_request_no_retry(
         body,
         response,
         status_code,
-        timeout_ms
+        timeout_ms,
+        session,
+        request_started
     );
 }
 
@@ -1260,7 +1436,7 @@ static esp_err_t cloud_http_request(
             body,
             response,
             &attempt_status,
-            CLOUD_READONLY_HTTP_TIMEOUT_MS
+            CLOUD_READONLY_HTTP_TIMEOUT_MS, NULL, NULL
         );
         if (status_code != NULL) {
             *status_code = attempt_status;
@@ -1304,7 +1480,7 @@ static esp_err_t cloud_readonly_http_request(
         body,
         response,
         status_code,
-        timeout_ms
+        timeout_ms, NULL, NULL
     );
 }
 
@@ -1394,7 +1570,7 @@ static esp_err_t cloud_refresh_http_request(
             body,
             response,
             &attempt_status,
-            CLOUD_READONLY_HTTP_TIMEOUT_MS
+            CLOUD_READONLY_HTTP_TIMEOUT_MS, NULL, NULL
         );
         if (status_code != NULL) {
             *status_code = attempt_status;
@@ -1816,7 +1992,8 @@ static hub_cloud_command_attempt_t cloud_execute_url(
     const char *label,
     const char *body,
     const hub_command_deadline_t *deadline,
-    uint32_t reserve_after_ms
+    uint32_t reserve_after_ms,
+    esp_http_client_handle_t *session
 )
 {
     hub_cloud_command_attempt_t attempt = {
@@ -1841,6 +2018,7 @@ static hub_cloud_command_attempt_t cloud_execute_url(
         }
         attempt.http_status = 0;
         hub_http_response_reset(&response);
+        bool performed = false;
         attempt.err = cloud_http_request_no_retry(
             url,
             HTTP_METHOD_POST,
@@ -1849,14 +2027,14 @@ static hub_cloud_command_attempt_t cloud_execute_url(
             body,
             &response,
             &attempt.http_status,
-            request_timeout_ms
+            request_timeout_ms, session, session ? &performed : NULL
         );
         attempt.response_bytes = response.len;
         attempt.first_bytes = http_response_first_bytes(&response);
-        attempt.attempts = connect_attempt + 1;
+        attempt.attempts = connect_attempt + (session && !performed ? 0 : 1);
 
         bool failed_before_request = cloud_command_connect_failed_before_request(&attempt);
-        attempt.request_started = !failed_before_request;
+        attempt.request_started = !failed_before_request && (!session || performed);
         if (!failed_before_request || connect_attempt == max_connect_attempts - 1) {
             break;
         }
@@ -1878,7 +2056,9 @@ static hub_cloud_command_attempt_t cloud_execute_url(
             attempt.err = ESP_ERR_TIMEOUT;
             break;
         }
+        int64_t retry_started = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS(CLOUD_COMMAND_CONNECT_RETRY_DELAY_MS));
+        cloud_timing_add(TIMING_RETRY, retry_started);
     }
     if (attempt.err == ESP_OK && (attempt.http_status < 200 || attempt.http_status >= 300)) {
         ESP_LOGW(TAG, "Cloud command %s returned HTTP %d", label, attempt.http_status);
@@ -1895,7 +2075,8 @@ static hub_cloud_command_attempt_t cloud_execute_command(
     const char *command,
     const char *body,
     const hub_command_deadline_t *deadline,
-    uint32_t reserve_after_ms
+    uint32_t reserve_after_ms,
+    esp_http_client_handle_t *session
 )
 {
     hub_machine_selection_identity_t target = {0};
@@ -1918,7 +2099,7 @@ static hub_cloud_command_attempt_t cloud_execute_command(
         command,
         body,
         deadline,
-        reserve_after_ms
+        reserve_after_ms, session
     );
 }
 
@@ -2012,6 +2193,7 @@ static void update_snapshot_bbw_dose(double dose1, double dose2)
 
 static void update_snapshot_bbw_mode(const char *mode)
 {
+    int64_t stage_started = esp_timer_get_time();
     hub_machine_selection_identity_t target = {0};
     if (!active_command_target(&target)) {
         return;
@@ -2027,15 +2209,18 @@ static void update_snapshot_bbw_mode(const char *mode)
     if (hub_config_save_bbw_selection(&target, mode,
             (double)confirmed.tv_sec + confirmed.tv_usec / 1000000.0) != ESP_OK)
         ESP_LOGW(TAG, "Could not persist confirmed BBW display selection");
+    cloud_timing_add(TIMING_LOCAL_SAVE, stage_started);
 }
 
 static hub_cloud_command_attempt_t execute_command_once_with_auth(
     const char *command,
     const char *body,
     const hub_command_deadline_t *deadline,
-    uint32_t reserve_after_ms
+    uint32_t reserve_after_ms,
+    esp_http_client_handle_t *session
 )
 {
+    int64_t stage_started = esp_timer_get_time();
     if (!hub_command_deadline_can_start_step(
             deadline,
             esp_timer_get_time() / 1000,
@@ -2048,11 +2233,13 @@ static hub_cloud_command_attempt_t execute_command_once_with_auth(
     cloud_tokens_t *tokens = calloc(1, sizeof(*tokens));
     if (settings == NULL || installation_key == NULL || tokens == NULL) {
         free_cloud_context(settings, installation_key, tokens);
+        cloud_timing_add(TIMING_WRITE_CONTEXT, stage_started);
         return command_attempt_error(ESP_ERR_NO_MEM);
     }
 
     hub_cloud_command_attempt_t attempt = command_attempt_error(ESP_FAIL);
     attempt.err = load_cloud_context(settings, installation_key, tokens);
+    cloud_timing_add(TIMING_WRITE_CONTEXT, stage_started);
     if (attempt.err == ESP_OK
         && !hub_command_deadline_can_start_step(
             deadline,
@@ -2069,7 +2256,7 @@ static hub_cloud_command_attempt_t execute_command_once_with_auth(
             command,
             body,
             deadline,
-            reserve_after_ms
+            reserve_after_ms, session
         );
     }
     free_cloud_context(settings, installation_key, tokens);
@@ -2080,14 +2267,15 @@ static hub_cloud_command_attempt_t execute_command_with_auth_locked(
     const char *command,
     const char *body,
     const hub_command_deadline_t *deadline,
-    uint32_t reserve_after_ms
+    uint32_t reserve_after_ms,
+    esp_http_client_handle_t *session
 )
 {
     hub_cloud_command_attempt_t attempt = execute_command_once_with_auth(
         command,
         body,
         deadline,
-        reserve_after_ms
+        reserve_after_ms, session
     );
     if (attempt.http_status == 401 || attempt.http_status == 403) {
         invalidate_cached_tokens();
@@ -2129,7 +2317,7 @@ static hub_cloud_command_attempt_t execute_command_with_auth(
         command,
         body,
         deadline,
-        reserve_after_ms
+        reserve_after_ms, NULL
     );
     cloud_command_io_unlock();
     /*
@@ -2201,7 +2389,7 @@ static hub_cloud_command_attempt_t execute_firmware_update_with_auth(void)
                 "machineFirmwareUpdate",
                 NULL,
                 NULL,
-                0
+                0, NULL
             );
         }
     }
@@ -3140,7 +3328,7 @@ static void parse_thing_scale(cJSON *output, cloud_snapshot_t *parsed)
 
     double value = 0;
     cJSON *battery_level = cJSON_GetObjectItemCaseSensitive(output, "batteryLevel");
-    if (json_item_to_double(battery_level, &value)) {
+    if (json_item_to_double(battery_level, &value) && isfinite(value) && value >= 0 && value <= 100) {
         parsed->scale_battery_level = value;
         parsed->scale_battery_level_set = true;
     }
@@ -3207,6 +3395,10 @@ static esp_err_t parse_dashboard_snapshot(
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    if (!cJSON_IsObject(root) || !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(root, "widgets"))) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     const char *response_serial = json_optional_string(root, "serialNumber");
     if (response_serial[0] != '\0' && strcmp(response_serial, expected_serial_number) != 0) {
         cJSON_Delete(root);
@@ -3272,8 +3464,111 @@ static esp_err_t parse_dashboard_snapshot(
     struct tm tm = {0};
     gmtime_r(&now, &tm);
     strftime(parsed->last_updated, sizeof(parsed->last_updated), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    if (parsed->bbw_scale_connected_set || parsed->thing_scale_connected_set) {
+        parsed->scale_observed_ms = esp_timer_get_time() / 1000;
+    }
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+static bool scale_snapshot_fresh(const cloud_snapshot_t *current, int64_t now)
+{
+    return current->connected && current->scale_observed_ms > 0
+        && now >= current->scale_observed_ms && now - current->scale_observed_ms < 60000;
+}
+
+static bool publish_scale_snapshot(const cloud_snapshot_t *observed)
+{
+    hub_machine_selection_identity_t target = {.generation = observed->selection_generation};
+    snprintf(target.serial_number, sizeof(target.serial_number), "%s", observed->serial_number);
+    if (!hub_config_machine_selection_matches(&target)) return false;
+    portENTER_CRITICAL(&snapshot_lock);
+    bool matches = cached_snapshot && snapshot.selection_generation == target.generation
+        && strcmp(snapshot.serial_number, target.serial_number) == 0;
+    if (matches) {
+        // Replace missing fields too; a successful read must not renew an older accessory value.
+        snapshot.bbw_scale_connected_set = observed->bbw_scale_connected_set;
+        snapshot.bbw_scale_connected = observed->bbw_scale_connected;
+        snapshot.thing_scale_connected_set = observed->thing_scale_connected_set;
+        snapshot.thing_scale_connected = observed->thing_scale_connected;
+        snapshot.scale_battery_level_set = observed->scale_battery_level_set;
+        snapshot.scale_battery_level = observed->scale_battery_level;
+        snapshot.scale_calibration_required_set = observed->scale_calibration_required_set;
+        snapshot.scale_calibration_required = observed->scale_calibration_required;
+        snprintf(snapshot.scale_name, sizeof(snapshot.scale_name), "%s", observed->scale_name);
+        snapshot.scale_observed_ms = observed->scale_observed_ms;
+        snapshot.connected = observed->connected;
+    }
+    portEXIT_CRITICAL(&snapshot_lock);
+    return matches;
+}
+
+static bool scale_read_deferred(void)
+{
+    if (hub_command_idle_background_deferred() || cloud_command_is_waiting()) return true;
+#ifdef HUB_GRINDER
+    if (hub_grinder_busy()) return true;
+#endif
+    return false;
+}
+
+esp_err_t hub_cloud_refresh_scale(bool *request_attempted)
+{
+    if (request_attempted) *request_attempted = false;
+    if (scale_read_deferred()) return ESP_ERR_INVALID_STATE;
+    hub_machine_selection_identity_t target = {0};
+    if (hub_config_get_machine_selection_identity(&target) != ESP_OK) return ESP_ERR_INVALID_STATE;
+    ESP_RETURN_ON_ERROR(ensure_refresh_mutex(), TAG, "Scale refresh mutex unavailable");
+    if (xSemaphoreTake(refresh_mutex, 0) != pdTRUE) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    hub_cloud_settings_t *settings = NULL;
+    installation_key_t *key = NULL;
+    cloud_tokens_t *tokens = NULL;
+    http_response_t response = {0};
+    esp_http_client_handle_t session = NULL;
+    bool attempted = false;
+    int status_code = 0;
+    int64_t started_us = esp_timer_get_time();
+    if (scale_read_deferred()) goto cleanup;
+    settings = heap_caps_calloc(1, sizeof(*settings), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    key = heap_caps_calloc(1, sizeof(*key), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    tokens = heap_caps_calloc(1, sizeof(*tokens), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!settings || !key || !tokens) { err = ESP_ERR_NO_MEM; goto cleanup; }
+    err = load_cloud_context(settings, key, tokens);
+    // Optional reads must not accelerate the existing authentication recovery cadence.
+    if (err != ESP_OK) goto cleanup;
+    if (!hub_config_machine_selection_matches(&target)) { err = ESP_ERR_INVALID_STATE; goto cleanup; }
+    if (scale_read_deferred()) { err = ESP_ERR_INVALID_STATE; goto cleanup; }
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+        < CLOUD_READONLY_MIN_INTERNAL_BLOCK_BYTES) { err = ESP_ERR_NO_MEM; goto cleanup; }
+    char url[160];
+    snprintf(url, sizeof(url), "%s/things/%s/dashboard", CUSTOMER_APP_URL, target.serial_number);
+    // One GET, no retries or discovery; keep the shared TLS path available for controls.
+    err = cloud_http_request_no_retry(url, HTTP_METHOD_GET, key, tokens->access_token,
+                                    NULL, &response, &status_code, CLOUD_READONLY_HTTP_TIMEOUT_MS, &session, &attempted);
+    if (status_code == 401 || status_code == 403) {
+        invalidate_cached_tokens();
+        (void)hub_cloud_request_refresh();
+    }
+    if (err == ESP_OK && status_code != 200) err = ESP_ERR_INVALID_RESPONSE;
+    if (err == ESP_OK) {
+        cloud_snapshot_t previous = {0}, observed = {0};
+        char name[HUB_CONFIG_MAX_MACHINE_NAME_LEN + 1];
+        err = parse_dashboard_snapshot(response.data, target.serial_number, target.generation,
+                                       &previous, &observed, name, sizeof(name));
+        if (err == ESP_OK && !publish_scale_snapshot(&observed)) err = ESP_ERR_INVALID_STATE;
+    }
+cleanup:
+    cloud_http_session_cleanup(&session);
+    record_readonly_http_diag(READONLY_DIAG_DASHBOARD, err, status_code,
+        (int)((esp_timer_get_time() - started_us) / 1000), response.len, http_response_first_bytes(&response));
+    hub_http_response_reset(&response);
+    free_cloud_context(settings, key, tokens);
+    if (request_attempted) *request_attempted = attempted;
+    if (attempted) cloud_readonly_io_unlock();
+    else xSemaphoreGive(refresh_mutex);
+    return err;
 }
 
 static esp_err_t cloud_fetch_dashboard(
@@ -3594,8 +3889,22 @@ void hub_cloud_get_snapshot_status(hub_cloud_snapshot_status_t *out)
     out->is_ready = snapshot_usable && current.connected && has_complete_bbw;
     out->refresh_pending = cloud_refresh_pending_snapshot();
     out->last_refresh_ms = last_refresh_ms;
+    out->scale_observed_ms = snapshot_usable ? current.scale_observed_ms : 0;
     out->dose1 = current.dose1;
     out->dose2 = current.dose2;
+}
+
+bool hub_cloud_has_fresh_scale_battery(void)
+{
+    cloud_snapshot_t current = {0};
+    bool cached = false;
+    copy_snapshot(&current, &cached);
+    bool online = current.bbw_scale_connected_set ? current.bbw_scale_connected
+        : current.thing_scale_connected_set && current.thing_scale_connected;
+    return snapshot_matches_selection(&current, cached)
+        && scale_snapshot_fresh(&current, esp_timer_get_time() / 1000) && online
+        && current.scale_battery_level_set && isfinite(current.scale_battery_level)
+        && current.scale_battery_level >= 0 && current.scale_battery_level <= 100;
 }
 
 bool hub_cloud_controls_available(void)
@@ -3622,7 +3931,9 @@ static esp_err_t ensure_cloud_controls_ready(void)
 
 static esp_err_t ensure_cloud_controls_ready_or_fail(hub_cloud_command_result_t *result, int64_t started_us)
 {
+    int64_t stage_started = esp_timer_get_time();
     esp_err_t ready_err = ensure_cloud_controls_ready();
+    cloud_timing_add(TIMING_READY, stage_started);
     if (ready_err != ESP_OK) {
         set_command_result(result, false, started_us, "Cloud control is unavailable. Refresh Cloud diagnostics first.");
     }
@@ -4061,7 +4372,8 @@ cleanup:
 static esp_err_t read_control_snapshot_locked(
     const hub_command_deadline_t *deadline,
     uint32_t reserve_after_ms,
-    cloud_snapshot_t *out
+    cloud_snapshot_t *out,
+    esp_http_client_handle_t *session
 )
 {
     int64_t started_us = esp_timer_get_time();
@@ -4084,6 +4396,7 @@ static esp_err_t read_control_snapshot_locked(
     );
     if (settings == NULL || key == NULL || tokens == NULL) {
         free_cloud_context(settings, key, tokens);
+        cloud_timing_add(TIMING_READ_CONTEXT, started_us);
         record_readonly_http_diag(READONLY_DIAG_DASHBOARD, ESP_ERR_NO_MEM, 0,
                                   (int)((esp_timer_get_time() - started_us) / 1000), 0, 0);
         return ESP_ERR_NO_MEM;
@@ -4091,6 +4404,7 @@ static esp_err_t read_control_snapshot_locked(
     http_response_t response = {0};
     int status_code = 0;
     esp_err_t err = load_cloud_context(settings, key, tokens);
+    cloud_timing_add(TIMING_READ_CONTEXT, started_us);
     if (err == ESP_OK && !hub_config_machine_selection_matches(&target)) {
         err = ESP_ERR_INVALID_STATE;
     }
@@ -4106,7 +4420,7 @@ static esp_err_t read_control_snapshot_locked(
             snprintf(url, sizeof(url), "%s/things/%s/dashboard", CUSTOMER_APP_URL, target.serial_number);
             err = cloud_http_request_no_retry(
                 url, HTTP_METHOD_GET, key, tokens->access_token, NULL,
-                &response, &status_code, timeout_ms
+                &response, &status_code, timeout_ms, session, NULL
             );
         }
         if (attempt || !cloud_http_retryable_error(err) ||
@@ -4114,9 +4428,12 @@ static esp_err_t read_control_snapshot_locked(
                 reserve_after_ms + 2 * HUB_COMMAND_DEADLINE_CLOUD_MIN_START_RESERVE_MS)) break;
         // Retry only the fresh GET; no business command has been sent yet.
         hub_http_response_reset(&response);
+        int64_t retry_started = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS(250));
+        cloud_timing_add(TIMING_RETRY, retry_started);
         err = hub_config_machine_selection_matches(&target) ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
+    int64_t parse_started = esp_timer_get_time();
     if (status_code == 401 || status_code == 403) {
         invalidate_cached_tokens();
     }
@@ -4141,6 +4458,8 @@ static esp_err_t read_control_snapshot_locked(
     if (err == ESP_OK && !hub_config_machine_selection_matches(&target)) {
         err = ESP_ERR_INVALID_STATE;
     }
+    if (err == ESP_OK) (void)publish_scale_snapshot(out);
+    cloud_timing_add(TIMING_READ_PARSE, parse_started);
     record_readonly_http_diag(
         READONLY_DIAG_DASHBOARD, err, status_code,
         (int)((esp_timer_get_time() - started_us) / 1000), response.len, 0
@@ -4200,9 +4519,11 @@ esp_err_t hub_cloud_set_bbw_dose_with_deadline(
         set_command_result(result, false, started_us, "Cloud command is busy or its deadline expired.");
         return lock_err;
     }
+    esp_http_client_handle_t session = NULL;
     cloud_snapshot_t current_snapshot = {0};
-    esp_err_t read_err = read_control_snapshot_locked(deadline, reserve_after_ms, &current_snapshot);
+    esp_err_t read_err = read_control_snapshot_locked(deadline, reserve_after_ms, &current_snapshot, &session);
     if (read_err != ESP_OK) {
+        cloud_http_session_cleanup(&session);
         cloud_command_io_unlock();
         char message[128] = {0};
         snprintf(message, sizeof(message), "Cloud dose read failed (%s); no dose command sent.", esp_err_to_name(read_err));
@@ -4212,6 +4533,7 @@ esp_err_t hub_cloud_set_bbw_dose_with_deadline(
     if (!current_snapshot.dose1_set || !current_snapshot.dose2_set
         || !control_decimal_value_is_valid(current_snapshot.dose1, 200.0)
         || !control_decimal_value_is_valid(current_snapshot.dose2, 200.0)) {
+        cloud_http_session_cleanup(&session);
         cloud_command_io_unlock();
         set_command_result(result, false, started_us, "Cloud dose fields are missing or invalid; no dose command sent.");
         return ESP_ERR_INVALID_STATE;
@@ -4231,8 +4553,9 @@ esp_err_t hub_cloud_set_bbw_dose_with_deadline(
         "CoffeeMachineBrewByWeightSettingDoses",
         body,
         deadline,
-        reserve_after_ms
+        reserve_after_ms, &session
     );
+    cloud_http_session_cleanup(&session);
     cloud_command_io_unlock();
     schedule_command_auth_recovery(&attempt);
     set_command_attempt(result, &attempt);
@@ -4331,6 +4654,7 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
         return ready_err;
     }
 
+    esp_http_client_handle_t session = NULL;
     if (guarded) {
         esp_err_t lock_err = cloud_command_io_lock(deadline, reserve_after_ms);
         if (lock_err != ESP_OK) {
@@ -4338,8 +4662,9 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
             return lock_err;
         }
         cloud_snapshot_t current = {0};
-        esp_err_t read_err = read_control_snapshot_locked(deadline, reserve_after_ms, &current);
+        esp_err_t read_err = read_control_snapshot_locked(deadline, reserve_after_ms, &current, &session);
         if (read_err != ESP_OK) {
+            cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
             char message[128] = {0};
             snprintf(message, sizeof(message), "Cloud preset read failed (%s); no command sent.", esp_err_to_name(read_err));
@@ -4347,6 +4672,7 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
             return read_err;
         }
         if (hub_command_requires_online_machine() && !current.connected) {
+            cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
             set_command_result(result, false, started_us, "Coffee machine is offline; no automatic weight command sent.");
             return ESP_ERR_INVALID_STATE;
@@ -4355,6 +4681,7 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
             && control_decimal_value_is_valid(current.dose1, 200.0)
             && control_decimal_value_is_valid(current.dose2, 200.0);
         if (!complete) {
+            cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
             char message[160] = {0};
             snprintf(message, sizeof(message),
@@ -4368,6 +4695,7 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
             ? current.dose1 != preset_grams && current.dose2 != preset_grams
             : (strcmp(mode, "Dose1") == 0 ? current.dose1 : current.dose2) == preset_grams;
         if (!matches) {
+            cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
             result->preset_changed = true;
             set_command_result(result, false, started_us, "Stored doses changed or are unavailable; no command sent.");
@@ -4378,9 +4706,10 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
     char body[48] = {0};
     snprintf(body, sizeof(body), "{\"mode\":\"%s\"}", mode);
     hub_cloud_command_attempt_t attempt = guarded
-        ? execute_command_with_auth_locked("CoffeeMachineBrewByWeightChangeMode", body, deadline, reserve_after_ms)
+        ? execute_command_with_auth_locked("CoffeeMachineBrewByWeightChangeMode", body, deadline, reserve_after_ms, &session)
         : execute_setting_command_with_auth("CoffeeMachineBrewByWeightChangeMode", body, deadline, reserve_after_ms);
     if (guarded) {
+        cloud_http_session_cleanup(&session);
         cloud_command_io_unlock();
         schedule_command_auth_recovery(&attempt);
     }
@@ -4729,6 +5058,7 @@ esp_err_t hub_cloud_set_prebrew_with_deadline(
     char command[48] = {0};
     char body[128] = {0};
     bool command_io_locked = false;
+    esp_http_client_handle_t session = NULL;
     double on_time = 0.0;
     double off_time = 0.0;
     if (strcmp(field, "mode") == 0) {
@@ -4751,8 +5081,9 @@ esp_err_t hub_cloud_set_prebrew_with_deadline(
         }
         command_io_locked = true;
         cloud_snapshot_t current_snapshot = {0};
-        esp_err_t read_err = read_control_snapshot_locked(deadline, reserve_after_ms, &current_snapshot);
+        esp_err_t read_err = read_control_snapshot_locked(deadline, reserve_after_ms, &current_snapshot, &session);
         if (read_err != ESP_OK) {
+            cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
             char message[128] = {0};
             snprintf(message, sizeof(message), "Cloud prebrew read failed (%s); no time command sent.", esp_err_to_name(read_err));
@@ -4762,6 +5093,7 @@ esp_err_t hub_cloud_set_prebrew_with_deadline(
         if (!current_snapshot.prebrew_on_set || !current_snapshot.prebrew_off_set
             || !control_decimal_value_is_valid(current_snapshot.prebrew_on, 10.0)
             || !control_decimal_value_is_valid(current_snapshot.prebrew_off, 10.0)) {
+            cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
             set_command_result(result, false, started_us, "Cloud prebrew fields are missing or invalid; no time command sent.");
             return ESP_ERR_INVALID_STATE;
@@ -4787,9 +5119,10 @@ esp_err_t hub_cloud_set_prebrew_with_deadline(
     }
 
     hub_cloud_command_attempt_t attempt = command_io_locked
-        ? execute_command_with_auth_locked(command, body, deadline, reserve_after_ms)
+        ? execute_command_with_auth_locked(command, body, deadline, reserve_after_ms, &session)
         : execute_setting_command_with_auth(command, body, deadline, reserve_after_ms);
     if (command_io_locked) {
+        cloud_http_session_cleanup(&session);
         cloud_command_io_unlock();
         schedule_command_auth_recovery(&attempt);
     }
@@ -4963,16 +5296,19 @@ const char *hub_cloud_machine_state_json(void)
     if (current.bbw_mode[0] != '\0') {
         snprintf(bbw_mode, sizeof(bbw_mode), "\"%s\"", current.bbw_mode);
     }
-    if (current.bbw_scale_connected_set) {
+    bool scale_fresh = scale_snapshot_fresh(&current, esp_timer_get_time() / 1000);
+    bool scale_online = current.bbw_scale_connected_set ? current.bbw_scale_connected
+        : current.thing_scale_connected_set && current.thing_scale_connected;
+    if (scale_fresh && current.bbw_scale_connected_set) {
         snprintf(scale_connected, sizeof(scale_connected), "%s", current.bbw_scale_connected ? "true" : "false");
     }
-    if (current.thing_scale_connected_set) {
+    if (scale_fresh && current.thing_scale_connected_set) {
         snprintf(thing_scale_connected, sizeof(thing_scale_connected), "%s", current.thing_scale_connected ? "true" : "false");
     }
-    if (current.scale_battery_level_set) {
+    if (scale_fresh && scale_online && current.scale_battery_level_set) {
         snprintf(scale_battery_level, sizeof(scale_battery_level), "%.0f", current.scale_battery_level);
     }
-    if (current.scale_calibration_required_set) {
+    if (scale_fresh && scale_online && current.scale_calibration_required_set) {
         snprintf(
             scale_calibration_required,
             sizeof(scale_calibration_required),
@@ -4980,7 +5316,7 @@ const char *hub_cloud_machine_state_json(void)
             current.scale_calibration_required ? "true" : "false"
         );
     }
-    if (current.scale_name[0] != '\0') {
+    if (scale_fresh && current.scale_name[0] != '\0') {
         char escaped_scale_name[64] = {0};
         json_safe_copy(escaped_scale_name, sizeof(escaped_scale_name), current.scale_name);
         snprintf(scale_name, sizeof(scale_name), "\"%s\"", escaped_scale_name);
@@ -5010,6 +5346,7 @@ const char *hub_cloud_machine_state_json(void)
         "\"scaleConnected\":%s,"
         "\"thingScaleConnected\":%s,"
         "\"scaleBatteryLevel\":%s,"
+        "\"scaleObservedMs\":%lld,"
         "\"scaleCalibrationRequired\":%s,"
         "\"scaleName\":%s,"
         "\"activeDose\":\"dose1\","
@@ -5043,6 +5380,7 @@ const char *hub_cloud_machine_state_json(void)
         scale_connected,
         thing_scale_connected,
         scale_battery_level,
+        (long long)current.scale_observed_ms,
         scale_calibration_required,
         scale_name,
         current.prebrew_mode[0] != '\0' ? current.prebrew_mode : "Disabled",
@@ -5100,9 +5438,63 @@ int64_t hub_cloud_auth_refresh_last_success_uptime_ms(void)
     return value;
 }
 
+static const char *timing_millis_text(int32_t microseconds, char buffer[24])
+{
+    if (microseconds < 0) return "null";
+    snprintf(buffer, 24, "%.3f", microseconds / 1000.0);
+    return buffer;
+}
+
+static bool cloud_command_timing_json(char *buffer, size_t size)
+{
+    cloud_command_timing_t copy;
+    portENTER_CRITICAL(&command_timing_lock);
+    copy = completed_timing;
+    portEXIT_CRITICAL(&command_timing_lock);
+    size_t offset = 0;
+#define TIMING_APPEND(...) do { \
+    int count = snprintf(buffer + offset, size - offset, __VA_ARGS__); \
+    if (count < 0 || (size_t)count >= size - offset) return false; \
+    offset += (size_t)count; \
+} while (0)
+    if (!copy.request_id[0]) {
+        TIMING_APPEND("{\"available\":false}");
+        return true;
+    }
+    TIMING_APPEND("{\"available\":true,\"requestId\":\"%s\",\"completedUptimeMs\":%lld,\"executionMs\":%.3f",
+        copy.request_id, (long long)copy.completed_ms, copy.execution_us / 1000.0);
+    static const char *names[TIMING_PHASE_COUNT] = {"readyMs", "lockWaitMs", "cooldownMs", "heapWaitMs",
+        "readContextMs", "readParseMs", "writeContextMs", "localSaveMs", "retryWaitMs"};
+    for (unsigned i = 0; i < TIMING_PHASE_COUNT; ++i) {
+        char value[24];
+        TIMING_APPEND(",\"%s\":%s", names[i], (copy.phases & (1U << i))
+            ? timing_millis_text((int32_t)copy.phase_us[i], value) : "null");
+    }
+    TIMING_APPEND(",\"httpCount\":%lu,\"httpTruncated\":%s,\"http\":[", (unsigned long)copy.http_count,
+        copy.http_count > CLOUD_TIMING_HTTP_CAPACITY ? "true" : "false");
+    for (unsigned i = 0; i < copy.http_count && i < CLOUD_TIMING_HTTP_CAPACITY; ++i) {
+        const cloud_http_timing_t *h = &copy.http[i];
+        char connect[24], headers[24], response[24], init[24], perform[24], finish[24];
+        TIMING_APPEND("%s{\"method\":\"%s\",\"signMs\":%.3f,\"initMs\":%s,\"connectMs\":%s,"
+            "\"headersSentMs\":%s,\"firstResponseMs\":%s,\"performMs\":%s,\"finishMs\":%s,"
+            "\"connectionClose\":%s,\"reusedHandle\":%s,\"connectionEvents\":%lu,"
+            "\"status\":%d,\"error\":\"%s\",\"internalFreeBefore\":%lu,\"internalLargestBefore\":%lu}",
+            i ? "," : "", h->method == HTTP_METHOD_GET ? "GET" : h->method == HTTP_METHOD_POST ? "POST" : "OTHER",
+            h->sign_us / 1000.0, timing_millis_text(h->init_us, init), timing_millis_text(h->connect_us, connect),
+            timing_millis_text(h->headers_us, headers), timing_millis_text(h->first_response_us, response),
+            timing_millis_text(h->perform_us, perform), timing_millis_text(h->finish_us, finish),
+            h->connection_close < 0 ? "null" : h->connection_close ? "true" : "false",
+            h->reused_handle ? "true" : "false", (unsigned long)h->connection_events, h->status,
+            esp_err_to_name(h->error), (unsigned long)h->internal_free_before, (unsigned long)h->internal_largest_before);
+    }
+    TIMING_APPEND("]}");
+#undef TIMING_APPEND
+    return true;
+}
+
 const char *hub_cloud_readonly_diagnostics_json(void)
 {
-    static char body[1400];
+    static EXT_RAM_BSS_ATTR char body[5120];
     readonly_http_diag_t copies[READONLY_DIAG_COUNT] = {0};
 
     portENTER_CRITICAL(&readonly_http_diag_lock);
@@ -5130,6 +5522,13 @@ const char *hub_cloud_readonly_diagnostics_json(void)
             (unsigned long)diag->attempts
         );
     }
+    if (offset >= sizeof(body)) return "{\"error\":\"diagnosticsTooLarge\"}";
+    int count = snprintf(body + offset, sizeof(body) - offset, ",\"commandTiming\":");
+    if (count < 0 || (size_t)count >= sizeof(body) - offset) return "{\"error\":\"diagnosticsTooLarge\"}";
+    offset += (size_t)count;
+    if (!cloud_command_timing_json(body + offset, sizeof(body) - offset - 1))
+        return "{\"error\":\"diagnosticsTooLarge\"}";
+    offset += strlen(body + offset);
     snprintf(body + offset, sizeof(body) - offset, "}");
     return body;
 }

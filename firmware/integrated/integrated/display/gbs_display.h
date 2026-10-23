@@ -2,8 +2,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "esp_err.h"
+#ifdef HUB_AMOLED_216
+#define GBS_DISPLAY_WIDTH 480
+#define GBS_DISPLAY_HEIGHT 480
+#else
 #define GBS_DISPLAY_WIDTH 240
 #define GBS_DISPLAY_HEIGHT 280
+#endif
 #define GBS_DISPLAY_FRAME_BYTES (GBS_DISPLAY_WIDTH*GBS_DISPLAY_HEIGHT*2)
 
 typedef bool (*gbs_display_state_fn)(char *buffer, size_t size);

@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 from test_command_coordinator import ESP_ERR_STUB
+from validate_stability_foundation import function_body
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
@@ -17,8 +18,8 @@ HARNESS = r'''
 #include <stdio.h>
 #include <string.h>
 static int64_t clock_ms=1000;
-static bool busy,locked;
-static int submissions;
+static bool busy,locked,refresh_pending,refresh_failed;
+static int submissions,refresh_requests;
 static double weight=30;
 static const char *readiness="ready";
 static char completed_id[37];
@@ -28,6 +29,12 @@ bool hub_http_local_lock(void) { if(busy) return false; assert(!locked); locked=
 void hub_http_local_unlock(void) { assert(locked); locked=false; }
 bool hub_command_request_id_valid(const char *id) { return id&&strlen(id)==36; }
 const char *hub_cloud_command_readiness(void) { return readiness; }
+bool hub_cloud_refresh_pending(void) { return refresh_pending; }
+esp_err_t hub_cloud_request_refresh(void) {
+    ++refresh_requests;
+    if(refresh_failed)return ESP_FAIL;
+    refresh_pending=true;return ESP_OK;
+}
 const char *hub_state_machine_binding_json(void)
 { return "{\"selected\":true,\"serialNumber\":\"SYNTHETIC\",\"generation\":1}"; }
 const char *hub_state_capabilities_json(void)
@@ -105,10 +112,47 @@ int main(void)
     assert(hub_touchscreen_exchange("/machine/statistics?days=7",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==200&&stale);
     assert(hub_touchscreen_exchange("/machine/schedule",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==503);
     assert(hub_touchscreen_exchange("/diagnostics/slow-cloud-reads/refresh?kind=schedule","{}","SYNTHETIC",reply,sizeof(reply),10000,&stale)==200);
+    assert(hub_touchscreen_exchange("/diagnostics/cloud/refresh","{}","SYNTHETIC",reply,sizeof(reply),10000,&stale)==202);
+    assert(refresh_requests==1&&refresh_pending);
+    assert(hub_touchscreen_exchange("/diagnostics/cloud/refresh","{}","SYNTHETIC",reply,sizeof(reply),10000,&stale)==202);
+    assert(refresh_requests==1); // Join the existing Cloud owner, never add another refresh generation.
+    refresh_pending=false;refresh_failed=true;
+    assert(hub_touchscreen_exchange("/diagnostics/cloud/refresh","{}","SYNTHETIC",reply,sizeof(reply),10000,&stale)==503);
     busy=true; assert(hub_touchscreen_exchange("/machine/state",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==503);
     busy=false; assert(hub_touchscreen_exchange("/machine/state",NULL,"SYNTHETIC",reply,sizeof(reply),clock_ms,&stale)==-1);
     assert(submissions==1&&!locked);
     puts("Integrated surface: 15 actions, local telemetry/write/readback, stale cache and admission PASS");
+}
+'''
+
+SCALE_REQUEST = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#define pdTRUE 1
+#define pdMS_TO_TICKS(ms) (ms)
+static struct { int task,mutex; bool busy,scale_refresh_queued; int64_t scale_refresh_after; } hub={.task=1,.mutex=1};
+static bool locked,lock_failed;
+static int notifications;
+static int64_t clock_ms=1000;
+static int64_t now(void *ctx) { (void)ctx;return clock_ms; }
+static int xSemaphoreTake(int mutex,int timeout) { assert(mutex==1&&timeout==10&&!locked);locked=!lock_failed;return locked; }
+static void xSemaphoreGive(int mutex) { assert(mutex==1&&locked);locked=false; }
+static void xTaskNotifyGive(int task) { assert(task==1);++notifications; }
+/* FUNCTION */
+int main(void) {
+    assert(gbs_hub_request_scale_refresh()&&hub.scale_refresh_queued&&notifications==1&&!locked);
+    assert(!gbs_hub_request_scale_refresh()&&notifications==1);
+    hub.scale_refresh_queued=false;
+    clock_ms=30999;assert(!gbs_hub_request_scale_refresh());
+    clock_ms=31000;assert(gbs_hub_request_scale_refresh()&&notifications==2);
+    hub.scale_refresh_queued=false;clock_ms=61000;hub.busy=true;
+    assert(!gbs_hub_request_scale_refresh());
+    hub.busy=false;lock_failed=true;assert(!gbs_hub_request_scale_refresh());
+    lock_failed=false;assert(gbs_hub_request_scale_refresh()&&notifications==3&&!locked);
+    hub.task=0;assert(!gbs_hub_request_scale_refresh());
+    return 0;
 }
 '''
 
@@ -124,4 +168,10 @@ def main():
         sources=[ROOT/"main/hub_touchscreen_command.c",ROOT/"main/hub_touchscreen.c",ROOT/"main/hub_schedule.c",ROOT/"integrated/display/gbs_hub.c",ROOT/"integrated/display/gbs_ui_model.c",idf/"components/json/cJSON/cJSON.c",d/"test.c"]
         subprocess.run(cmd+[str(p) for p in sources]+["-lm","-o",str(d/"test")],check=True)
         subprocess.run([str(d/"test")],check=True)
+        client=(ROOT/"integrated/display/gbs_hub_client.c").read_text()
+        function="bool gbs_hub_request_scale_refresh(void) {"+function_body(client,"gbs_hub_request_scale_refresh")+"}"
+        (d/"scale_request.c").write_text(SCALE_REQUEST.replace("/* FUNCTION */",function))
+        subprocess.run(["cc","-std=c11","-Wall","-Wextra","-Werror","-fsanitize=address,undefined",
+                        str(d/"scale_request.c"),"-o",str(d/"scale_request")],check=True)
+        subprocess.run([str(d/"scale_request")],check=True)
 if __name__=="__main__": main()

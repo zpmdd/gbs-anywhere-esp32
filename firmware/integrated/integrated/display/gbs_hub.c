@@ -105,20 +105,53 @@ static cJSON *get(const gbs_hub_io_t *io,const char *path,int64_t deadline)
     cJSON *j=cJSON_ParseWithOpts(io->reply,NULL,true); if(!cJSON_IsObject(j)) { cJSON_Delete(j); return NULL; }
     return j;
 }
+static bool utc_time(const cJSON *j,const char *key,char out[21],int64_t *epoch)
+{
+    if(!text(j,key,out,21,false)||strlen(out)!=20) return false;
+    for(unsigned i=0;i<20;++i) {
+        char separator=i==4||i==7?'-':i==10?'T':i==13||i==16?':':i==19?'Z':0;
+        if(separator?out[i]!=separator:!isdigit((unsigned char)out[i])) return false;
+    }
+    unsigned year,month,day,hour,minute,second;
+    if(sscanf(out,"%u-%u-%uT%u:%u:%uZ",&year,&month,&day,&hour,&minute,&second)!=6||
+        year<1970||month<1||month>12||hour>23||minute>59||second>59) return false;
+    const unsigned lengths[]={31,28,31,30,31,30,31,31,30,31,30,31};
+    unsigned last=lengths[month-1]+(month==2&&year%4==0&&(year%100!=0||year%400==0));
+    if(day<1||day>last) return false;
+    if(epoch) {
+        int64_t y=year-1;
+        int64_t days=365*(year-1970)+(y/4-1969/4)-(y/100-1969/100)+(y/400-1969/400);
+        for(unsigned m=1;m<month;++m) days+=lengths[m-1];
+        // February's leap day also precedes every later month.
+        if(month>2&&year%4==0&&(year%100!=0||year%400==0)) ++days;
+        *epoch=(days+day-1)*86400+hour*3600+minute*60+second;
+    }
+    return true;
+}
+
+static int64_t utc_epoch(const cJSON *j,const char *key)
+{
+    char stamp[21]; int64_t epoch=0;
+    return utc_time(j,key,stamp,&epoch)?epoch:0;
+}
+
 bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64_t deadline,gbs_ui_machine_t *machine)
 {
     uint32_t before=0,after=0;
     cJSON *j=get(io,"/machine/binding",deadline);
     bool ok=binding(j,config,&before); cJSON_Delete(j);
-    if(!ok) { machine->stale=true; machine->writable=0; return false; }
+    if(!ok) { machine->stale=machine->scale_stale=true; machine->writable=0; return false; }
     j=get(io,"/machine/capabilities",deadline);
     ok=identity(j,config); unsigned writable=capabilities(j); cJSON_Delete(j);
-    if(!ok) { machine->stale=true; machine->writable=0; return false; }
+    if(!ok) { machine->stale=machine->scale_stale=true; machine->writable=0; return false; }
     j=get(io,"/machine/state",deadline);
     gbs_ui_machine_t next={.coffee=NAN,.coffee_target=NAN,.steam=NAN,.steam_target=NAN,.weight=NAN,.dose1=NAN,.dose2=NAN};
     ok=identity(j,config);
     if(ok) {
         next.available=true; next.stale=!(equal(j,"connectionState","ready")||equal(j,"connectionState","heating"));
+        next.coffee_ready_unix=utc_epoch(j,"coffeeBoilerReadyTime");
+        next.steam_ready_unix=utc_epoch(j,"steamBoilerReadyTime");
+        next.boiler_observed_unix=utc_epoch(j,"lastUpdated");
         next.coffee=number(j,"coffeeBoilerCurrentTemperature",0,150);
         next.coffee_target=number(j,"coffeeBoilerTargetTemperature",80,100);
         next.steam=number(j,"steamBoilerCurrentTemperature",0,160);
@@ -127,6 +160,15 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
         const int targets[]={126,128,131};
         if(!isfinite(next.steam_target)&&isfinite(level)&&floor(level)==level) next.steam_target=targets[(unsigned)level-1];
         next.steam_enabled_known=cJSON_IsBool(item(j,"steamBoilerEnabled")); next.steam_enabled=yes(j,"steamBoilerEnabled");
+        const cJSON *scale=item(j,"scaleConnected");
+        if(!cJSON_IsBool(scale)) scale=item(j,"thingScaleConnected");
+        next.scale_connected_known=cJSON_IsBool(scale); next.scale_connected=cJSON_IsTrue(scale);
+        double battery=number(j,"scaleBatteryLevel",0,100);
+        next.scale_battery_known=isfinite(battery);
+        if(next.scale_battery_known) next.scale_battery_percent=(unsigned)round(battery);
+        double observed=number(j,"scaleObservedMs",1,(double)io->now(io->context));
+        if(isfinite(observed)&&observed==floor(observed)) next.scale_observed_ms=(int64_t)observed;
+        next.scale_stale=gbs_ui_scale_is_stale(&next,io->now(io->context));
         next.dose1=number(j,"brewByWeightDose1",0,200); next.dose2=number(j,"brewByWeightDose2",0,200);
         next.dose_mode=mode(j,"brewByWeightMode",bbw_modes,4);
         next.weight=next.dose_mode==1?next.dose1:next.dose_mode==2?next.dose2:NAN;
@@ -155,7 +197,7 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
     }
     cJSON_Delete(j);
     if(ok) { j=get(io,"/machine/binding",deadline); ok=binding(j,config,&after)&&before==after; cJSON_Delete(j); }
-    if(!ok) { machine->stale=true; machine->writable=0; return false; }
+    if(!ok) { machine->stale=machine->scale_stale=true; machine->writable=0; return false; }
     next.observed_ms=io->now(io->context); *machine=next; return true;
 }
 static bool optional_number(const cJSON *j,const char *key,double high,double *out)
@@ -165,20 +207,6 @@ static bool optional_number(const cJSON *j,const char *key,double high,double *o
     return !v||cJSON_IsNull(v)||isfinite(*out);
 }
 
-static bool utc_time(const cJSON *j,char out[21])
-{
-    if(!text(j,"time",out,21,false)||strlen(out)!=20) return false;
-    for(unsigned i=0;i<20;++i) {
-        char separator=i==4||i==7?'-':i==10?'T':i==13||i==16?':':i==19?'Z':0;
-        if(separator?out[i]!=separator:!isdigit((unsigned char)out[i])) return false;
-    }
-    unsigned year,month,day,hour,minute,second;
-    if(sscanf(out,"%u-%u-%uT%u:%u:%uZ",&year,&month,&day,&hour,&minute,&second)!=6||
-        year<1970||month<1||month>12||hour>23||minute>59||second>59) return false;
-    const unsigned lengths[]={31,28,31,30,31,30,31,31,30,31,30,31};
-    unsigned last=lengths[month-1]+(month==2&&year%4==0&&(year%100!=0||year%400==0));
-    return day>=1&&day<=last;
-}
 
 static bool parse_history(const cJSON *j,gbs_ui_data_t *data)
 {
@@ -187,7 +215,7 @@ static bool parse_history(const cJSON *j,gbs_ui_data_t *data)
     data->total=(unsigned)cJSON_GetArraySize(rows);
     cJSON_ArrayForEach(row,rows) {
         gbs_ui_coffee_t coffee={.mode=mode(row,"doseMode",bbw_modes,4)};
-        if(!cJSON_IsObject(row)||!utc_time(row,coffee.time)||
+        if(!cJSON_IsObject(row)||!utc_time(row,"time",coffee.time,NULL)||
             !optional_number(row,"extractionSeconds",86400,&coffee.seconds)||
             !optional_number(row,"doseValue",1000000,&coffee.dose)||
             !optional_number(row,"targetTemperature",160,&coffee.temperature)) return false;

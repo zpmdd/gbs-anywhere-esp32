@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only localhost viewer of device 3's actual LVGL flush pixels."""
+"""Read-only localhost viewer of an integrated display's LVGL flush pixels."""
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -15,20 +15,20 @@ WIDTH, HEIGHT = 240, 280
 FRAME_BYTES = WIDTH * HEIGHT * 2
 
 
-def rgb565_png(frame):
-    if len(frame) != FRAME_BYTES:
+def rgb565_png(frame, width=WIDTH, height=HEIGHT):
+    if (width, height) not in {(240, 280), (480, 480)} or len(frame) != width * height * 2:
         raise ValueError('invalid frame size')
     rows = bytearray()
-    for y in range(HEIGHT):
+    for y in range(height):
         rows.append(0)
-        for x in range(WIDTH):
-            offset = (y * WIDTH + x) * 2
+        for x in range(width):
+            offset = (y * width + x) * 2
             color = frame[offset] | (frame[offset + 1] << 8)
             red, green, blue = color >> 11, (color >> 5) & 63, color & 31
             rows.extend(((red << 3) | (red >> 2), (green << 2) | (green >> 4), (blue << 3) | (blue >> 2)))
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
-    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>2I5B', WIDTH, HEIGHT, 8, 2, 0, 0, 0))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>2I5B', width, height, 8, 2, 0, 0, 0))
             + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
@@ -53,7 +53,16 @@ status.textContent='已连接 · '+new Date().toLocaleTimeString()+' · 第 '+(+
 </script></html>'''.encode()
 
 
-def make_handler(base_url, token):
+def make_handler(base_url, token, width=WIDTH, height=HEIGHT):
+    if (width, height) not in {(240, 280), (480, 480)}:
+        raise ValueError('unsupported display size')
+    frame_bytes = width * height * 2
+    page = PAGE
+    if (width, height) == (480, 480):
+        page = (PAGE.replace('设备 3'.encode(), b'2.16 AMOLED')
+                .replace('240 × 280'.encode(), '480 × 480'.encode())
+                .replace(b'height:560px', b'height:480px')
+                .replace(b'aspect-ratio:6/7', b'aspect-ratio:1/1'))
     frame_lock = threading.Lock()
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -78,7 +87,7 @@ def make_handler(base_url, token):
             if self.headers.get('Host') not in {f'127.0.0.1:{port}', f'localhost:{port}'}:
                 return self.send(403, 'text/plain', b'Invalid local host')
             if self.path == '/':
-                return self.send(200, 'text/html; charset=utf-8', PAGE)
+                return self.send(200, 'text/html; charset=utf-8', page)
             if self.path != '/frame.png':
                 return self.send(404, 'text/plain', b'Not found')
             if not frame_lock.acquire(blocking=False):
@@ -88,8 +97,10 @@ def make_handler(base_url, token):
                 with OPENER.open(request, timeout=4) as response:
                     if response.headers.get('X-Display-Format') != 'RGB565LE':
                         raise ValueError('invalid frame format')
-                    frame = response.read(FRAME_BYTES + 1)
-                self.send(200, 'image/png', rgb565_png(frame))
+                    if response.headers.get('X-Display-Width', str(WIDTH)) != str(width) or response.headers.get('X-Display-Height', str(HEIGHT)) != str(height):
+                        raise ValueError('display profile mismatch')
+                    frame = response.read(frame_bytes + 1)
+                self.send(200, 'image/png', rgb565_png(frame, width, height))
             except Exception:
                 self.send(502, 'text/plain', b'Device frame unavailable')
             finally:
@@ -113,9 +124,10 @@ def main():
     request = urllib.request.Request(base_url + '/health')
     with OPENER.open(request, timeout=6) as response:
         health = json.load(response)
-    if health.get('deviceModel') != 'lamabuddy-esp32s3-touch':
+    dimensions = {'lamabuddy-esp32s3-touch': (240, 280), 'lamabuddy-esp32s3-amoled216': (480, 480)}.get(health.get('deviceModel'))
+    if dimensions is None:
         parser.error('Target is not the integrated touchscreen profile')
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(base_url, token))
+    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(base_url, token, *dimensions))
     print(f'Read-only device preview: http://127.0.0.1:{server.server_port}', flush=True)
     try:
         server.serve_forever()

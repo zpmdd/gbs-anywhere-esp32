@@ -39,6 +39,7 @@ not merged wholesale. The companion's version numbers are independent.
 | Lightweight companion | Repository root, 8 MB flash / 8 MB PSRAM | Existing grinder feedback bridge; default root build. |
 | External-Hub touchscreen preview | Repository root, `GBS_TOUCHSCREEN=ON`, 16 MB Waveshare 1.69-inch | Earlier display client that connects to another Hub. See [its guide](docs/TOUCHSCREEN.md). |
 | **Integrated touchscreen** | `firmware/integrated`, `touchscreen`, 16 MB / 8 MB PSRAM Waveshare 1.69-inch | Hub, grinder, approved native UI, recipe following and LAN OTA on one board. USB-C on the right. |
+| **Integrated AMOLED** | `firmware/integrated`, `amoled216`, 16 MB / 8 MB PSRAM Waveshare 2.16-inch | Battery-powered 480 x 480 control surface with optional rotation, scale battery history, node cues and LAN OTA. See [profile and validation](docs/AMOLED216.md). |
 | **Integrated headless** | `firmware/integrated`, `headless`, 8 MB flash / 8 MB PSRAM | Same Hub/grinder core without display tasks. Local build evidence; separate physical acceptance still needed. |
 
 For the complete single-device workflow, start with

@@ -58,7 +58,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source',type=Path)
     parser.add_argument('output',type=Path,help='New private directory; must not exist')
-    parser.add_argument('--profile',choices=['touchscreen','headless'],default='touchscreen',
+    parser.add_argument('--profile',choices=['touchscreen','amoled216','headless'],default='touchscreen',
                         help='Partition layout for the new board (default: touchscreen)')
     parser.add_argument('--include-cloud',action='store_true',help='Use only the retired device cloud identity')
     parser.add_argument('--include-grinder',action='store_true',help='Import retired pairing in monitor mode')
@@ -74,7 +74,7 @@ def main():
         args.output.mkdir(mode=0o700,parents=True,exist_ok=False)
         with (args.output/'nvs.csv').open('w',newline='') as stream: csv.writer(stream).writerows(data)
         (args.output/'hub-token.txt').write_text(token+'\n')
-        size='0x15000' if args.profile=='touchscreen' else '0x6000'
+        size='0x6000' if args.profile=='headless' else '0x15000'
         subprocess.run([sys.executable,str(generator),'generate',str(args.output/'nvs.csv'),str(args.output/'nvs.bin'),size],check=True,stdout=subprocess.DEVNULL)
         print('Private NVS prepared; cloud='+str(args.include_cloud)+' grinder='+str(args.include_grinder)+' active=False. No device was changed.')
     except (ValueError,OSError) as error:

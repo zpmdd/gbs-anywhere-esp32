@@ -43,6 +43,14 @@ int hub_touchscreen_exchange(const char *path,const char *body,const char *seria
                      !strcmp(path,"/diagnostics/slow-cloud-reads/refresh?kind=statistics&days=7"))) {
         const char *kind=strstr(path,"kind=schedule")?"schedule":"statistics";
         status=copy(hub_state_start_slow_cloud_read_json(kind,7),reply,size,false);
+    } else if(body&&!strcmp(path,"/diagnostics/cloud/refresh")) {
+        // Join an existing refresh without advancing its generation or adding another read.
+        bool pending=hub_cloud_refresh_pending();
+        esp_err_t err=pending?ESP_OK:hub_cloud_request_refresh();
+        if(err==ESP_OK||hub_cloud_refresh_pending()) {
+            status=copy("{\"accepted\":true,\"pending\":true}",reply,size,false);
+            if(status==200) status=202;
+        } else status=503;
     } else if(!body&&!strncmp(path,"/diagnostics/commands?id=",25)) {
         const char *id=path+25;
         if(hub_command_request_id_valid(id)) { hub_command_diagnostics_json(id,reply,size); status=200; }

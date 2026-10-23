@@ -22,6 +22,13 @@ def main():
         'grind_uuid': 'private-uuid', 'ownerPassword': 'private-password', 'elapsed_ms': 1020}})['recipeFollow']
     assert follow['target_grams'] == 30 and follow['elapsed_ms'] == 1020
     assert 'private-' not in json.dumps(follow) and 'ownerPassword' not in follow
+    scale = {'scaleConnected': False, 'thingScaleConnected': True,
+             'scaleBatteryLevel': 1, 'scaleObservedMs': 12345,
+             'scaleCalibrationRequired': False}
+    assert project('/machine/state', scale) == scale
+    unknown_scale = {key: None for key in scale}
+    unknown_scale['scaleObservedMs'] = 12345
+    assert project('/machine/state', unknown_scale) == unknown_scale
 
     class Hub(BaseHTTPRequestHandler):
         calls = []
@@ -43,7 +50,8 @@ def main():
                 '/health': {'deviceModel': self.model, 'firmwareBuildId': '12345678'},
                 path: {'have_job': True, 'grind_uuid': 'synthetic-job-identity',
                        'target_grams': 36, 'target_seconds': 30, 'successes': 8},
-                '/machine/state': {'brewByWeightMode': 'Dose1', 'brewByWeightDose1': 20},
+                '/machine/state': {'brewByWeightMode': 'Dose1', 'brewByWeightDose1': 20,
+                                   **scale, 'scaleName': 'private-scale-name'},
             }[self.path]
             data.update(token='must-not-be-saved', serialNumber='private-serial')
             self.send_response(200)
@@ -61,8 +69,12 @@ def main():
             assert summary['samples'] == 1 and summary['failedReads'] == 0
             assert list(summary['jobs'].values())[0]['targetsGrams'] == [36]
             saved = ''.join(p.read_text() for p in output.iterdir())
-            for secret in ('must-not-be-saved', 'private-serial', 'synthetic-job-identity'):
+            for secret in ('must-not-be-saved', 'private-serial', 'synthetic-job-identity',
+                           'private-scale-name'):
                 assert secret not in saved
+            sample = json.loads((output / 'samples.jsonl').read_text().splitlines()[0])
+            captured_scale = sample['/machine/state']['data']
+            assert all(captured_scale[key] == value for key, value in scale.items())
             assert all(p.stat().st_mode & 0o777 == 0o600 for p in output.iterdir())
             assert Hub.calls == [('GET', p) for p in FIELDS]
             try:
@@ -75,14 +87,25 @@ def main():
             assert read(base, 'synthetic', path)['status'] == 302
             assert Hub.calls[-1] == ('GET', path) and len(Hub.calls) == 4
             Hub.redirect = False
-            Hub.model = 'lamabuddy-esp32s3-headless'
-            try:
-                record(base, 'synthetic', Path(temp) / 'wrong-device', 1)
-            except RuntimeError:
-                pass
-            else:
-                raise AssertionError('wrong device accepted')
-            assert not (Path(temp) / 'wrong-device').exists()
+            Hub.model = 'lamabuddy-esp32s3-amoled216'
+            Hub.calls = []
+            amoled = record(base, 'synthetic', Path(temp) / 'amoled-capture', 1)
+            assert amoled['health']['data']['deviceModel'] == Hub.model
+            assert amoled['samples'] == 1 and amoled['failedReads'] == 0
+            assert Hub.calls == [('GET', p) for p in FIELDS]
+            for model in ('lamabuddy-esp32s3-headless', 'amoled216',
+                          'lamabuddy-esp32s3-amoled216-other', 'unknown', None):
+                Hub.model = model
+                Hub.calls = []
+                output = Path(temp) / 'wrong-device'
+                try:
+                    record(base, 'synthetic', output, 1)
+                except RuntimeError:
+                    pass
+                else:
+                    raise AssertionError('wrong device accepted')
+                assert not output.exists()
+                assert Hub.calls == [('GET', '/health')]
     finally:
         os.umask(old_umask)
         server.shutdown()

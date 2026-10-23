@@ -1,5 +1,6 @@
 #pragma once
 #include "gbs_ui_model.h"
+#include "gbs_device.h"
 #include "lvgl.h"
 
 typedef enum {
@@ -13,7 +14,8 @@ typedef enum {
     GBS_PAGE_PREBREW_MODE, GBS_PAGE_PREBREW_ON, GBS_PAGE_PREBREW_OFF,
     GBS_PAGE_STANDBY_ENABLED, GBS_PAGE_STANDBY_MINUTES, GBS_PAGE_STANDBY_MODE,
     GBS_PAGE_SCHEDULE_DETAIL, GBS_PAGE_COFFEE_DETAIL,
-    GBS_PAGE_SCHEDULE_EDIT, GBS_PAGE_SCHEDULE_ON, GBS_PAGE_SCHEDULE_OFF, GBS_PAGE_SCHEDULE_DAYS, GBS_PAGE_COUNT
+    GBS_PAGE_SCHEDULE_EDIT, GBS_PAGE_SCHEDULE_ON, GBS_PAGE_SCHEDULE_OFF, GBS_PAGE_SCHEDULE_DAYS, GBS_PAGE_SCALE, GBS_PAGE_DEVICE_BATTERY,
+    GBS_PAGE_ORIENTATION, GBS_PAGE_SOUND, GBS_PAGE_BRIGHTNESS, GBS_PAGE_COUNT
 } gbs_ui_page_t;
 typedef bool (*gbs_ui_submit_t)(gbs_ui_action_t action, double value, uint32_t request_id,
                                 const gbs_ui_machine_t *expected, void *context);
@@ -35,3 +37,14 @@ bool gbs_ui_dim_enabled(void);
 
 typedef bool (*gbs_ui_schedule_submit_t)(const gbs_ui_schedule_t *expected,const gbs_ui_schedule_t *requested,uint32_t request_id,void *context);
 void gbs_ui_set_schedule_submit(gbs_ui_schedule_submit_t submit);
+
+void gbs_ui_set_device(const gbs_device_status_t *device);
+void gbs_ui_set_device_preferences(bool auto_rotate, bool sound);
+bool gbs_ui_rotation_auto(void);
+bool gbs_ui_sound_enabled(void);
+gbs_tone_t gbs_ui_take_tone(void);
+
+void gbs_ui_set_scale_refresh(bool (*refresh)(void *context));
+
+void gbs_ui_home_safe(void);
+void gbs_ui_toggle_rotation(void);

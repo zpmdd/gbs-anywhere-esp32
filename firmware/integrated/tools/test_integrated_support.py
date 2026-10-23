@@ -86,6 +86,7 @@ PRESET = r'''
 #include <stdio.h>
 #include <string.h>
 typedef struct { bool dose1_set,dose2_set; double dose1,dose2; bool connected; } cloud_snapshot_t;
+typedef void *esp_http_client_handle_t;
 static cloud_snapshot_t fresh;
 static bool locked,automatic;
 static int reads,posts,updates;
@@ -98,13 +99,15 @@ static esp_err_t ensure_cloud_controls_ready_or_fail(hub_cloud_command_result_t 
 static bool hub_command_requires_online_machine(void) { return automatic; }
 static esp_err_t cloud_command_io_lock(const hub_command_deadline_t *d,uint32_t reserve) { (void)d;(void)reserve;assert(!locked);locked=!lock_error;return lock_error; }
 static void cloud_command_io_unlock(void) { assert(locked);locked=false; }
-static esp_err_t read_control_snapshot_locked(const hub_command_deadline_t *d,uint32_t reserve,cloud_snapshot_t *out) { (void)d;(void)reserve;assert(locked);++reads;*out=fresh;return read_error; }
-static hub_cloud_command_attempt_t execute_command_with_auth_locked(const char *name,const char *body,const hub_command_deadline_t *d,uint32_t reserve) {
+static void cloud_http_session_cleanup(esp_http_client_handle_t *session) { assert(locked&&session);*session=NULL; }
+static esp_err_t read_control_snapshot_locked(const hub_command_deadline_t *d,uint32_t reserve,cloud_snapshot_t *out,esp_http_client_handle_t *session) { (void)d;(void)reserve;assert(locked&&session);++reads;*out=fresh;return read_error; }
+static hub_cloud_command_attempt_t execute_command_with_auth_locked(const char *name,const char *body,const hub_command_deadline_t *d,uint32_t reserve,esp_http_client_handle_t *session) {
+    (void)session;
     (void)d;(void)reserve;assert(locked&&strstr(name,"ChangeMode")&&strstr(body,"mode"));++posts;
     return (hub_cloud_command_attempt_t){.err=ESP_OK,.http_status=200,.request_started=true};
 }
 static hub_cloud_command_attempt_t execute_setting_command_with_auth(const char *name,const char *body,const hub_command_deadline_t *d,uint32_t reserve) {
-    assert(!locked);locked=true;hub_cloud_command_attempt_t a=execute_command_with_auth_locked(name,body,d,reserve);locked=false;return a;
+    assert(!locked);locked=true;hub_cloud_command_attempt_t a=execute_command_with_auth_locked(name,body,d,reserve,NULL);locked=false;return a;
 }
 static void schedule_command_auth_recovery(const hub_cloud_command_attempt_t *a) { (void)a;assert(!locked); }
 static void set_command_attempt(hub_cloud_command_result_t *r,const hub_cloud_command_attempt_t *a) { r->request_started=a->request_started; }
@@ -154,6 +157,7 @@ DASHBOARD = r'''
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,7 +168,7 @@ static bool json_optional_bool(cJSON *j,const char *key) { return cJSON_IsTrue(c
 #define parse_coffee_boiler(...) ((void)0)
 #define parse_steam_level(...) ((void)0)
 #define parse_prebrew(...) ((void)0)
-#define parse_thing_scale(...) ((void)0)
+static int64_t esp_timer_get_time(void) { return 1000000; }
 /* FUNCTIONS */
 int main(void) {
     const char *connections[]={"true","false","null"};
@@ -185,6 +189,20 @@ int main(void) {
         if(i<2)assert(out.dose1==20);
         assert(!strcmp(out.bbw_mode,"Continuous"));
     }
+    const char *batteries[]={"0","1","100","\"1\"","100.1","-1","null","true","\"nan\"","\"inf\""};
+    const double expected[]={0,1,100,1};
+    for(unsigned i=0;i<sizeof(batteries)/sizeof(batteries[0]);++i) {
+        char body[512],name[80];cloud_snapshot_t previous={0},out;
+        snprintf(body,sizeof(body),"{\"serialNumber\":\"SYNTHETIC\",\"widgets\":[{\"code\":\"ThingScale\",\"output\":{\"connected\":false,\"batteryLevel\":%s}}]}",batteries[i]);
+        assert(parse_dashboard_snapshot(body,"SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
+        assert(out.thing_scale_connected_set&&!out.thing_scale_connected);
+        assert(out.scale_battery_level_set==(i<4));
+        if(i<4)assert(out.scale_battery_level==expected[i]);
+        assert(out.scale_observed_ms==1000); // An explicit connection observation dates this response.
+        previous=out; previous.scale_observed_ms=1000;
+        assert(parse_dashboard_snapshot("{\"widgets\":[]}","SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
+        assert(!out.thing_scale_connected_set&&!out.scale_battery_level_set&&out.scale_observed_ms==0);
+    }
     return 0;
 }
 '''
@@ -204,12 +222,15 @@ CONTROL_READ = r'''
 #define ESP_ERR_HTTP_CONNECT 0x7001
 #define ESP_ERR_HTTP_FETCH_HEADER 0x7002
 #define pdMS_TO_TICKS(x) (x)
+enum { TIMING_READ_CONTEXT, TIMING_READ_PARSE, TIMING_RETRY };
+static void cloud_timing_add(int phase,int64_t started_us) { (void)phase;(void)started_us; }
 typedef struct { int unused; } installation_key_t;
 typedef struct { char access_token[1]; } cloud_tokens_t;
 typedef struct { int parsed; } cloud_snapshot_t;
 typedef struct { char *data; size_t len; } http_response_t;
+typedef void *esp_http_client_handle_t;
 struct cJSON { int unused; };
-static int calls,scenario,invalidations;
+static int calls,scenario,invalidations,publishes;
 static int64_t clock_ms;
 static bool rebound;
 static int64_t esp_timer_get_time(void) { return clock_ms*1000; }
@@ -224,13 +245,15 @@ static void record_readonly_http_diag(int k,esp_err_t e,int s,int d,size_t n,int
 static bool cloud_http_retryable_error(esp_err_t e) { return e==ESP_ERR_HTTP_CONNECT||e==ESP_ERR_HTTP_FETCH_HEADER||e==ESP_ERR_TIMEOUT; }
 static void invalidate_cached_tokens(void) { ++invalidations; }
 static void schedule_command_auth_recovery(const hub_cloud_command_attempt_t *a) { (void)a; }
+static bool publish_scale_snapshot(const cloud_snapshot_t *s) { assert(s->parsed==1&&!rebound);++publishes;return true; }
 static cJSON *cJSON_Parse(const char *s) { static cJSON j;return s?&j:NULL; }
 static void cJSON_Delete(cJSON *j) { (void)j; }
 static const char *json_optional_string(cJSON *j,const char *key) { assert(j&&!strcmp(key,"serialNumber"));return scenario==7?"OTHER":"SYNTHETIC"; }
 static esp_err_t parse_dashboard_snapshot(const char *s,const char *serial,uint32_t generation,const cloud_snapshot_t *before,cloud_snapshot_t *out,char *name,size_t size) {
     (void)name;(void)size;assert(s&&!strcmp(serial,"SYNTHETIC")&&generation==1&&before->parsed==0);out->parsed=1;return ESP_OK;
 }
-static esp_err_t cloud_http_request_no_retry(const char *url,int method,const installation_key_t *key,const char *token,const char *body,http_response_t *r,int *status,int timeout) {
+static esp_err_t cloud_http_request_no_retry(const char *url,int method,const installation_key_t *key,const char *token,const char *body,http_response_t *r,int *status,int timeout,esp_http_client_handle_t *session,bool *request_started) {
+    assert(!session&&!request_started);
     assert(strstr(url,"/things/SYNTHETIC/dashboard")&&method==HTTP_METHOD_GET&&key&&token&&!body&&timeout>0);
     ++calls;clock_ms+=scenario==4?timeout:1000;*status=0;
     if(scenario==6)rebound=true;
@@ -242,18 +265,19 @@ static esp_err_t cloud_http_request_no_retry(const char *url,int method,const in
 /* FUNCTIONS */
 int main(void) {
     for(scenario=0;scenario<8;++scenario) {
-        calls=invalidations=0;rebound=false;clock_ms=1000;
+        calls=invalidations=publishes=0;rebound=false;clock_ms=1000;
         hub_command_deadline_t d={.enforced=true,.client_ttl_present=true,.client_ttl_ms=scenario==4?3000:8000};
         assert(hub_command_deadline_accept(&d,clock_ms));
         cloud_snapshot_t out;
-        esp_err_t error=read_control_snapshot_locked(&d,0,&out);
+        esp_err_t error=read_control_snapshot_locked(&d,0,&out,NULL);
         assert(calls==((scenario==1||scenario==2)?2:1));
         assert((error==ESP_OK)==(scenario<2));
         assert(out.parsed==(scenario<2)&&invalidations==(scenario==3));
+        assert(publishes==(scenario<2));
         assert(clock_ms<d.deadline_at_ms);
     }
     calls=0;cloud_snapshot_t out;
-    assert(read_control_snapshot_locked(NULL,UINT32_MAX,&out)==ESP_ERR_INVALID_STATE&&calls==0);
+    assert(read_control_snapshot_locked(NULL,UINT32_MAX,&out,NULL)==ESP_ERR_INVALID_STATE&&calls==0);
     return 0;
 }
 '''
@@ -449,7 +473,7 @@ def provisioning():
     with tempfile.TemporaryDirectory(prefix='gbs-private-nvs-') as temporary:
         directory=Path(temporary)
         source=directory/'source.json';source.write_text(json.dumps(config))
-        for profile,size in [('touchscreen',0x15000),('headless',0x6000)]:
+        for profile,size in [('touchscreen',0x15000),('amoled216',0x15000),('headless',0x6000)]:
             output=directory/profile
             result=subprocess.run([sys.executable,str(ROOT/'tools/prepare-integrated-nvs.py'),
                                    str(source),str(output),'--profile',profile,
@@ -475,7 +499,7 @@ def main():
         cloud=(ROOT/'main/hub_cloud.c').read_text()
         types='\n'.join(re.search(r'typedef struct\s*\{[^}]+\}\s*'+name+r';',cloud).group() for name in ['cloud_snapshot_t','bbw_snapshot_fields_t'])
         pieces=[]
-        for name in ['parse_double_string','json_item_to_double','json_number_to_double','parse_machine_status','parse_brew_by_weight','preserve_missing_bbw_fields','parse_dashboard_snapshot']:
+        for name in ['parse_double_string','json_item_to_double','json_number_to_double','parse_machine_status','parse_brew_by_weight','parse_thing_scale','preserve_missing_bbw_fields','parse_dashboard_snapshot']:
             signature=re.search(r'static (?:bool|void|esp_err_t) '+name+r'\([^;{]*\)\s*\{',cloud)
             pieces.append(signature.group()+function_body(cloud,name)+'}')
         json_dir=Path(os.environ.get('IDF_PATH',str(Path.home()/'esp/esp-idf')))/'components/json/cJSON'

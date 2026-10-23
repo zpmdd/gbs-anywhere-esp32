@@ -5,10 +5,12 @@ idf=${IDF_PATH:?Source ESP-IDF export.sh first}
 mkdir -p "$root/build-integrated-host"
 cd "$root"
 cc -std=c11 -Wno-deprecated-declarations -fsanitize=address,undefined -g -I "$idf/components/json/cJSON" -c "$idf/components/json/cJSON/cJSON.c" -o build-integrated-host/cJSON.o
-for name in logic worker display_model hub hub_data; do
+for name in logic worker display_model device_policy scale_battery_cache hub hub_data; do
  case "$name" in
  logic|worker) sources="integrated/main/logic.c" ;;
  display_model) sources="integrated/display/gbs_ui_model.c" ;;
+ device_policy) sources="integrated/display/gbs_device_policy.c" ;;
+ scale_battery_cache) sources="integrated/display/gbs_scale_battery_cache.c" ;;
  *) sources="integrated/display/gbs_hub.c integrated/display/gbs_ui_model.c" ;;
  esac
  cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
@@ -16,12 +18,16 @@ for name in logic worker display_model hub hub_data; do
    $sources "integrated/tests/test_$name.c" build-integrated-host/cJSON.o -lm -o "build-integrated-host/test_$name"
  "build-integrated-host/test_$name" integrated/tests/fixtures
 done
+python integrated/tests/test_amoled_audio.py
 python tools/test_integrated_surface.py
 python tools/test_schedule_control.py
 python tools/test_command_coordinator.py
+python tools/test_cloud_command_timing.py
+python tools/test_cloud_connection_reuse.py
 python tools/test_quick_weight_control.py
 python tools/test_integrated_support.py
 python tools/test_state_selection.py
+python tools/test_scale_state.py
 python tools/test_display_preview.py
 python tools/test_recipe_log.py
 python tools/test_recipe_follow.py

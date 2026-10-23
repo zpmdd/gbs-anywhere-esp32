@@ -4,6 +4,24 @@
 #include <stdio.h>
 #include <string.h>
 
+unsigned gbs_ui_boiler_warmup_minutes(const gbs_ui_machine_t *machine, bool steam, int64_t now_unix)
+{
+    int64_t ready=steam?machine->steam_ready_unix:machine->coffee_ready_unix;
+    if(!machine->available||machine->stale||machine->machine_mode==0||now_unix<1577836800||
+        machine->boiler_observed_unix<=0||now_unix<machine->boiler_observed_unix||
+        now_unix-machine->boiler_observed_unix>=300||ready<=now_unix||
+        (steam&&machine->steam_enabled_known&&!machine->steam_enabled)) return 0;
+    // Reject implausible dates instead of showing an unbounded countdown on the small screen.
+    if(ready-now_unix>86400) return 0;
+    return (unsigned)((ready-now_unix+59)/60);
+}
+
+bool gbs_ui_scale_is_stale(const gbs_ui_machine_t *machine, int64_t now_ms)
+{
+    return machine->scale_observed_ms<=0||now_ms<machine->scale_observed_ms||
+        now_ms-machine->scale_observed_ms>=GBS_UI_SCALE_FRESH_MS;
+}
+
 bool gbs_ui_schedule_equal(const gbs_ui_schedule_t *a,const gbs_ui_schedule_t *b)
 {
     return !strcmp(a->id,b->id)&&a->on_minutes==b->on_minutes&&a->off_minutes==b->off_minutes&&
@@ -56,6 +74,8 @@ bool gbs_ui_parse_bridge(const char *json, gbs_ui_bridge_t *out)
     next.recipe_grams = number(recipe, "target_grams");
     const cJSON *job_id = cJSON_GetObjectItemCaseSensitive(j, "grind_uuid");
     const cJSON *recipe_id = cJSON_GetObjectItemCaseSensitive(recipe, "grind_uuid");
+    if(cJSON_IsString(job_id)&&strlen(job_id->valuestring)<sizeof(next.job_id)) strcpy(next.job_id,job_id->valuestring);
+    next.recipe_current=next.job&&next.job_id[0]&&cJSON_IsString(recipe_id)&&!strcmp(next.job_id,recipe_id->valuestring);
     if (next.job && cJSON_IsString(job_id) && cJSON_IsString(recipe_id) &&
         !strcmp(job_id->valuestring, recipe_id->valuestring) && next.recipe_grams >= 1 && next.recipe_grams <= 200)
         next.target_grams = next.recipe_grams;

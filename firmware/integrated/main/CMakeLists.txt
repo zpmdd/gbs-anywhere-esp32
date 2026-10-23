@@ -62,3 +62,7 @@ endif()
 if(HUB_TOUCHSCREEN)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE HUB_TOUCHSCREEN=1)
 endif()
+
+if(HUB_AMOLED_216)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE HUB_AMOLED_216=1)
+endif()

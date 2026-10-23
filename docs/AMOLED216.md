@@ -1,5 +1,17 @@
 # Experimental 2.16-inch AMOLED profile
 
+[Project overview](../README.md) · [Compatibility](COMPATIBILITY.md)
+
+**Source:** this profile is currently on the public
+[`codex/amoled-216-local-adaptation` branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation),
+not on `main`. After cloning the repository, select that branch before using
+the build and board-specific source paths below:
+
+```sh
+git fetch origin
+git switch --track origin/codex/amoled-216-local-adaptation
+```
+
 This profile targets the Waveshare ESP32-S3-Touch-AMOLED-2.16. It shares the
 integrated Hub, grinder workflow, command admission and data collections with
 the existing LCD and headless profiles. It does not identify a portafilter or

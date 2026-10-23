@@ -1,11 +1,14 @@
-# Recipe following: field result, 2026-10-22
+# Recipe following: bidirectional field results, 2026-10-22
 
-One complete automatic-follow cup passed on the integrated source build. The
-user confirmed target selection before pulling the lever, physical grinder
-adjustment after the result and normal touchscreen operation. This public
-publication involves no further device access or firmware installation.
+Two complete automatic-follow cups passed on the same integrated source build:
+one 20 g -> 30 g and one 30 g -> 20 g. For the first cup, the user explicitly
+confirmed target selection before pulling the lever, physical grinder adjustment
+after the result and normal touchscreen operation. For the reverse cup, the user
+reported normal completion without separately confirming lever timing or physical
+grinder adjustment. These are one cup in each direction, not repeated-alternation or endurance
+acceptance. This documentation update involves no device access or installation.
 
-## Setup and result
+## Setup and 20 g -> 30 g result
 
 The setup used one Waveshare ESP32-S3-Touch-LCD-1.69 (16 MB flash / 8 MB PSRAM),
 an E65W on installed V01.36 firmware and a Linea Mini R with its scale. The ESP
@@ -34,6 +37,39 @@ The fix moved the online/preset check into the existing fresh command read.
 The final version also starts log lookup immediately after successful acceptance,
 before an unnecessary extra Cloud result poll.
 
+## Reverse 30 g -> 20 g result
+
+The second cup used the original 1.69-inch LCD device on the same `c88791b2`
+firmware, initially at Dose2 / 30 g. The selected handle used recipe 2 with a
+20 g beverage target. The observer sent no control requests and did not update
+firmware. All times below are Beijing time (UTC+08:00) on 2026-10-22.
+
+| Event | Observed time or result |
+| --- | --- |
+| Grind timestamp from the matched CSV row | 18:04:54 |
+| First sampled current task | 18:05:00.683 |
+| Recipe 2 / 20 g matched, phase `applying` | 18:05:02.869 |
+| Log lookup | 37,385-byte ZIP, 849 CSV rows; login/download/parse took 3,178 ms. |
+| First sampled Dose1 / 20 g | 18:05:07.243 |
+| First sampled phase `applied` | 18:05:09.564 |
+| First sampled result and ready state | 18:06:14.353; 20.1 g / 25.053 s; feedback success counter increased from 11 to 12. |
+| Final state | Ready, no active/pending task; 192 diagnostic samples with zero read failures. |
+
+The first observed 20 g state was about 13.2 seconds after the CSV grind
+timestamp; sampled confirmation followed at about 15.6 seconds. These intervals
+include task publication, polling and sampling. The 3.178-second log stage is
+not end-to-end latency. The diagnostics confirm automatic selection and
+acknowledged feedback; they do not independently establish the lever-pull time
+or physical grinder adjustment. The user reported that preparation completed
+normally.
+
+During this cup, cached machine state still reported `scaleConnected: false`
+despite the user confirming scale connection and the valid measured result.
+That stale status is a separate defect: this cup does not validate the subsequent
+cache correction. The later `b923fa91` OTA and physical scale off/on/off cycle
+passed in a [separate acceptance session](SCALE_STATE_ACCEPTANCE.md), without
+making another cup. Both cups in this report remain evidence for `c88791b2` only.
+
 ## Memory and transaction bounds
 
 Large existing event/command/configuration state moved to PSRAM. Observed free
@@ -60,14 +96,15 @@ deadline, manual cancellation and no replay on ambiguous outcomes.
 
 Public path/version/build metadata changes produce a different binary. This
 report identifies the source build actually tested; local builds and CI are
-separate evidence, not a second cup or a universal hardware acceptance claim.
+separate evidence, not additional cups or a universal hardware acceptance claim.
 Raw device logs, network addresses, credentials, certificates and task IDs are
 not published. The [upstream field update](https://github.com/Skamba/gbs-anywhere/pull/15#issuecomment-6331112363)
-shares the same measured result and limitations.
+records the original automatic-follow milestone and its limitations.
 
 ## Still open
 
-1. Reverse automatic following to a 20 g recipe and alternating handles.
+1. A real cup on the newer `b923fa91` scale-cache build, then repeated
+   alternating-handle tests beyond the single successful cup in each direction.
 2. Network/Cloud faults, cancellation timing and long-duration coexistence.
 3. A reliable real-time extraction-start input. The current timer check is not
    a proven physical extraction lock; wait for confirmed target selection.

@@ -21,6 +21,17 @@ without an always-on computer, container or NAS. Choose a compact headless
 bridge or an integrated touchscreen with coffee-machine controls, recipe
 following and LAN updates. A computer is needed for initial setup and pairing.
 
+**Prefer a computer or NAS with a browser?** The separate
+[desktop recipe-follow branch](https://github.com/zpmdd/gbs-anywhere/tree/codex/desktop-recipe-follow)
+adds optional automatic recipe targets to the original Rust application for
+Mac/PC/Docker/NAS, with no ESP board required. It prefers a matching BBW preset;
+otherwise it updates Dose 1 while preserving Dose 2. See its
+[setup and validation guide](https://github.com/zpmdd/gbs-anywhere/blob/codex/desktop-recipe-follow/RECIPE-FOLLOW.md).
+The feature is off by default, needs La Marzocco Cloud and a connected BBW scale,
+and has not completed an independent real-cup test. It is a separate browser
+application from this firmware's native LVGL interface. Keep only one active
+client for a grinder; an installed S31 needs no firmware update for this desktop work.
+
 **[Get started](#getting-started)** · **[Compatible hardware](docs/COMPATIBILITY.md)** · **[Screen gallery](docs/GALLERY.md)** · **[Validation & roadmap](docs/PROGRESS.md)**
 
 > Experimental, with field-tested workflows on named builds. Internet access
@@ -106,6 +117,7 @@ Board images are not interchangeable. See the
 
 | Your goal | Start here |
 | --- | --- |
+| Browser configuration on a computer, Docker host or NAS, without an ESP | [Experimental Rust desktop recipe following](https://github.com/zpmdd/gbs-anywhere/blob/codex/desktop-recipe-follow/RECIPE-FOLLOW.md) |
 | One device with controls and a 1.69-inch LCD | [Integrated build, provisioning and OTA](docs/INTEGRATED.md) |
 | Battery-powered 2.16-inch AMOLED | [AMOLED branch, build and field status](docs/AMOLED216.md) |
 | ESP-Mosaico with 16 MB PSRAM | [S31 toolchain, installation and field status](docs/MOSAICO.md) |

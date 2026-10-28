@@ -1,6 +1,46 @@
 # Upstream comparison and validation
 
-## Current review: 2026-10-22
+## Current review: 2026-10-28
+
+Checked upstream `main` at
+[`04b6b1de7ec062280aa2335220c4570314cb6717`](https://github.com/Skamba/gbs-anywhere/commit/04b6b1de7ec062280aa2335220c4570314cb6717).
+It remains the latest merged main at this review. The following merges landed
+on 2026-10-26 (UTC), following the earlier pairing/setup changes:
+
+| Upstream change | Relevance to the C companion |
+| --- | --- |
+| [#62](https://github.com/Skamba/gbs-anywhere/pull/62) and [#63](https://github.com/Skamba/gbs-anywhere/pull/63): update the wiki with each release and include it in the release workflow | Documentation/release process; no grinder or Cloud protocol change to port. |
+| [#66](https://github.com/Skamba/gbs-anywhere/pull/66): request a Raspberry Pi image on release, with the action pinned to a commit | Desktop packaging/CI; does not create an ESP image or change embedded provisioning. |
+| [#64](https://github.com/Skamba/gbs-anywhere/pull/64): remove the gap under an expanded setup step | Desktop browser layout; does not affect the native LVGL screens. |
+
+[#71](https://github.com/Skamba/gbs-anywhere/pull/71), opened on 2026-10-28,
+is **open and unmerged** at this review. Its proposed changes include Cloud
+baseline/clock handling, per-brew identities, reporting limits, HTTP/log
+hardening, UI state and build checks. They require a separate source and
+regression review; neither this review date nor the S31 port incorporates that
+pull request wholesale or inherits its test results.
+
+The separate Rust
+[`codex/desktop-recipe-follow` branch](https://github.com/zpmdd/gbs-anywhere/tree/codex/desktop-recipe-follow)
+starts from upstream `04b6b1d` and brings optional recipe-target automation to a
+computer or NAS browser without an ESP. It prefers a matching preset and can
+update Dose 1 while preserving Dose 2 when no preset matches. That Dose 1 change
+persists; it is not automatically restored after the cup. Delayed Cloud uploads
+can still make a previous coffee arrive during a later grind, so wait for each
+cup's feedback to finish before changing recipes. Its
+[guide](https://github.com/zpmdd/gbs-anywhere/blob/codex/desktop-recipe-follow/RECIPE-FOLLOW.md)
+records setup, single-client ownership and its separate real-cup acceptance gap.
+It is not an upstream release or an ESP firmware update.
+
+Upstream review and testing: [Draft PR #72](https://github.com/Skamba/gbs-anywhere/pull/72).
+
+This is a review pin, not a new C protocol baseline or a merge of the Rust and
+C repository histories. The `3adf778` behavior baseline, the explicitly ported
+parser fixes recorded below and the integrated import pin retain their existing
+meanings. Existing S31 installation evidence also remains tied to its named
+firmware builds.
+
+## Review: 2026-10-22
 
 Fetched `Skamba/gbs-anywhere` main at
 `ebaac65901fee0570ac26f9fda202c61f74ba055`. The root lightweight companion and

@@ -11,7 +11,7 @@
 
 **用一块 ESP32-S3，连接磨豆机、咖啡机和每天的咖啡流程。**
 
-[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
+[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=codex%2Fs31-mosaico-port)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
 [![许可证：AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-53694d)](LICENSE)
 [![平台：ESP32-S3](https://img.shields.io/badge/platform-ESP32--S3-53694d)](docs/COMPATIBILITY.md)
 [![状态：实验性](https://img.shields.io/badge/status-experimental-b78c50)](docs/PROGRESS.md)

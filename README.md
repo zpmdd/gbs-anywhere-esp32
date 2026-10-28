@@ -6,7 +6,7 @@
 
 **Your grinder, espresso machine and coffee workflow — on one ESP32-S3 or ESP32-S31.**
 
-[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
+[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=codex%2Fs31-mosaico-port)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-53694d)](LICENSE)
 [![Platform: ESP32-S3 / ESP32-S31](https://img.shields.io/badge/platform-ESP32--S3%20%2F%20ESP32--S31-53694d)](docs/COMPATIBILITY.md)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-b78c50)](docs/PROGRESS.md)

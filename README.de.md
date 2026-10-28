@@ -11,7 +11,7 @@
 
 **Mühle, Espressomaschine und Kaffeeablauf — auf einem ESP32-S3.**
 
-[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
+[![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=codex%2Fs31-mosaico-port)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
 [![Lizenz: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-53694d)](LICENSE)
 [![Plattform: ESP32-S3](https://img.shields.io/badge/platform-ESP32--S3-53694d)](docs/COMPATIBILITY.md)
 [![Status: experimentell](https://img.shields.io/badge/status-experimental-b78c50)](docs/PROGRESS.md)

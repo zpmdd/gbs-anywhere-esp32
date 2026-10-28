@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve this experimental ESP32-S3 companion.
+Thanks for helping improve this experimental ESP32 companion.
 [Choose a build](docs/COMPATIBILITY.md) before changing board-specific code.
 The Rust desktop application is maintained separately at
 [Skamba/gbs-anywhere](https://github.com/Skamba/gbs-anywhere).
@@ -18,7 +18,7 @@ upload a flash backup or private configuration to an issue.
 
 ## Local development
 
-Use a focused branch and synthetic fixtures. After activating ESP-IDF:
+Use a focused branch and synthetic fixtures. For S3, after activating ESP-IDF 5.5.4:
 
 ```sh
 sh tools/check.sh
@@ -31,6 +31,10 @@ sh tools/build-integrated.sh touchscreen
 
 Use the matching [AMOLED branch](docs/AMOLED216.md) and profile for 2.16-inch
 changes. Run the native simulator regression when changing UI behavior.
+For ESP-Mosaico / S31, use the separate SDK and source checkout described in
+[the Mosaico guide](docs/MOSAICO.md). Build `mosaico` before running host checks
+so IDF 6 can download managed cJSON. The integrated `tools/check-crypto.sh`
+checks the exported SDK's real identity and Cloud signing implementations.
 Check `git diff --check` before submitting. Offline tests must not contact
 hardware or vendor services.
 

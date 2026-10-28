@@ -53,6 +53,7 @@ From `firmware/integrated`, with the S31 SDK exported:
 ```sh
 sh tools/build-integrated.sh mosaico
 sh tools/check-integrated.sh
+sh tools/check-crypto.sh
 sh ../../tools/check.sh
 git diff --check
 ```
@@ -61,6 +62,12 @@ The wrapper passes `--preview`, selects `esp32s31` and `sdkconfig.mosaico`, and
 uses `build-integrated-mosaico`. **Run the first build before host checks**:
 IDF 6 supplies cJSON through a managed component, and the checks need the
 sources downloaded by the build. These commands do not contact hardware.
+
+Host checks need a C compiler, CMake and OpenSSL; the root checks also use
+Node.js. `check-crypto.sh` builds the exported SDK's real Mbed TLS libraries in
+a temporary directory, verifies the production identity and Cloud signing
+paths, and removes that directory afterward. Run it under each SDK to cover
+both the S3 and S31 implementations.
 
 The application is generated as
 `build-integrated-mosaico/lamabuddy_esp32_s3_hub.bin`. The inherited filename

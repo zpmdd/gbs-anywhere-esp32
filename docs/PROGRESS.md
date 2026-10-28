@@ -106,7 +106,7 @@ See the [exact-build status](AMOLED216.md#validation-status-2026-10-23).
 | Earlier S3 builds and simulators | The four original profiles built: root headless/touchscreen and integrated headless/touchscreen. Both native simulator self-tests passed. The initial public import's runtime C/headers matched the archived source. |
 | Initial provisioning | Imported identity starts in monitor mode. Actual NVS generation is tested at both touchscreen/headless sizes, with private file permissions and no credential echo. |
 | Build portability | S3 integrated manifests pin ESP-IDF 5.5.4; Mosaico uses 6.2 preview. Host checks locate cJSON in IDF 5 or the IDF 6 managed dependency. The older 5.5.0 image lacks a required WebSocket transport API. |
-| CI configuration | The [workflow](../.github/workflows/ci.yml) retains the root S3 builds, adds S3 AMOLED to the IDF 5.5.4 integrated job, and adds a separate S31 job pinned to the validated IDF revision. The new jobs have not yet been run remotely; the build evidence above is local. |
+| CI configuration | The [workflow](../.github/workflows/ci.yml) retains the root S3 builds, adds S3 AMOLED to the IDF 5.5.4 integrated job, and adds a separate S31 job pinned to the validated IDF revision. Check [the branch's hosted runs](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml?query=branch%3Acodex%2Fs31-mosaico-port) for the result of a specific commit; local and remote results remain separate evidence. |
 | Production release/security | Still experimental. No general firmware release, armed eFuse tool or security-gate certification is part of this publication. |
 
 The S3 integrated CI job includes host and crypto checks, LCD/AMOLED simulator

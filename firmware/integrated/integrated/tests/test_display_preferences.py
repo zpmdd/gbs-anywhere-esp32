@@ -134,6 +134,6 @@ with tempfile.TemporaryDirectory(prefix="gbs-preferences-") as directory:
     c_file.write_text(harness)
     subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
         "-std=c11", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
-        str(c_file), "-o", str(executable),
+        str(c_file), "-lm", "-o", str(executable),
     ], check=True)
     subprocess.run([str(executable)], check=True)

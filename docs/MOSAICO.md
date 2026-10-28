@@ -148,6 +148,11 @@ for migration, old success counts/history are not reconstructed and historical
 task IDs outside the new baseline cannot be claimed as permanently deduplicated.
 Validate the handover with a genuinely new cup.
 
+LamaBuddy App/Watch integration has not been field-validated on S31. During
+App setup, select the Mosaico Bonjour entry or configure the correct endpoint
+at `lamabuddy-mosaico.local`; do not retain the older `lamabuddy-hub.local`
+default when connecting to this board.
+
 ## Application OTA
 
 After the correct layout is installed, use the integrated authenticated

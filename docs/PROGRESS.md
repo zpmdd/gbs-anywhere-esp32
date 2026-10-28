@@ -113,8 +113,13 @@ The S3 integrated CI job includes host and crypto checks, LCD/AMOLED simulator
 self-tests and `touchscreen`, `headless` and `amoled216` firmware builds. The
 S31 job uses its own checkout and the IDF revision documented in
 [MOSAICO.md](MOSAICO.md), builds `mosaico` before host/crypto checks to obtain
-cJSON, and uses public synthesized sound cues. A configured job is not a
-successful hosted run, and a successful build would not establish hardware acceptance.
+cJSON, and uses public synthesized sound cues.
+
+On 2026-10-28, [hosted run 40638646352](https://github.com/zpmdd/gbs-anywhere-esp32/actions/runs/40638646352)
+passed all three jobs on commit `1cae77dfed12ebbf3d28415f0eaaa71fc72f1df3`:
+root S3, integrated S3/LCD/headless/AMOLED, and Mosaico S31. The final publication
+adds documentation only after that tested commit. These build, host-test and
+simulator results do not establish additional hardware acceptance.
 
 For the scale-cache correction, both full offline entry points passed with
 ASan/UBSan, including the real keeper loop, scale parser/publication/JSON and

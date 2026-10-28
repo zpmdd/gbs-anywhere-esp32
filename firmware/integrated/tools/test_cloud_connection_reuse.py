@@ -127,7 +127,8 @@ static int esp_http_client_set_post_field(esp_http_client_handle_t c,const char 
     return b?ESP_OK:esp_http_client_set_header(c,"Content-Type",NULL);
 }
 static int esp_http_client_set_url(esp_http_client_handle_t c,const char *u) {
-    if(api_error("set_url"))return ESP_ERR_NO_MEM;snprintf(c->url,sizeof(c->url),"%s",u); return ESP_OK;
+    if(api_error("set_url"))return ESP_ERR_NO_MEM;
+    snprintf(c->url,sizeof(c->url),"%s",u); return ESP_OK;
 }
 static int esp_http_client_set_method(esp_http_client_handle_t c,int m) { if(api_error("set_method"))return ESP_ERR_NO_MEM;c->method=m;return 0; }
 static int esp_http_client_set_timeout_ms(esp_http_client_handle_t c,int t) { if(api_error("set_timeout"))return ESP_ERR_NO_MEM;c->timeout_ms=t;return 0; }

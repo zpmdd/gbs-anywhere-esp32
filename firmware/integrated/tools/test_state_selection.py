@@ -514,7 +514,8 @@ static void copy_snapshot(cloud_snapshot_t *out,bool *cached) {
     memset(out,0,sizeof(*out));*cached=true;
     strcpy(out->serial_number,"SYNTHETIC");out->selection_generation=1;
     out->dose1_set=out->dose2_set=source_doses;out->dose1=20;out->dose2=30;
-    if(source_mode)strcpy(out->bbw_mode,"Continuous");strcpy(out->last_updated,"2026-10-20T01:00:00Z");
+    if(source_mode)strcpy(out->bbw_mode,"Continuous");
+    strcpy(out->last_updated,"2026-10-20T01:00:00Z");
     out->scale_observed_ms=1234;out->thing_scale_connected_set=true;out->thing_scale_connected=true;
     out->scale_battery_level_set=true;out->scale_battery_level=1;
 }

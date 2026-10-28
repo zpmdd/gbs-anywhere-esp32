@@ -6,12 +6,17 @@
 
 #include "esp_random.h"
 #include "hub_security.h"
-#include "mbedtls/ecp.h"
+#include "mbedtls/version.h"
 #include "mbedtls/md.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/platform_util.h"
-#include "mbedtls/sha256.h"
 #include "mbedtls/x509_crt.h"
+#if MBEDTLS_VERSION_MAJOR >= 4
+#include "psa/crypto.h"
+#else
+#include "mbedtls/ecp.h"
+#include "mbedtls/sha256.h"
+#endif
 #include "nvs.h"
 
 #define HUB_IDENTITY_SCHEMA_VERSION 1
@@ -32,12 +37,14 @@ static char s_hid_summary[HUB_IDENTITY_HID_SUMMARY_CAPACITY];
 static unsigned char s_private_key_pem[HUB_IDENTITY_PRIVATE_KEY_CAPACITY];
 static unsigned char s_certificate_pem[HUB_IDENTITY_CERTIFICATE_CAPACITY];
 
+#if MBEDTLS_VERSION_MAJOR < 4
 static int identity_rng(void *context, unsigned char *output, size_t len)
 {
     (void)context;
     esp_fill_random(output, len);
     return 0;
 }
+#endif
 
 static bool is_hex_character(char value)
 {
@@ -98,12 +105,22 @@ static esp_err_t compute_spki_sha256(
     }
 
     unsigned char digest[32];
+#if MBEDTLS_VERSION_MAJOR >= 4
+    size_t digest_len = 0;
+    int result = psa_hash_compute(PSA_ALG_SHA_256,
+        der + sizeof(der) - (size_t)der_len, (size_t)der_len,
+        digest, sizeof(digest), &digest_len);
+    if (result == PSA_SUCCESS && digest_len != sizeof(digest)) {
+        result = PSA_ERROR_GENERIC_ERROR;
+    }
+#else
     int result = mbedtls_sha256(
         der + sizeof(der) - (size_t)der_len,
         (size_t)der_len,
         digest,
         0
     );
+#endif
     mbedtls_platform_zeroize(der, sizeof(der));
     if (result != 0) {
         mbedtls_platform_zeroize(digest, sizeof(digest));
@@ -134,9 +151,10 @@ static esp_err_t validate_loaded_material(void)
         s_private_key_pem,
         strlen((const char *)s_private_key_pem) + 1,
         NULL,
-        0,
-        identity_rng,
-        NULL
+        0
+#if MBEDTLS_VERSION_MAJOR < 4
+        , identity_rng, NULL
+#endif
     );
     if (result == 0) {
         result = mbedtls_x509_crt_parse(
@@ -146,7 +164,11 @@ static esp_err_t validate_loaded_material(void)
         );
     }
     if (result == 0) {
+#if MBEDTLS_VERSION_MAJOR >= 4
+        result = mbedtls_pk_check_pair(&certificate.pk, &private_key);
+#else
         result = mbedtls_pk_check_pair(&certificate.pk, &private_key, identity_rng, NULL);
+#endif
     }
 
     esp_err_t err = result == 0
@@ -164,6 +186,21 @@ static esp_err_t generate_material(void)
     mbedtls_pk_init(&key);
     mbedtls_x509write_crt_init(&certificate);
 
+#if MBEDTLS_VERSION_MAJOR >= 4
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attributes, 256);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_EXPORT | PSA_KEY_USAGE_SIGN_HASH);
+    psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+    int result = psa_generate_key(&attributes, &key_id);
+    psa_reset_key_attributes(&attributes);
+    if (result == PSA_SUCCESS) {
+        result = mbedtls_pk_copy_from_psa(key_id, &key);
+        psa_status_t destroy_result = psa_destroy_key(key_id);
+        if (result == 0) result = destroy_result;
+    }
+#else
     int result = mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
     if (result == 0) {
         result = mbedtls_ecp_gen_key(
@@ -173,6 +210,7 @@ static esp_err_t generate_material(void)
             NULL
         );
     }
+#endif
     if (result != 0) {
         mbedtls_x509write_crt_free(&certificate);
         mbedtls_pk_free(&key);
@@ -228,9 +266,10 @@ static esp_err_t generate_material(void)
         result = mbedtls_x509write_crt_pem(
             &certificate,
             s_certificate_pem,
-            sizeof(s_certificate_pem),
-            identity_rng,
-            NULL
+            sizeof(s_certificate_pem)
+#if MBEDTLS_VERSION_MAJOR < 4
+            , identity_rng, NULL
+#endif
         );
     }
 
@@ -371,6 +410,11 @@ esp_err_t hub_identity_init(void)
     if (!hub_security_release_security_ready()) {
         return ESP_ERR_NOT_SUPPORTED;
     }
+#if MBEDTLS_VERSION_MAJOR >= 4
+    if (psa_crypto_init() != PSA_SUCCESS) {
+        return ESP_FAIL;
+    }
+#endif
 
     esp_err_t err = load_or_create_identity();
     if (err != ESP_OK) {

@@ -43,6 +43,7 @@ typedef struct {
     bool has_complete_bbw;
     bool is_ready;
     bool refresh_pending;
+    bool boiler_warmup_pending;
     int64_t last_refresh_ms;
     int64_t scale_observed_ms;
     double dose1, dose2;
@@ -101,6 +102,13 @@ esp_err_t hub_cloud_set_bbw_mode_with_deadline(
     const hub_command_deadline_t *deadline,
     uint32_t reserve_after_ms,
     hub_cloud_command_result_t *result
+);
+esp_err_t hub_cloud_set_quick_weight_with_deadline(
+    int grams,
+    bool require_no_stored_match,
+    const hub_command_deadline_t *deadline,
+    hub_cloud_command_result_t *mode_result,
+    hub_cloud_command_result_t *dose_result
 );
 esp_err_t hub_cloud_set_prebrew(const char *field, const char *value, hub_cloud_command_result_t *result);
 esp_err_t hub_cloud_set_prebrew_with_deadline(

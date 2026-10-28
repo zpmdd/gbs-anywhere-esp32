@@ -62,29 +62,30 @@ def main():
     finally:
         for server in [viewer,device]: server.shutdown();server.server_close()
     Device.frame = b'\x00\xf8\xe0\x07\x1f\x00' + bytes(480 * 480 * 2 - 6)
-    Device.dimensions = (480, 480)
-    device = ThreadingHTTPServer(('127.0.0.1',0),Device)
-    viewer = ThreadingHTTPServer(('127.0.0.1',0),make_handler(f'http://127.0.0.1:{device.server_port}','synthetic',480,480))
-    for server in [device,viewer]: threading.Thread(target=server.serve_forever,daemon=True).start()
-    base = f'http://127.0.0.1:{viewer.server_port}'
-    try:
-        with opener.open(base+'/') as r:
-            page = r.read().decode()
-            assert '<title>LamaBuddy · 2.16 AMOLED 在线画面</title>' in page
-            assert '<h1>2.16 AMOLED<br>在线画面</h1>' in page
-            assert '480 × 480' in page and 'aspect-ratio:1/1' in page
-            assert all(old not in page for old in ('设备 3', '240 × 280', 'height:560px', 'synthetic'))
-        with opener.open(base+'/frame.png') as r:
-            large_png = r.read()
-            assert struct.unpack('>II', large_png[16:24]) == (480, 480)
-            assert large_png == rgb565_png(Device.frame,480,480)
-        for dimensions in [(240,280),None]:
-            Device.dimensions = dimensions
-            try: opener.open(base+'/frame.png')
-            except urllib.error.HTTPError as error: assert error.code == 502
-            else: raise AssertionError('mismatched board metadata accepted')
-    finally:
-        for server in [viewer,device]: server.shutdown();server.server_close()
-    print('Display preview PASS: both profiles, RGB565 fidelity, bounded frames, token isolation and read-only forwarding')
+    for model,title in [(None,'2.16 AMOLED'),('lamabuddy-esp32s31-mosaico','ESP-Mosaico')]:
+        Device.dimensions = (480, 480)
+        device = ThreadingHTTPServer(('127.0.0.1',0),Device)
+        viewer = ThreadingHTTPServer(('127.0.0.1',0),make_handler(f'http://127.0.0.1:{device.server_port}','synthetic',480,480,model))
+        for server in [device,viewer]: threading.Thread(target=server.serve_forever,daemon=True).start()
+        base = f'http://127.0.0.1:{viewer.server_port}'
+        try:
+            with opener.open(base+'/') as r:
+                page = r.read().decode()
+                assert f'<title>LamaBuddy · {title} 在线画面</title>' in page
+                assert f'<h1>{title}<br>在线画面</h1>' in page
+                assert '480 × 480' in page and 'aspect-ratio:1/1' in page
+                assert all(old not in page for old in ('设备 3', '240 × 280', 'height:560px', 'synthetic'))
+            with opener.open(base+'/frame.png') as r:
+                large_png = r.read()
+                assert struct.unpack('>II', large_png[16:24]) == (480, 480)
+                assert large_png == rgb565_png(Device.frame,480,480)
+            for dimensions in [(240,280),None]:
+                Device.dimensions = dimensions
+                try: opener.open(base+'/frame.png')
+                except urllib.error.HTTPError as error: assert error.code == 502
+                else: raise AssertionError('mismatched board metadata accepted')
+        finally:
+            for server in [viewer,device]: server.shutdown();server.server_close()
+    print('Display preview PASS: LCD, AMOLED and Mosaico profiles, RGB565 fidelity, bounded frames, token isolation and read-only forwarding')
 
 if __name__=='__main__': main()

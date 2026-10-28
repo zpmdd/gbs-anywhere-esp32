@@ -188,7 +188,7 @@ static void am_detail_collection(void)
             else strcpy(right,"—");
         }
         lv_obj_t *row_obj=am_detail_row(lv_scr_act(),title,subtitle,right,121+76*row,76,DATA_ROW+row);
-        if(!plans) lv_obj_set_style_text_font(lv_obj_get_child(row_obj,3),&gbs_number_20,0);
+        if(!plans) lv_obj_set_style_text_font(lv_obj_get_child(row_obj,3),&gbs_amoled_number_20,0);
     }
     label(lv_scr_act(),plans?"仅编辑已有计划，不新增或删除。":"剂量是设定值，不代替实测液重。",28,357,424,&gbs_font_18,MUTED);
     if(data->count>3) {
@@ -197,7 +197,7 @@ static void am_detail_collection(void)
         if(!first) lv_obj_add_state(previous,LV_STATE_DISABLED);
         if(first+3>=data->count) lv_obj_add_state(next,LV_STATE_DISABLED);
         snprintf(title,sizeof(title),"%u / %u",ui.data_page[kind]+1,(data->count+2)/3);
-        centered(label(lv_scr_act(),title,106,413,268,&gbs_number_24,MUTED));
+        centered(label(lv_scr_act(),title,106,413,268,&gbs_amoled_number_24,MUTED));
     }
 }
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Exercise the actual bounded Cloud timing collector, HTTP events and JSON offline."""
 
-import os
 from pathlib import Path
 import re
 import tempfile
 
 from test_integrated_support import ERRORS, ROOT, compile_run, function_body
+from host_cjson import cjson_source_dir
 
 
 HARNESS = r'''
@@ -176,7 +176,7 @@ def main():
         signature = re.search(r"^(?:static )?[^\n;{}]+\b" + name + r"\([^;{]*\)\s*\{", source, re.M)
         assert signature, name
         functions.append(signature.group() + function_body(source, name) + "}")
-    json_dir = Path(os.environ["IDF_PATH"]) / "components/json/cJSON"
+    json_dir = cjson_source_dir()
     with tempfile.TemporaryDirectory(prefix="cloud-timing-host-") as temporary:
         directory = Path(temporary)
         (directory / "esp_err.h").write_text(ERRORS.replace("const char *esp_err_to_name(esp_err_t error);", ""))

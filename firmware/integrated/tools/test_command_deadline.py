@@ -60,9 +60,18 @@ int main(void)
     hub_command_deadline_t invalid_large = {
         .enforced = true,
         .client_ttl_present = true,
-        .client_ttl_ms = 8001,
+        .client_ttl_ms = 12001,
     };
     require_true(!hub_command_deadline_accept(&invalid_large, 0), "oversized ttl accepted");
+
+    hub_command_deadline_t network_margin = {
+        .enforced = true, .client_ttl_present = true, .client_ttl_ms = 12000,
+    };
+    require_true(hub_command_deadline_accept(&network_margin, 500), "12-second ttl rejected");
+    require_true(network_margin.accepted_ttl_ms == 12000 && network_margin.deadline_at_ms == 12500,
+                 "network margin did not preserve the absolute deadline");
+    require_true(!hub_command_deadline_can_start_step(&network_margin, 12500, 0),
+                 "network margin permitted a late write");
 
     require_true(
         hub_command_deadline_timeout_ms(&default_ttl, 3000, 12000, 1000) == 4750,
@@ -181,7 +190,13 @@ def _run_mock_contract() -> None:
     assert rejected["errorCode"] == "commandDeadlineCapacity"
     assert rejected["upstreamAttempts"] == 0
 
-    for invalid_ttl in (0, True):
+    status, extended = MockHubV2Engine().submit(
+        route="/controls/quick-weight", machine_serial="MACHINE-A",
+        payload=_payload("77777777-7777-4777-8777-777777777777", ttl_ms=12000), now_ms=0,
+    )
+    assert status == 202 and extended["acceptedTtlMs"] == 12000
+
+    for invalid_ttl in (0, True, 12001):
         invalid_payload = _payload(
             "66666666-6666-4666-8666-666666666666",
         )
@@ -202,7 +217,7 @@ def _run_mock_contract() -> None:
 def main() -> None:
     _run_c_contract()
     _run_mock_contract()
-    print("command deadline/mock contract tests passed (13 cases)")
+    print("command deadline/mock contract tests passed (default 8s, explicit 12s, bounded expiry)")
 
 
 if __name__ == "__main__":

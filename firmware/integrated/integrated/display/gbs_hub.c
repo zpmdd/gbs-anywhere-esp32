@@ -140,10 +140,10 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
     uint32_t before=0,after=0;
     cJSON *j=get(io,"/machine/binding",deadline);
     bool ok=binding(j,config,&before); cJSON_Delete(j);
-    if(!ok) { machine->stale=machine->scale_stale=true; machine->writable=0; return false; }
+    if(!ok) { machine->stale=machine->scale_stale=true; machine->ble.valid=false; machine->writable=0; return false; }
     j=get(io,"/machine/capabilities",deadline);
     ok=identity(j,config); unsigned writable=capabilities(j); cJSON_Delete(j);
-    if(!ok) { machine->stale=machine->scale_stale=true; machine->writable=0; return false; }
+    if(!ok) { machine->stale=machine->scale_stale=true; machine->ble.valid=false; machine->writable=0; return false; }
     j=get(io,"/machine/state",deadline);
     gbs_ui_machine_t next={.coffee=NAN,.coffee_target=NAN,.steam=NAN,.steam_target=NAN,.weight=NAN,.dose1=NAN,.dose2=NAN};
     ok=identity(j,config);
@@ -196,8 +196,18 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
         for(const unsigned char *p=(const unsigned char *)io->reply;*p;++p) next.revision=(next.revision^*p)*16777619u;
     }
     cJSON_Delete(j);
+    if(ok) {
+        j=get(io,"/diagnostics/ble",deadline);
+        if(identity(j,config)&&cJSON_IsBool(item(j,"configured"))&&cJSON_IsBool(item(j,"workerConnected"))&&
+            cJSON_IsBool(item(j,"controlSessionReady"))&&text(j,"workerStatus",next.ble.status,sizeof(next.ble.status),false)) {
+            next.ble.valid=true; next.ble.configured=yes(j,"configured");
+            next.ble.connected=yes(j,"workerConnected"); next.ble.control_ready=yes(j,"controlSessionReady");
+            next.ble.cached_fresh=yes(j,"cachedConnected"); next.ble.observed_ms=io->now(io->context);
+        }
+        cJSON_Delete(j);
+    }
     if(ok) { j=get(io,"/machine/binding",deadline); ok=binding(j,config,&after)&&before==after; cJSON_Delete(j); }
-    if(!ok) { machine->stale=machine->scale_stale=true; machine->writable=0; return false; }
+    if(!ok) { machine->stale=machine->scale_stale=true; machine->ble.valid=false; machine->writable=0; return false; }
     next.observed_ms=io->now(io->context); *machine=next; return true;
 }
 static bool optional_number(const cJSON *j,const char *key,double high,double *out)
@@ -306,14 +316,14 @@ void gbs_hub_fetch_data(const gbs_hub_config_t *config,const gbs_hub_io_t *io,
 bool gbs_hub_prepare(gbs_ui_action_t action,double value,const gbs_ui_machine_t *m,const char *id,
                      char *path,size_t path_size,char *body,size_t body_size)
 {
-    if(!gbs_ui_machine_action(action)||!uuid(id)||!m->available||m->stale||!isfinite(value)||!(m->writable&(1u<<action))) return false;
+    if(!gbs_ui_can_control(action,m)||!uuid(id)||!isfinite(value)) return false;
     const char *route=NULL; char payload[96];
     if(action==GBS_ACTION_WEIGHT) {
         if(value<0||value>200||value!=floor(value)||!isfinite(m->dose1)||!isfinite(m->dose2)) return false;
         unsigned dose=m->dose1==value?1:m->dose2==value?2:0;
         route=dose?"/controls/bbw/mode":"/controls/quick-weight";
-        if(dose) snprintf(payload,sizeof(payload),"\"mode\":\"Dose%u\",\"presetGrams\":%.0f,\"clientTtlMs\":8000",dose,value);
-        else snprintf(payload,sizeof(payload),"\"grams\":%.0f,\"requireNoStoredMatch\":true,\"clientTtlMs\":8000",value);
+        if(dose) snprintf(payload,sizeof(payload),"\"mode\":\"Dose%u\",\"presetGrams\":%.0f,\"clientTtlMs\":12000",dose,value);
+        else snprintf(payload,sizeof(payload),"\"grams\":%.0f,\"requireNoStoredMatch\":true,\"clientTtlMs\":12000",value);
     } else if(action==GBS_ACTION_COFFEE) {
         if(value<80||value>100||value*2!=floor(value*2)) return false;
         route="/controls/coffee-temperature"; snprintf(payload,sizeof(payload),"\"temperature\":%.1f",value);
@@ -369,7 +379,7 @@ gbs_ui_control_t gbs_hub_result(const char *json,const char *id)
 static bool same(double a,double b) { return (isnan(a)&&isnan(b))||(isfinite(a)&&isfinite(b)&&fabs(a-b)<0.01); }
 static bool matches(gbs_ui_action_t a,double value,const gbs_ui_machine_t *before,const gbs_ui_machine_t *after)
 {
-    if(!after->available||after->stale) return false;
+    if(!gbs_ui_can_control(a,after)) return false;
     if(a==GBS_ACTION_WEIGHT) {
         unsigned mode=before->dose1==value?1:before->dose2==value?2:1;
         return after->dose_mode==mode&&same(after->weight,value)&&same(before->dose2,after->dose2)&&

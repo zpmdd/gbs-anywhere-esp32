@@ -21,6 +21,7 @@ typedef struct {
 } gbs_hub_io_t;
 
 bool gbs_hub_config_parse(const char *json, gbs_hub_config_t *out);
+// Reads the existing machine and BLE diagnostic snapshots; never starts a probe.
 bool gbs_hub_refresh(const gbs_hub_config_t *config, const gbs_hub_io_t *io,
                      int64_t deadline_ms, gbs_ui_machine_t *machine);
 // A bounded read step. Only the first step requests Hub cache refresh.

@@ -1,4 +1,4 @@
-gbs-anywhere ESP32-S3 companion
+gbs-anywhere ESP32 companion
 
 This experimental ESP-IDF application was split from the firmware/esp32-s3
 directory of Skamba/gbs-anywhere PR #18, originally contributed by zpmdd at
@@ -25,6 +25,9 @@ and firmware/integrated/UPSTREAM.md for the source boundaries and sync policy.
 Upstream protocol compatibility was reviewed through
 ebaac65901fee0570ac26f9fda202c61f74ba055; see docs/UPSTREAM.md for port decisions.
 ESP-IDF and its bundled libraries retain their respective licenses.
+The ESP32-S31 profile uses the ESP-Mosaico BSP and USB HS console from
+esp-mosaico-bsp and esp-mosaico-claw. These managed components retain their
+upstream licenses; pinned source revisions are listed in docs/MOSAICO.md.
 The optional display uses LVGL 8.4.0 (MIT), Noto Sans CJK and Inter (SIL OFL 1.1),
 and Tabler Icons 3.35.0 (MIT). See display/fonts/ and display/icons/ for the font
 and icon license notices, and docs/TOUCHSCREEN.md for source attribution.

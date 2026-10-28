@@ -24,6 +24,7 @@
 #include "hub_config.h"
 #include "hub_state_keeper.h"
 #include "hub_statistics_cache.h"
+#include "hub_version.h"
 #include "hub_wifi.h"
 
 #define RECENT_COMMAND_CAPACITY 6
@@ -527,7 +528,7 @@ static void selected_machine_display_name(char *dest, size_t dest_len)
         }
     }
 
-    copy_json_safe(dest, dest_len, "LamaBuddy ESP32-S3 Hub");
+    copy_json_safe(dest, dest_len, LAMABUDDY_MDNS_INSTANCE);
 }
 
 void hub_state_record_command(
@@ -813,7 +814,7 @@ const char *hub_state_capabilities_json(void)
         body,
         sizeof(body),
         "{"
-        "\"profile\":\"esp32s3-full-feature-test\","
+        "\"profile\":\"" LAMABUDDY_CHIP_NAME "-full-feature-test\","
         "\"fullFeatureTestMode\":true,"
         "\"supportsSmartPresetDecisionValidation\":true,"
         "\"scheduleEdit\":{\"transport\":\"cloud\",\"available\":%s,\"risk\":\"high\",\"requiresConfirmation\":true,\"validationStatus\":\"local-tested-only\"},"
@@ -825,7 +826,7 @@ const char *hub_state_capabilities_json(void)
         "\"bleValidateRead\":{\"transport\":\"ble\",\"preferredTransport\":\"ble\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"ble-local\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"POST /diagnostics/ble/validate-read performs an active BLE read validation.\"},"
         "\"cloudRefresh\":{\"transport\":\"cloud\",\"preferredTransport\":\"cloud\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"network\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"POST /diagnostics/cloud/refresh refreshes Cloud auth and machine snapshot when configured.\"},"
         "\"statistics\":{\"transport\":\"cloud\",\"preferredTransport\":\"cloud\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"%s\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"GET /machine/statistics?days=1...30 reads Cloud total cups, flushes, recent coffee and trend.\"},"
-        "\"recentCoffee\":{\"transport\":\"cloud\",\"preferredTransport\":\"cloud\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"%s\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"Recent coffee data is exposed through Cloud statistics on ESP32-S3.\"},"
+        "\"recentCoffee\":{\"transport\":\"cloud\",\"preferredTransport\":\"cloud\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"%s\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"Recent coffee data is exposed through Cloud statistics on this Hub.\"},"
         "\"schedule\":{\"transport\":\"cloud\",\"preferredTransport\":\"cloud\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"%s\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"GET /machine/schedule reads Cloud schedule coverage.\"},"
         "\"machineFirmware\":{\"transport\":\"cloud\",\"preferredTransport\":\"cloud\",\"fallbackTransport\":null,\"available\":%s,\"latencyClass\":\"%s\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"%s\",\"notes\":\"GET /diagnostics/firmware reads machine firmware status from Cloud.\"},"
         "\"recentCommands\":{\"transport\":\"local\",\"preferredTransport\":\"local\",\"fallbackTransport\":null,\"available\":true,\"latencyClass\":\"local-http\",\"risk\":\"low\",\"requiresConfirmation\":false,\"validationStatus\":\"local-endpoint-available\",\"notes\":\"GET /diagnostics/recent-commands returns recent Hub command results.\"},"
@@ -954,7 +955,7 @@ const char *hub_state_transports_json(void)
         body,
         sizeof(body),
         "{"
-        "\"hub\":{\"status\":\"online\",\"source\":\"esp32-s3\"},"
+        "\"hub\":{\"status\":\"online\",\"source\":\"" LAMABUDDY_TRANSPORT_SOURCE "\"},"
         "\"wifi\":{\"status\":\"%s\",\"configured\":%s,\"ip\":\"%s\"},"
         "\"cloud\":{\"status\":\"%s\",\"configured\":%s,\"authenticated\":%s,\"machineSelected\":%s,\"bleAuthTokenCached\":%s,\"liveValidationRequired\":%s},"
         "\"ble\":{\"status\":\"%s\",\"configured\":%s,\"tokenConfigured\":%s,\"deviceConfigured\":%s,\"readsValidated\":%s,\"writesValidated\":%s}"

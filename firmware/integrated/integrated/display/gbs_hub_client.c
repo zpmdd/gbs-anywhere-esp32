@@ -170,7 +170,9 @@ static void task(void *unused)
             if(online) exchange(NULL,"/diagnostics/cloud/refresh","{}",hub.reply,REPLY_SIZE,now(NULL)+2000);
             next_poll=0;
         } else if(now(NULL)>=next_poll) {
-            if(!online||!gbs_hub_refresh(hub.config,&io,now(NULL)+12000,&machine)) machine.stale=true;
+            if(!online||!gbs_hub_refresh(hub.config,&io,now(NULL)+12000,&machine)) {
+                machine.stale=true; machine.writable=0;
+            }
 #ifdef HUB_AMOLED_216
             update_scale_battery(&machine);
 #endif
@@ -243,8 +245,8 @@ bool gbs_hub_submit(gbs_ui_action_t action,double value,uint32_t request_id,cons
 {
     if(!hub.task||!request_id||!expected||!gbs_ui_machine_action(action)||!isfinite(value)) return false;
     if(xSemaphoreTake(hub.mutex,pdMS_TO_TICKS(10))!=pdTRUE) return false;
-    bool allowed=!hub.busy&&hub.machine.available&&!hub.machine.stale&&
-        now(NULL)-hub.machine.observed_ms<GBS_UI_MACHINE_FRESH_MS&&(hub.machine.writable&(1u<<action))&&
+    bool allowed=!hub.busy&&gbs_ui_can_control(action,&hub.machine)&&
+        now(NULL)-hub.machine.observed_ms<GBS_UI_MACHINE_FRESH_MS&&
         gbs_ui_action_unchanged(action,expected,&hub.machine);
     if(allowed) {
         hub.action=action; hub.value=value; hub.request_id=request_id; hub.submitted_machine=*expected;
@@ -281,7 +283,9 @@ bool gbs_hub_read(gbs_ui_machine_t *machine,uint32_t *request_id,gbs_ui_control_
         machine->scale_battery_last_observed_unix=0;
     }
 #endif
-    if(machine->available&&now(NULL)-machine->observed_ms>=GBS_UI_MACHINE_FRESH_MS) machine->stale=true;
+    if(machine->available&&now(NULL)-machine->observed_ms>=GBS_UI_MACHINE_FRESH_MS) {
+        machine->stale=true; machine->writable=0;
+    }
     if(gbs_ui_scale_is_stale(machine,now(NULL))) machine->scale_stale=true;
     return true;
 }

@@ -18,6 +18,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
 #include "esp_random.h"
@@ -35,8 +36,12 @@
 #endif
 #include "miniz.h"
 #include "mbedtls/base64.h"
+#if ESP_IDF_VERSION_MAJOR >= 6
+#include "psa/crypto.h"
+#else
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
+#endif
 #include "mbedtls/md.h"
 #include "mbedtls/pk.h"
 
@@ -113,6 +118,8 @@ typedef struct {
     char serial_number[HUB_CONFIG_MAX_MACHINE_SERIAL_LEN + 1];
     uint32_t selection_generation;
     bool connected;
+    bool explicitly_offline;
+    bool bbw_doses_invalid;
     bool coffee_temperature_set;
     double coffee_temperature;
     bool steam_level_set;
@@ -884,7 +891,9 @@ static esp_err_t generate_request_proof(const char *base_string, const unsigned 
     }
 
     unsigned char digest[32] = {0};
-    mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), work, sizeof(work), digest);
+    if (mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), work, sizeof(work), digest) != 0) {
+        return ESP_FAIL;
+    }
     return base64_encode_alloc(digest, sizeof(digest), proof, proof_len);
 }
 
@@ -958,29 +967,40 @@ static esp_err_t sign_with_installation_key(
     size_t signature_len = 0;
 
     mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+#if ESP_IDF_VERSION_MAJOR < 6
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_pk_init(&pk);
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&ctr_drbg);
+#endif
 
     if (base64_decode_alloc(key->private_key_b64, &private_der, &private_der_len) != ESP_OK) {
         goto cleanup;
     }
 
+#if ESP_IDF_VERSION_MAJOR >= 6
+    if (psa_crypto_init() != PSA_SUCCESS ||
+        mbedtls_pk_parse_key(&pk, private_der, private_der_len, NULL, 0) != 0) {
+        goto cleanup;
+    }
+#else
     if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)"lamabuddy", 9) != 0) {
         goto cleanup;
     }
     if (mbedtls_pk_parse_key(&pk, private_der, private_der_len, NULL, 0, mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
         goto cleanup;
     }
+#endif
 
-    mbedtls_md(
+    if (mbedtls_md(
         mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
         (const unsigned char *)signature_data,
         strlen(signature_data),
         hash
-    );
+    ) != 0) {
+        goto cleanup;
+    }
     if (mbedtls_pk_sign(
             &pk,
             MBEDTLS_MD_SHA256,
@@ -988,9 +1008,12 @@ static esp_err_t sign_with_installation_key(
             sizeof(hash),
             signature,
             sizeof(signature),
-            &signature_len,
+            &signature_len
+#if ESP_IDF_VERSION_MAJOR < 6
+            ,
             mbedtls_ctr_drbg_random,
             &ctr_drbg
+#endif
         ) != 0) {
         goto cleanup;
     }
@@ -1000,8 +1023,10 @@ static esp_err_t sign_with_installation_key(
 cleanup:
     free(private_der);
     mbedtls_pk_free(&pk);
+#if ESP_IDF_VERSION_MAJOR < 6
     mbedtls_ctr_drbg_free(&ctr_drbg);
     mbedtls_entropy_free(&entropy);
+#endif
     return err;
 }
 
@@ -2176,6 +2201,7 @@ static bool active_command_target(hub_machine_selection_identity_t *target)
 static void update_snapshot_bbw_dose(double dose1, double dose2)
 {
     hub_machine_selection_identity_t target = {0};
+    char mode[sizeof(snapshot.bbw_mode)] = {0};
     if (!active_command_target(&target)) {
         return;
     }
@@ -2187,8 +2213,11 @@ static void update_snapshot_bbw_dose(double dose1, double dose2)
         snapshot.dose1_set = true;
         snapshot.dose2 = dose2;
         snapshot.dose2_set = true;
+        snprintf(mode, sizeof(mode), "%s", snapshot.bbw_mode);
     }
     portEXIT_CRITICAL(&snapshot_lock);
+    if (matches && hub_config_save_bbw_doses(&target, mode, dose1, dose2) != ESP_OK)
+        ESP_LOGW(TAG, "Could not persist confirmed BBW display doses");
 }
 
 static void update_snapshot_bbw_mode(const char *mode)
@@ -3302,14 +3331,19 @@ static void parse_brew_by_weight(cJSON *output, cloud_snapshot_t *parsed)
     cJSON *doses = cJSON_GetObjectItemCaseSensitive(output, "doses");
     cJSON *dose1 = cJSON_GetObjectItemCaseSensitive(doses, "Dose1");
     cJSON *dose2 = cJSON_GetObjectItemCaseSensitive(doses, "Dose2");
+    if (doses != NULL && !cJSON_IsObject(doses)) parsed->bbw_doses_invalid = true;
     double value = 0;
     if (json_number_to_double(dose1, "dose", &value)) {
         parsed->dose1 = value;
         parsed->dose1_set = true;
+    } else if (dose1 != NULL) {
+        parsed->bbw_doses_invalid = true;
     }
     if (json_number_to_double(dose2, "dose", &value)) {
         parsed->dose2 = value;
         parsed->dose2_set = true;
+    } else if (dose2 != NULL) {
+        parsed->bbw_doses_invalid = true;
     }
     cJSON *scale_connected = cJSON_GetObjectItemCaseSensitive(output, "scaleConnected");
     if (cJSON_IsBool(scale_connected)) {
@@ -3421,6 +3455,7 @@ static esp_err_t parse_dashboard_snapshot(
     };
     snprintf(previous_bbw.mode, sizeof(previous_bbw.mode), "%s", previous->bbw_mode);
     parsed->connected = json_optional_bool(root, "connected");
+    parsed->explicitly_offline = cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(root, "connected"));
 
     cJSON *widgets = cJSON_GetObjectItemCaseSensitive(root, "widgets");
     cJSON *widget = NULL;
@@ -3474,7 +3509,12 @@ static esp_err_t parse_dashboard_snapshot(
 static bool scale_snapshot_fresh(const cloud_snapshot_t *current, int64_t now)
 {
     return current->connected && current->scale_observed_ms > 0
-        && now >= current->scale_observed_ms && now - current->scale_observed_ms < 60000;
+        && now >= current->scale_observed_ms && now - current->scale_observed_ms <
+#ifdef HUB_AMOLED_216
+        300000;
+#else
+        60000;
+#endif
 }
 
 static bool publish_scale_snapshot(const cloud_snapshot_t *observed)
@@ -3615,6 +3655,9 @@ static esp_err_t cloud_fetch_dashboard(
             snapshot = parsed;
             cached_snapshot = true;
             portEXIT_CRITICAL(&snapshot_lock);
+            if (parsed.dose1_set && parsed.dose2_set
+                    && hub_config_save_bbw_doses(target, parsed.bbw_mode, parsed.dose1, parsed.dose2) != ESP_OK)
+                ESP_LOGW(TAG, "Could not persist observed BBW display doses");
             snprintf(machine_serial, sizeof(machine_serial), "%s", selection->serial_number);
             snprintf(
                 machine_name,
@@ -3867,6 +3910,29 @@ static bool cached_snapshot_matches_selection(void)
     return snapshot_matches_selection(&candidate, has_cached_snapshot);
 }
 
+#ifdef HUB_AMOLED_216
+static bool snapshot_boiler_warmup_pending(const cloud_snapshot_t *current)
+{
+    time_t now = time(NULL);
+    if (now < 1577836800 || strlen(current->last_updated) != 20) return false;
+    struct tm utc = {0};
+    char stamp[32],limit[32];
+    gmtime_r(&now, &utc);
+    strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    now += 86400;
+    gmtime_r(&now, &utc);
+    strftime(limit, sizeof(limit), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    if (strcmp(current->last_updated, stamp) > 0) return false;
+    const char *ready[] = {current->coffee_boiler_ready_time, current->steam_boiler_ready_time};
+    for (size_t i = 0; i < 2; ++i) {
+        // Keep observing until a successful snapshot also covers the predicted finish.
+        if (strlen(ready[i]) == 20 && strcmp(ready[i], current->last_updated) > 0
+            && strcmp(ready[i], limit) <= 0) return true;
+    }
+    return false;
+}
+#endif
+
 void hub_cloud_get_snapshot_status(hub_cloud_snapshot_status_t *out)
 {
     if (out == NULL) {
@@ -3888,6 +3954,10 @@ void hub_cloud_get_snapshot_status(hub_cloud_snapshot_status_t *out)
     out->has_complete_bbw = has_complete_bbw;
     out->is_ready = snapshot_usable && current.connected && has_complete_bbw;
     out->refresh_pending = cloud_refresh_pending_snapshot();
+#ifdef HUB_AMOLED_216
+    out->boiler_warmup_pending = snapshot_usable && current.connected
+        && snapshot_boiler_warmup_pending(&current);
+#endif
     out->last_refresh_ms = last_refresh_ms;
     out->scale_observed_ms = snapshot_usable ? current.scale_observed_ms : 0;
     out->dose1 = current.dose1;
@@ -4477,6 +4547,20 @@ static bool control_decimal_value_is_valid(double value, double maximum)
         && fabs(value * 10.0 - round(value * 10.0)) <= 1e-6;
 }
 
+static void restore_offline_bbw_doses(cloud_snapshot_t *current)
+{
+    // Manual preselection may use the same machine's history after a fresh offline response.
+    if (current->connected || !current->explicitly_offline || current->bbw_doses_invalid || hub_command_requires_online_machine()
+            || (current->dose1_set && current->dose2_set)) return;
+    hub_machine_selection_identity_t target = {0};
+    hub_bbw_doses_t remembered = {0};
+    if (!active_command_target(&target) || current->selection_generation != target.generation
+            || strcmp(current->serial_number, target.serial_number)
+            || hub_config_get_bbw_doses(&target, &remembered) != ESP_OK) return;
+    if (!current->dose1_set) { current->dose1 = remembered.dose1; current->dose1_set = true; }
+    if (!current->dose2_set) { current->dose2 = remembered.dose2; current->dose2_set = true; }
+}
+
 esp_err_t hub_cloud_set_bbw_dose(const char *dose, int grams, hub_cloud_command_result_t *result)
 {
     return hub_cloud_set_bbw_dose_with_deadline(
@@ -4581,6 +4665,122 @@ static bool bbw_mode_is_valid(const char *mode)
         || strcmp(mode, "PulsesType") == 0;
 }
 
+static bool publish_control_bbw_snapshot(const cloud_snapshot_t *observed)
+{
+    hub_machine_selection_identity_t target = {0};
+    if (!active_command_target(&target)
+        || observed->selection_generation != target.generation
+        || strcmp(observed->serial_number, target.serial_number)) return false;
+    portENTER_CRITICAL(&snapshot_lock);
+    bool matches = snapshot.selection_generation == target.generation
+        && !strcmp(snapshot.serial_number, target.serial_number);
+    if (matches) {
+        snapshot.dose1 = observed->dose1; snapshot.dose1_set = true;
+        snapshot.dose2 = observed->dose2; snapshot.dose2_set = true;
+        if (bbw_mode_is_valid(observed->bbw_mode))
+            snprintf(snapshot.bbw_mode, sizeof(snapshot.bbw_mode), "%s", observed->bbw_mode);
+    }
+    portEXIT_CRITICAL(&snapshot_lock);
+    // A fresh read repairs the cached routing inputs, not a previous command's outcome or full-snapshot age.
+    return matches;
+}
+
+esp_err_t hub_cloud_set_quick_weight_with_deadline(
+    int grams,
+    bool require_no_stored_match,
+    const hub_command_deadline_t *deadline,
+    hub_cloud_command_result_t *mode_result,
+    hub_cloud_command_result_t *dose_result
+)
+{
+    if (!mode_result || !dose_result) return ESP_ERR_INVALID_ARG;
+    memset(mode_result, 0, sizeof(*mode_result));
+    memset(dose_result, 0, sizeof(*dose_result));
+    int64_t started_us = esp_timer_get_time();
+    if (grams < 0 || grams > 200) {
+        set_command_result(mode_result, false, started_us, "Invalid quick-weight target.");
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = ensure_cloud_controls_ready_or_fail(mode_result, started_us);
+    if (err != ESP_OK) return err;
+    uint32_t dose_reserve = HUB_COMMAND_DEADLINE_QUICK_WEIGHT_DOSE_RESERVE_MS;
+    err = cloud_command_io_lock(deadline, dose_reserve);
+    if (err != ESP_OK) {
+        set_command_result(mode_result, false, started_us, "Cloud command is busy or its deadline expired.");
+        return err;
+    }
+    esp_http_client_handle_t session = NULL;
+    cloud_snapshot_t current = {0};
+    hub_cloud_command_attempt_t attempt = {0};
+    bool have_attempt = false;
+    err = read_control_snapshot_locked(deadline, dose_reserve, &current, &session);
+    if (err != ESP_OK) {
+        set_command_result(mode_result, false, started_us, "Cloud preset read failed; no command sent.");
+        goto cleanup;
+    }
+    restore_offline_bbw_doses(&current);
+    if (hub_command_requires_online_machine() && !current.connected) {
+        err = ESP_ERR_INVALID_STATE;
+        set_command_result(mode_result, false, started_us, "Coffee machine is offline; no automatic weight command sent.");
+        goto cleanup;
+    }
+    if (!current.dose1_set || !current.dose2_set
+        || !control_decimal_value_is_valid(current.dose1, 200.0)
+        || !control_decimal_value_is_valid(current.dose2, 200.0)) {
+        err = ESP_ERR_INVALID_STATE;
+        set_command_result(mode_result, false, started_us, "Cloud dose fields are missing or invalid; no command sent.");
+        goto cleanup;
+    }
+    if (!publish_control_bbw_snapshot(&current)) {
+        err = ESP_ERR_INVALID_STATE;
+        set_command_result(mode_result, false, started_us, "Machine selection changed; no command sent.");
+        goto cleanup;
+    }
+    if (require_no_stored_match && (current.dose1 == grams || current.dose2 == grams)) {
+        err = ESP_ERR_INVALID_STATE;
+        mode_result->preset_changed = true;
+        set_command_result(mode_result, false, started_us, "Stored doses changed or are unavailable; no command sent.");
+        goto cleanup;
+    }
+    attempt = execute_command_with_auth_locked("CoffeeMachineBrewByWeightChangeMode",
+        "{\"mode\":\"Dose1\"}", deadline, dose_reserve, &session);
+    have_attempt = true;
+    set_command_attempt(mode_result, &attempt);
+    err = attempt.err;
+    if (err != ESP_OK) {
+        set_command_result(mode_result, false, started_us, "Brew-by-Weight mode Cloud command failed.");
+        goto cleanup;
+    }
+    update_snapshot_bbw_mode("Dose1");
+    set_command_result(mode_result, true, started_us, "Brew-by-Weight mode sent through ESP32-S3 Cloud; local state updated.");
+
+    int64_t dose_started_us = esp_timer_get_time();
+    if (!hub_command_deadline_can_start_step(deadline, dose_started_us / 1000, dose_reserve)) {
+        err = ESP_ERR_TIMEOUT;
+        set_command_result(dose_result, false, dose_started_us, "Command deadline cannot admit the Dose1 step.");
+        goto cleanup;
+    }
+    char body[96];
+    snprintf(body, sizeof(body), "{\"doses\":{\"Dose1\":%.1f,\"Dose2\":%.1f}}", (double)grams, current.dose2);
+    attempt = execute_command_with_auth_locked("CoffeeMachineBrewByWeightSettingDoses",
+        body, deadline, 0, &session);
+    set_command_attempt(dose_result, &attempt);
+    err = attempt.err;
+    if (err != ESP_OK) {
+        char message[128];
+        cloud_command_failure_message(message, sizeof(message), "Brew-by-Weight", err, &attempt);
+        set_command_result(dose_result, false, dose_started_us, message);
+        goto cleanup;
+    }
+    update_snapshot_bbw_dose(grams, current.dose2);
+    set_command_result(dose_result, true, dose_started_us, "Brew-by-Weight dose sent through ESP32-S3 Cloud; local state updated.");
+cleanup:
+    cloud_http_session_cleanup(&session);
+    cloud_command_io_unlock();
+    if (have_attempt) schedule_command_auth_recovery(&attempt);
+    return err;
+}
+
 static bool steam_level_is_valid(int level)
 {
     return level >= 1 && level <= 3;
@@ -4671,6 +4871,7 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
             set_command_result(result, false, started_us, message);
             return read_err;
         }
+        restore_offline_bbw_doses(&current);
         if (hub_command_requires_online_machine() && !current.connected) {
             cloud_http_session_cleanup(&session);
             cloud_command_io_unlock();
@@ -4689,6 +4890,12 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
                 current.dose1_set ? "" : "missing/", current.dose1,
                 current.dose2_set ? "" : "missing/", current.dose2);
             set_command_result(result, false, started_us, message);
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (!publish_control_bbw_snapshot(&current)) {
+            cloud_http_session_cleanup(&session);
+            cloud_command_io_unlock();
+            set_command_result(result, false, started_us, "Machine selection changed; no command sent.");
             return ESP_ERR_INVALID_STATE;
         }
         const bool matches = require_no_stored_match
@@ -5270,6 +5477,14 @@ const char *hub_cloud_machine_state_json(void)
         snprintf(confirmation, sizeof(confirmation),
             "{\"mode\":\"%s\",\"confirmedAtUnixSeconds\":%.6f}", confirmed.mode, confirmed.confirmed_at);
         snprintf(current.bbw_mode, sizeof(current.bbw_mode), "%s", confirmed.mode);
+    }
+    // Restore display fields only; commands still require the live Cloud snapshot.
+    hub_bbw_doses_t remembered = {0};
+    if ((!current.dose1_set || !current.dose2_set || !current.bbw_mode[0])
+            && hub_config_get_bbw_doses(&selection, &remembered) == ESP_OK) {
+        if (!current.dose1_set) { current.dose1 = remembered.dose1; current.dose1_set = true; }
+        if (!current.dose2_set) { current.dose2 = remembered.dose2; current.dose2_set = true; }
+        if (!current.bbw_mode[0]) snprintf(current.bbw_mode, sizeof(current.bbw_mode), "%s", remembered.mode);
     }
 
     if (current.coffee_temperature_set) {

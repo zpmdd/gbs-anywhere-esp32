@@ -1,4 +1,4 @@
-name: ESP32-S3 CI
+name: ESP32 firmware CI
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: esp32-s3-${{ github.ref }}
+  group: esp32-firmware-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -37,21 +37,60 @@ jobs:
 
   integrated-test-and-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Integrated host tests and both board profiles
+      - name: Integrated host tests, crypto and S3 board profiles
         uses: espressif/esp-idf-ci-action@v1.2.0
         with:
           esp_idf_version: v5.5.4
           target: esp32s3
           command: >-
             apt-get update &&
-            apt-get install --no-install-recommends -y gcc libc6-dev zlib1g-dev cmake pkg-config libsdl2-dev &&
+            apt-get install --no-install-recommends -y gcc libc6-dev zlib1g-dev cmake pkg-config libsdl2-dev openssl &&
             cd firmware/integrated &&
             sh tools/check-integrated.sh &&
+            sh tools/check-crypto.sh &&
             cmake -S integrated/simulator -B build-simulator -DCMAKE_BUILD_TYPE=Debug &&
             cmake --build build-simulator --target gbs_touch_simulator -j 2 &&
             ctest --test-dir build-simulator --output-on-failure &&
+            cmake -S integrated/simulator -B build-simulator-amoled -DCMAKE_BUILD_TYPE=Debug -DHUB_AMOLED_216=ON &&
+            cmake --build build-simulator-amoled -j 2 &&
+            ctest --test-dir build-simulator-amoled --output-on-failure &&
             sh tools/build-integrated.sh touchscreen &&
-            sh tools/build-integrated.sh headless
+            sh tools/build-integrated.sh headless &&
+            sh tools/build-integrated.sh amoled216
+
+  mosaico-test-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ESP_IDF_COMMIT: 4d80c1b29aeabc8e735ffc6e1be9bb23e95d1d5d
+      IDF_PATH: ${{ runner.temp }}/esp-idf-s31
+      IDF_TOOLS_PATH: ${{ runner.temp }}/esp-idf-s31-tools
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install the validated S31 preview SDK
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y git wget flex bison gperf \
+            python3 python3-pip python3-venv gcc libc6-dev cmake ninja-build ccache \
+            libffi-dev libssl-dev libusb-1.0-0 dfu-util zlib1g-dev openssl
+          git init "$IDF_PATH"
+          git -C "$IDF_PATH" remote add origin https://github.com/espressif/esp-idf.git
+          git -C "$IDF_PATH" fetch --depth 1 origin "$ESP_IDF_COMMIT"
+          git -C "$IDF_PATH" checkout --detach FETCH_HEAD
+          test "$(git -C "$IDF_PATH" rev-parse HEAD)" = "$ESP_IDF_COMMIT"
+          git -C "$IDF_PATH" submodule update --init --recursive --depth 1
+          "$IDF_PATH/install.sh" esp32s31
+      - name: Build Mosaico and run host and crypto checks
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd firmware/integrated
+          # A clean build obtains managed cJSON before the IDF 6 host checks.
+          # No private PCM override: CI builds the public synthesized cues.
+          sh tools/build-integrated.sh mosaico
+          sh tools/check-integrated.sh
+          sh tools/check-crypto.sh

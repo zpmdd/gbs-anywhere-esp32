@@ -59,6 +59,7 @@ static lv_indev_t *pointer_input;
 static atomic_int touch_last_error;
 static atomic_bool physical_touch_down;
 static atomic_uint touch_idle_reports;
+static atomic_uint variable_weight=40;
 #else
 static bool wake_gesture;
 #endif
@@ -116,14 +117,14 @@ bool gbs_display_diagnostics_json(char *buffer,size_t size)
     gbs_pmu_diagnostics_t pmu={0};
     (void)gbs_board_amoled216_pmu_diagnostics(&pmu);
     int board_count=snprintf(board,sizeof(board),",\"lastTouchError\":\"%s\",\"touchIrqLevel\":%d,\"touchPhysicalDown\":%s,\"touchIdleReports\":%u,\"imuValid\":%s,\"imuXMilliG\":%d,\"imuYMilliG\":%d,\"imuZMilliG\":%d,"
-        "\"pmuRaw00\":%u,\"pmuRaw01\":%u,\"pmuValid\":%s,\"pmuChargingKnown\":%s,\"pmuCharging\":%s,\"pmuPercentKnown\":%s,\"pmuPercent\":%u,\"pmuObservedMs\":%" PRId64 ",\"audioSuccessPlayed\":%u,\"audioFailurePlayed\":%u,\"audioNoticePlayed\":%u,\"audioOutputErrors\":%u",
-        esp_err_to_name(atomic_load(&touch_last_error)),gpio_get_level(11),
+        "\"pmuRaw00\":%u,\"pmuRaw01\":%u,\"pmuValid\":%s,\"pmuChargingKnown\":%s,\"pmuCharging\":%s,\"pmuPercentKnown\":%s,\"pmuPercent\":%u,\"pmuObservedMs\":%" PRId64 ",\"audioSuccessPlayed\":%u,\"audioFailurePlayed\":%u,\"audioNoticePlayed\":%u,\"audioOutputErrors\":%u,\"audioVolumePercent\":%u,\"variableWeightGrams\":%u",
+        esp_err_to_name(atomic_load(&touch_last_error)),!gbs_board_amoled216_touch_active(),
         atomic_load(&physical_touch_down)?"true":"false",atomic_load(&touch_idle_reports),imu_valid?"true":"false",
         (int)(xyz[0]*1000),(int)(xyz[1]*1000),(int)(xyz[2]*1000),
         (unsigned)pmu.raw00,(unsigned)pmu.raw01,pmu.decoded.valid?"true":"false",
         pmu.decoded.charging_known?"true":"false",pmu.decoded.charging?"true":"false",
         pmu.decoded.battery_percent_known?"true":"false",pmu.decoded.battery_percent,pmu.decoded.observed_ms,
-        audio.success,audio.failure,audio.notice,audio.errors);
+        audio.success,audio.failure,audio.notice,audio.errors,audio.volume_percent,atomic_load(&variable_weight));
     if (board_count<0 || (size_t)board_count>=sizeof(board)) return false;
 #else
     const char *board="";
@@ -188,7 +189,7 @@ static void read_touch(lv_indev_drv_t *driver, lv_indev_data_t *data)
     static lv_point_t position;
     esp_err_t err=esp_lcd_touch_read_data(touch);
 #ifdef HUB_AMOLED_216
-    bool idle=gbs_device_touch_idle(&touch_policy,err==ESP_ERR_INVALID_RESPONSE,gpio_get_level(11)!=0);
+    bool idle=gbs_device_touch_idle(&touch_policy,err==ESP_ERR_INVALID_RESPONSE,!gbs_board_amoled216_touch_active());
     if(idle) {
         /* CST9220 may have no report before its first touch. Do not consume
          * cached coordinates or manufacture release of a held gesture. */
@@ -242,7 +243,14 @@ static bool submit(gbs_ui_action_t action,double value,uint32_t request_id,const
     else if(action==GBS_ACTION_DIM) key="dim";
 #ifdef HUB_AMOLED_216
     else if(action==GBS_ACTION_ROTATION_AUTO) key="rotate_auto";
-    else if(action==GBS_ACTION_SOUND) key="sound";
+    else if(action==GBS_ACTION_SOUND) {
+        if(!(value>=0 && value<=100) || value!=(unsigned)value) return false;
+        key="volume";
+    }
+    else if(action==GBS_ACTION_WEIGHT_PRESET) {
+        if(!gbs_ui_variable_weight_valid(value)) return false;
+        key="weight_preset";
+    }
 #endif
     if(!key) return gbs_hub_submit(action,value,request_id,expected);
     nvs_handle_t nvs;
@@ -251,11 +259,15 @@ static bool submit(gbs_ui_action_t action,double value,uint32_t request_id,const
 #ifdef HUB_AMOLED_216
     uint8_t stored;
     if(nvs_get_u8(nvs,key,&stored)==ESP_OK && stored==(uint8_t)value) {
+        if(action==GBS_ACTION_WEIGHT_PRESET) atomic_store(&variable_weight,(unsigned)value);
         nvs_close(nvs); return true;
     }
 #endif
     err=nvs_set_u8(nvs,key,(uint8_t)value);
     if(err==ESP_OK) err=nvs_commit(nvs);
+#ifdef HUB_AMOLED_216
+    if(err==ESP_OK && action==GBS_ACTION_WEIGHT_PRESET) atomic_store(&variable_weight,(unsigned)value);
+#endif
     nvs_close(nvs); return err==ESP_OK;
 }
 
@@ -268,6 +280,25 @@ static bool read_data(gbs_ui_data_kind_t kind,void *context)
 static bool refresh_scale(void *context)
 {
     (void)context; return gbs_hub_request_scale_refresh();
+}
+
+static void load_device_preferences(void)
+{
+    uint8_t auto_rotate=0,volume=0,weight=40;
+    nvs_handle_t nvs;
+    if(nvs_open("gbs_display",NVS_READONLY,&nvs)==ESP_OK) {
+        nvs_get_u8(nvs,"rotate_auto",&auto_rotate);
+        nvs_get_u8(nvs,"weight_preset",&weight);
+        if(nvs_get_u8(nvs,"volume",&volume)!=ESP_OK || volume>100) {
+            uint8_t sound=0;
+            nvs_get_u8(nvs,"sound",&sound);
+            volume=sound==1?80:0;
+        }
+        nvs_close(nvs);
+    }
+    gbs_ui_set_device_preferences(auto_rotate==1,volume);
+    gbs_ui_set_variable_weight(weight);
+    atomic_store(&variable_weight,gbs_ui_variable_weight());
 }
 #endif
 
@@ -324,11 +355,7 @@ static void task(void *unused)
     }
     gbs_ui_set_preferences(brightness,dim!=0);
 #ifdef HUB_AMOLED_216
-    uint8_t auto_rotate=0,sound=0;
-    if(nvs_open("gbs_display",NVS_READONLY,&nvs)==ESP_OK) {
-        nvs_get_u8(nvs,"rotate_auto",&auto_rotate); nvs_get_u8(nvs,"sound",&sound); nvs_close(nvs);
-    }
-    gbs_ui_set_device_preferences(auto_rotate==1,sound==1);
+    load_device_preferences();
     gbs_ui_set_scale_refresh(refresh_scale);
     gbs_board_amoled216_start_services();
     gbs_device_status_t previous_device={0};
@@ -364,7 +391,7 @@ static void task(void *unused)
             }
             for(unsigned i=0;i<GBS_DATA_COUNT;++i)
                 if(gbs_hub_read_data(i,&data[i])) gbs_ui_set_data(&data[i]);
-            gbs_ui_tick(now); next_render=now+250;
+            next_render=now+250;
             model_us+=esp_timer_get_time()-started; model_updated=true;
         }
 #ifdef HUB_AMOLED_216
@@ -386,7 +413,7 @@ static void task(void *unused)
             else gbs_ui_toggle_rotation();
         }
         gbs_device_status_t device;
-        if(gbs_board_amoled216_tick(now,touch_down || keys_down,gbs_ui_rotation_auto(),gbs_ui_sound_enabled(),gbs_ui_take_tone(),&device))
+        if(gbs_board_amoled216_tick(now,touch_down || keys_down,gbs_ui_rotation_auto(),gbs_ui_sound_volume(),gbs_ui_take_tone(),&device))
             lv_obj_invalidate(lv_scr_act());
         if(!have_device || memcmp(&device,&previous_device,sizeof(device))) {
             int64_t started=esp_timer_get_time();
@@ -394,7 +421,13 @@ static void task(void *unused)
             model_us+=esp_timer_get_time()-started; model_updated=true;
         }
 #endif
-        if(model_updated) record_performance(PERF_MODEL,model_us);
+        if(model_updated) {
+            int64_t started=esp_timer_get_time();
+            // Fresh snapshots can be newer than the previous UI tick or this loop's entry time.
+            gbs_ui_tick(started/1000);
+            model_us+=esp_timer_get_time()-started;
+            record_performance(PERF_MODEL,model_us);
+        }
         int64_t lvgl_started=esp_timer_get_time();
         lv_timer_handler();
         record_performance(PERF_LVGL,esp_timer_get_time()-lvgl_started);

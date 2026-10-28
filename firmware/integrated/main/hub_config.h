@@ -50,6 +50,16 @@ esp_err_t hub_config_get_bbw_selection(const hub_machine_selection_identity_t *t
 esp_err_t hub_config_save_bbw_selection(const hub_machine_selection_identity_t *target, const char *mode, double confirmed_at);
 
 typedef struct {
+    char serial_number[HUB_CONFIG_MAX_MACHINE_SERIAL_LEN + 1];
+    char mode[16];
+    double dose1;
+    double dose2;
+} hub_bbw_doses_t;
+
+esp_err_t hub_config_get_bbw_doses(const hub_machine_selection_identity_t *target, hub_bbw_doses_t *out);
+esp_err_t hub_config_save_bbw_doses(const hub_machine_selection_identity_t *target, const char *mode, double dose1, double dose2);
+
+typedef struct {
     bool enabled;
     bool merge_enabled;
     uint32_t field_mask;

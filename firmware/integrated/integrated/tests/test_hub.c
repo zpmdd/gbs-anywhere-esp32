@@ -14,7 +14,9 @@ static struct {
     int standby_minutes;
     bool standby_enabled,corrupt_preserved;
     char prebrew_mode[24],machine_mode[24],standby_mode[24];
-    const char *state_patch,*unavailable;
+    const char *state_patch,*unavailable,*ble_reply;
+    unsigned ble_reads;
+    int ble_status;
     bool enabled,lost_reply,never_ack,partial,unknown,readback_mismatch,auth_fail,wrong_hub,wrong_machine;
     bool binding_changed,missing_measurement,cloud_offline,legacy_presets,post_unknown;
     char path[96],body[256];
@@ -38,8 +40,10 @@ static int exchange(void *unused,const char *path,const char *body,char *reply,s
         }
         else if(!strcmp(path,"/controls/quick-weight")) {
             assert(cJSON_IsTrue(cJSON_GetObjectItem(j,"requireNoStoredMatch")));
-            assert(cJSON_GetObjectItem(j,"clientTtlMs")->valueint==8000);
+            assert(cJSON_GetObjectItem(j,"clientTtlMs")->valueint==12000);
         }
+        if(!strcmp(path,"/controls/bbw/mode")&&cJSON_GetObjectItem(j,"presetGrams"))
+            assert(cJSON_GetObjectItem(j,"clientTtlMs")->valueint==12000);
         if(!strcmp(path,"/controls/power")||!strcmp(path,"/controls/smart-standby")) {
             assert(cJSON_IsTrue(cJSON_GetObjectItem(j,"confirm")));
             assert(strlen(body)<(!strcmp(path,"/controls/power")?128u:256u));
@@ -88,6 +92,12 @@ static int exchange(void *unused,const char *path,const char *body,char *reply,s
             cJSON_ArrayForEach(v,patch) assert(cJSON_ReplaceItemInObject(j,v->string,cJSON_Duplicate(v,true)));
             assert(cJSON_PrintPreallocated(j,reply,(int)size,false)); cJSON_Delete(j); cJSON_Delete(patch);
         }
+    } else if(!strcmp(path,"/diagnostics/ble")) {
+        ++fake.ble_reads;
+        if(fake.ble_status) return fake.ble_status;
+        if(fake.ble_reply) snprintf(reply,size,"%s",fake.ble_reply);
+        else snprintf(reply,size,"{\"apiVersion\":2,\"hubId\":\"%s\",\"configured\":true,"
+            "\"workerConnected\":false,\"controlSessionReady\":false,\"cachedConnected\":true,\"workerStatus\":\"backoff\"}",config.hub_id);
     } else {
         assert(!strncmp(path,"/diagnostics/commands?id=",24)); ++fake.polls;
         bool pending=fake.never_ack||fake.polls==1;
@@ -147,6 +157,30 @@ static gbs_ui_control_t run(gbs_ui_machine_t *m,gbs_ui_action_t action,double va
 {
     return gbs_hub_execute(&config,&io,action,value,ID,fake.now+5000,m);
 }
+static void ble_observations(void)
+{
+    gbs_ui_machine_t m=initial();
+    assert(m.ble.valid&&m.ble.configured&&!m.ble.connected&&!m.ble.control_ready&&m.ble.cached_fresh);
+    assert(!strcmp(m.ble.status,"backoff")&&!gbs_ui_ble_is_stale(&m.ble,fake.now));
+    assert(fake.ble_reads==1&&fake.posts==0);
+    fake.ble_reply="{\"apiVersion\":2,\"hubId\":\"22222222-2222-4222-8222-222222222222\","
+        "\"configured\":true,\"workerConnected\":true,\"controlSessionReady\":true,\"cachedConnected\":false,\"workerStatus\":\"connected\"}";
+    assert(gbs_hub_refresh(&config,&io,10000,&m));
+    assert(m.ble.valid&&m.ble.connected&&m.ble.control_ready&&!m.ble.cached_fresh);
+    assert(gbs_ui_ble_is_stale(&m.ble,m.ble.observed_ms+GBS_UI_BLE_FRESH_MS));
+    fake.ble_status=404;
+    assert(gbs_hub_refresh(&config,&io,10000,&m)&&!m.ble.valid&&!m.stale&&m.writable);
+    fake.ble_status=0; fake.ble_reply="{\"apiVersion\":2,\"hubId\":\"22222222-2222-4222-8222-222222222222\","
+        "\"configured\":true,\"workerConnected\":\"true\",\"controlSessionReady\":true,\"workerStatus\":\"connected\"}";
+    assert(gbs_hub_refresh(&config,&io,10000,&m)&&!m.ble.valid);
+    fake.ble_reply="{\"apiVersion\":2,\"hubId\":\"wrong-hub\",\"configured\":true,"
+        "\"workerConnected\":true,\"controlSessionReady\":true,\"workerStatus\":\"connected\"}";
+    assert(gbs_hub_refresh(&config,&io,10000,&m)&&!m.ble.valid);
+    fake.ble_reply=NULL; assert(gbs_hub_refresh(&config,&io,10000,&m)&&m.ble.valid);
+    fake.binding_changed=true;
+    assert(!gbs_hub_refresh(&config,&io,10000,&m)&&!m.ble.valid);
+    assert(fake.posts==0);
+}
 static void scale_observations(void)
 {
     gbs_ui_machine_t m=initial();
@@ -188,6 +222,7 @@ static void scale_observations(void)
     char path[96],body[256]; m=initial();
     assert(!gbs_hub_prepare(GBS_ACTION_ROTATION_AUTO,1,&m,ID,path,sizeof(path),body,sizeof(body)));
     assert(!gbs_hub_prepare(GBS_ACTION_SOUND,1,&m,ID,path,sizeof(path),body,sizeof(body)));
+    assert(!gbs_hub_prepare(GBS_ACTION_WEIGHT_PRESET,42,&m,ID,path,sizeof(path),body,sizeof(body)));
 }
 static void boiler_ready_times(void)
 {
@@ -340,9 +375,38 @@ static void configuration(void)
     cJSON_Delete(j);
     assert(!gbs_hub_config_parse(NULL,&parsed)&&!gbs_hub_config_parse("{}junk",&parsed));
 }
+static void offline_weight_selection(void)
+{
+    gbs_ui_machine_t m=initial();
+    const char *patches[]={
+        "{\"connectionState\":\"unknown\",\"brewByWeightMode\":\"Dose2\",\"brewByWeightDose1\":20,\"brewByWeightDose2\":30}",
+        "{\"connectionState\":\"disconnected\",\"brewByWeightMode\":\"Dose1\",\"brewByWeightDose1\":42}",
+        "{\"connectionState\":\"unknown\",\"brewByWeightMode\":\"Continuous\"}",
+        "{\"connectionState\":\"unknown\",\"brewByWeightMode\":null}",
+        "{\"connectionState\":\"unknown\",\"brewByWeightMode\":\"Dose2\",\"brewByWeightDose2\":null}"
+    };
+    for(unsigned i=0;i<sizeof(patches)/sizeof(*patches);++i) {
+        fake.state_patch=patches[i];
+        assert(gbs_hub_refresh(&config,&io,fake.now+10000,&m)&&m.available&&m.stale);
+        assert(i==0?m.weight==30:i==1?m.weight==42:isnan(m.weight));
+        char path[96],body[256];
+        assert(gbs_hub_prepare(GBS_ACTION_WEIGHT,36,&m,ID,path,sizeof(path),body,sizeof(body))==(i<3));
+        assert(!gbs_hub_prepare(GBS_ACTION_COFFEE,94,&m,ID,path,sizeof(path),body,sizeof(body)));
+    }
+    assert(fake.posts==0);
+    m=initial();fake.state_patch="{\"connectionState\":\"unknown\"}";
+    assert(run(&m,GBS_ACTION_WEIGHT,40)==GBS_UI_CONTROL_CONFIRMED&&m.stale&&m.weight==40);
+    m=initial();fake.state_patch="{\"connectionState\":\"unknown\"}";
+    assert(run(&m,GBS_ACTION_WEIGHT,35)==GBS_UI_CONTROL_CONFIRMED&&m.stale&&m.weight==35&&m.dose2==40);
+    m=initial();fake.state_patch="{\"connectionState\":\"unknown\"}";fake.cloud_offline=true;
+    assert(run(&m,GBS_ACTION_WEIGHT,35)==GBS_UI_CONTROL_FAILED&&fake.posts==0);
+    puts("Hub offline selection: retained Cloud dose, manual preset confirmation, missing/failed Cloud guards and other controls unchanged PASS");
+}
 int main(void)
 {
     configuration();
+    offline_weight_selection();
+    ble_observations();
     scale_observations();
     boiler_ready_times();
     scale_does_not_gate_weight();

@@ -49,6 +49,9 @@ HARNESS = r"""
 #include <string.h>
 
 static bool mode_request_started;
+static esp_err_t mode_cloud_error;
+static esp_err_t dose_cloud_error = ESP_FAIL;
+static int dose_http_status = 503;
 static bool coffee_confirmation_timeout;
 static int cloud_coffee_call_count;
 static int mode_cloud_call_count;
@@ -102,10 +105,10 @@ esp_err_t hub_cloud_set_bbw_mode(const char *mode, hub_cloud_command_result_t *r
     mode_cloud_call_count++;
     require_true(strcmp(mode, "Dose1") == 0, "quick weight did not restore Dose1 mode");
     memset(result, 0, sizeof(*result));
-    result->ok = true;
+    result->ok = mode_cloud_error == ESP_OK;
     result->duration_ms = 11;
     result->upstream_attempts = mode_request_started ? 1 : 0;
-    result->http_status = mode_request_started ? 200 : 0;
+    result->http_status = mode_request_started && !mode_cloud_error ? 200 : 0;
     result->request_started = mode_request_started;
     snprintf(
         result->message,
@@ -113,7 +116,7 @@ esp_err_t hub_cloud_set_bbw_mode(const char *mode, hub_cloud_command_result_t *r
         "%s",
         mode_request_started ? "Mode changed to Dose1." : "Mode already matched cached snapshot."
     );
-    return ESP_OK;
+    return mode_cloud_error;
 }
 
 esp_err_t hub_cloud_set_bbw_dose(const char *dose, int grams, hub_cloud_command_result_t *result)
@@ -125,10 +128,10 @@ esp_err_t hub_cloud_set_bbw_dose(const char *dose, int grams, hub_cloud_command_
     result->ok = false;
     result->duration_ms = 17;
     result->upstream_attempts = 1;
-    result->http_status = 503;
+    result->http_status = dose_http_status;
     result->request_started = true;
     snprintf(result->message, sizeof(result->message), "Dose1 update failed.");
-    return ESP_FAIL;
+    return dose_cloud_error;
 }
 
 esp_err_t hub_cloud_set_bbw_mode_with_deadline(
@@ -167,6 +170,18 @@ esp_err_t hub_cloud_set_bbw_mode_checked_with_deadline(
     (void)require_no_stored_match; (void)reserve;
     ++guarded_calls; memset(result,0,sizeof(*result)); result->preset_changed=true;
     return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t hub_cloud_set_quick_weight_with_deadline(
+    int grams, bool guarded, const hub_command_deadline_t *deadline,
+    hub_cloud_command_result_t *mode, hub_cloud_command_result_t *dose)
+{
+    memset(dose,0,sizeof(*dose));
+    if(guarded) return hub_cloud_set_bbw_mode_checked_with_deadline("Dose1",grams,true,deadline,3000,mode);
+    esp_err_t error=hub_cloud_set_bbw_mode_with_deadline("Dose1",deadline,3000,mode);
+    if(error!=ESP_OK)return error;
+    if(!hub_command_deadline_can_start_step(deadline,fake_now_ms,3000))return ESP_ERR_TIMEOUT;
+    return hub_cloud_set_bbw_dose_with_deadline("dose1",grams,deadline,0,dose);
 }
 
 #define CLOUD_FAILURE_STUB(name, signature) \
@@ -282,6 +297,8 @@ static void test_real_mode_change_followed_by_dose_failure_is_partial_apply(void
                  "partial quick weight did not aggregate both upstream attempts");
     require_true(result.cloud_duration_ms == 28,
                  "partial quick weight did not aggregate Cloud duration");
+    require_true(result.state_confirmation_pending && result.late_side_effect_risk,
+                 "unconfirmed dose after a successful mode lost late-effect risk");
 }
 
 static void test_cached_mode_noop_followed_by_dose_failure_is_not_partial_apply(void)
@@ -377,6 +394,7 @@ static void reset_deadline_test_state(void)
     mode_advance_ms = 0;
     mode_cloud_call_count = 0;
     dose_cloud_call_count = 0;
+    mode_cloud_error = ESP_OK;
 }
 
 static hub_command_deadline_t accepted_deadline(uint32_t ttl_ms)
@@ -435,6 +453,36 @@ static void test_v2_mode_apply_then_dose_budget_exhaustion_is_partial(void)
                  "partial deadline result lost partialApply error code");
     require_true(result.upstream_attempts == 1,
                  "partial deadline result lost the mode attempt");
+    require_true(!result.late_side_effect_risk && !result.state_confirmation_pending,
+                 "an unstarted dose invented an ambiguous upstream write");
+}
+
+static void test_unknown_mode_never_starts_dose(void)
+{
+    reset_deadline_test_state();mode_request_started=true;mode_cloud_error=ESP_ERR_TIMEOUT;
+    hub_command_deadline_t deadline=accepted_deadline(8000);
+    hub_control_result_t result={0};
+    require_true(hub_control_execute_quick_weight_with_deadline(30,&deadline,&result)==ESP_ERR_TIMEOUT,
+                 "unknown mode result was hidden");
+    require_true(mode_cloud_call_count==1&&dose_cloud_call_count==0,
+                 "unknown mode outcome allowed a dose write or replayed its mode");
+    require_true(!strcmp(result.error_code,"unknownOutcome")&&result.state_confirmation_pending&&result.late_side_effect_risk,
+                 "sent mode without a reply became a definite failure");
+    mode_cloud_error=ESP_OK;
+}
+
+static void test_unknown_dose_after_mode_remains_partial_with_late_risk(void)
+{
+    reset_deadline_test_state();mode_request_started=true;dose_cloud_error=ESP_ERR_TIMEOUT;dose_http_status=0;
+    hub_command_deadline_t deadline=accepted_deadline(8000);
+    hub_control_result_t result={0};
+    require_true(hub_control_execute_quick_weight_with_deadline(30,&deadline,&result)==ESP_ERR_TIMEOUT,
+                 "unknown dose result was hidden");
+    require_true(mode_cloud_call_count==1&&dose_cloud_call_count==1&&result.upstream_attempts==2,
+                 "compound command replayed an unknown dose or lost its mode write");
+    require_true(!strcmp(result.error_code,"partialApply")&&result.state_confirmation_pending&&result.late_side_effect_risk,
+                 "sent dose without a reply lost partial apply or late-effect risk");
+    dose_cloud_error=ESP_FAIL;dose_http_status=503;
 }
 
 static void test_v2_unconfirmed_dose_without_mode_side_effect_is_unknown(void)
@@ -503,6 +551,8 @@ int main(void)
     test_coffee_confirmation_success_is_strict_ble_success();
     test_v2_quick_weight_rejects_before_any_cloud_step();
     test_v2_mode_apply_then_dose_budget_exhaustion_is_partial();
+    test_unknown_mode_never_starts_dose();
+    test_unknown_dose_after_mode_remains_partial_with_late_risk();
     test_v2_unconfirmed_dose_without_mode_side_effect_is_unknown();
     return 0;
 }
@@ -540,7 +590,7 @@ def main() -> None:
         subprocess.run(command, cwd=ROOT, check=True)
         subprocess.run([str(binary_path)], cwd=ROOT, check=True)
 
-    print("quick-weight/control contract host tests passed (10 cases including guarded dispatch)")
+    print("quick-weight/control contract host tests passed (12 cases including guarded dispatch and unknown writes)")
 
 
 if __name__ == "__main__":

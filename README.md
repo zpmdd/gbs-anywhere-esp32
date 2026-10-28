@@ -2,13 +2,13 @@
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.de.md">Deutsch</a>
 </p>
 
-# gbs-anywhere ESP32-S3
+# gbs-anywhere ESP32
 
-**Your grinder, espresso machine and coffee workflow — on one ESP32-S3.**
+**Your grinder, espresso machine and coffee workflow — on one ESP32-S3 or ESP32-S31.**
 
 [![CI](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zpmdd/gbs-anywhere-esp32/actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-53694d)](LICENSE)
-[![Platform: ESP32-S3](https://img.shields.io/badge/platform-ESP32--S3-53694d)](docs/COMPATIBILITY.md)
+[![Platform: ESP32-S3 / ESP32-S31](https://img.shields.io/badge/platform-ESP32--S3%20%2F%20ESP32--S31-53694d)](docs/COMPATIBILITY.md)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-b78c50)](docs/PROGRESS.md)
 
 <picture>
@@ -50,9 +50,11 @@ The lightweight build handles feedback without recipe or machine controls.
 | **AMOLED battery sessions** | Scale battery inside one icon, separate device battery, retained history across shutdown, warm-up estimates, optional rotation, physical buttons and audible milestones. |
 | **Updates & diagnostics** | Authenticated LAN OTA, cached diagnostics and framebuffer preview on integrated builds. Application OTA preserves NVS configuration. |
 
-AMOLED-specific features are available on the
-[`codex/amoled-216-local-adaptation` branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation).
-Its source is public; it has not yet been merged into `main`.
+Current AMOLED maintenance and the ESP-Mosaico port are on
+[`codex/s31-mosaico-port`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port).
+The earlier S3-only adaptation remains on
+[`codex/amoled-216-local-adaptation`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation).
+Neither board adaptation is part of `main`; use the matching branch and guide.
 
 ## See the interface
 
@@ -69,12 +71,13 @@ of a new field test. [More screens, browser UI and image provenance →](docs/GA
 
 ## Choose your hardware
 
-### ESP32-S3 boards
+### ESP32 boards
 
 | Board / build | Display · flash / PSRAM | Source | Evidence |
 | --- | --- | --- | --- |
 | **Waveshare ESP32-S3-Touch-LCD-1.69** · integrated | 240 × 280 · 16 MB / 8 MB | `main`, `touchscreen` | Physical touch, recipe-follow cups in both directions, OTA and scale-state cycle. |
-| **Waveshare ESP32-S3-Touch-AMOLED-2.16** · integrated | 480 × 480 · 16 MB / 8 MB | [AMOLED branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation), `amoled216` | Physical rotation/touch, PWR cycles, battery retention and cups; latest display-fix cup still pending. |
+| **Waveshare ESP32-S3-Touch-AMOLED-2.16** · integrated | 480 × 480 · 16 MB / 8 MB | [Current development branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port), `amoled216` | Earlier S3 builds have rotation/touch, PWR, battery and cup evidence; current source passes an isolated S3 build regression. |
+| **ESP-Mosaico, ESP32-S31** · integrated | 480 × 480 · 16 MB / 16 MB | [S31 branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port), `mosaico` | USB installation, LAN OTA and BLE temperature refresh; earlier S31 builds passed rotation/touch and sound checks. New-cup writes and endurance pending. |
 | **ESP32-S3, no display** · lightweight | 8 MB / 8 MB octal | `main`, root application | Feedback-port hardware evidence; exact-build limits apply. |
 | **ESP32-S3, no display** · integrated | 8 MB / 8 MB octal | `main`, `headless` | Local build checks; dedicated physical acceptance pending. |
 | **1.69-inch external-Hub preview** | 240 × 280 · 16 MB / 8 MB | `main`, root `GBS_TOUCHSCREEN=ON` | Simulator/client validation; needs a separate Hub. |
@@ -105,6 +108,7 @@ Board images are not interchangeable. See the
 | --- | --- |
 | One device with controls and a 1.69-inch LCD | [Integrated build, provisioning and OTA](docs/INTEGRATED.md) |
 | Battery-powered 2.16-inch AMOLED | [AMOLED branch, build and field status](docs/AMOLED216.md) |
+| ESP-Mosaico with 16 MB PSRAM | [S31 toolchain, installation and field status](docs/MOSAICO.md) |
 | A small feedback bridge with browser status | [Lightweight companion setup](docs/COMPANION.md) |
 | A display connected to an existing Hub | [External-Hub preview](docs/TOUCHSCREEN.md) |
 
@@ -123,6 +127,10 @@ These commands build and test. Follow the board-specific guide for backup,
 initial provisioning and installation. Later application OTA uses the existing
 configuration; it is not a first-install NVS import.
 
+The `mosaico` profile uses a separate **ESP-IDF 6.2 preview** checkout; S3
+integrated profiles retain **5.5.4**. Follow the [Mosaico guide](docs/MOSAICO.md)
+for its pinned SDK revision and board-specific partition layout.
+
 ## Languages
 
 | Surface | Available languages |
@@ -140,6 +148,7 @@ ships translations inside the firmware. No translation service is needed.
 - [LCD recipe following: one cup in each direction](docs/RECIPE_FOLLOW_ACCEPTANCE.md)
 - [LCD scale-state OTA and physical off/on/off cycle](docs/SCALE_STATE_ACCEPTANCE.md)
 - [AMOLED build-specific validation and remaining checks](docs/AMOLED216.md#validation-status-2026-10-23)
+- [ESP-Mosaico installation and build-specific validation](docs/MOSAICO.md)
 - [Progress, open work and source boundaries](docs/PROGRESS.md)
 - [Contributing and reporting a hardware result](CONTRIBUTING.md)
 

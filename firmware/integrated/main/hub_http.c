@@ -901,7 +901,7 @@ static esp_err_t health_handler(httpd_req_t *req)
         "\"firmwareVersion\":\"%s\","
         "\"firmwareBuildId\":\"%s\","
         "\"firmwareBuildIdAlgorithm\":\"%s\","
-        "\"chip\":\"esp32s3\","
+        "\"chip\":\"" LAMABUDDY_CHIP_NAME "\","
         "\"cores\":%d,"
         "\"flashMB\":%lu,"
         "\"psramMB\":%lu,"

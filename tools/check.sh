@@ -1,33 +1,34 @@
 #!/bin/sh
 set -eu
 gbs_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-gbs_idf=${IDF_PATH:?Source ESP-IDF export.sh first}
+: "${IDF_PATH:?Source ESP-IDF export.sh first}"
 gbs_python=${GBS_PYTHON:-python}
+gbs_json=$("$gbs_python" "$gbs_root/firmware/integrated/tools/host_cjson.py")
 mkdir -p "$gbs_root/build-host"
 ${CC:-cc} -std=c11 -Wno-deprecated-declarations -fsanitize=address,undefined -g \
-  -I "$gbs_idf/components/json/cJSON" -c "$gbs_idf/components/json/cJSON/cJSON.c" \
+  -I "$gbs_json" -c "$gbs_json/cJSON.c" \
   -o "$gbs_root/build-host/cJSON.o"
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
-  -I "$gbs_root/main" -I "$gbs_idf/components/json/cJSON" \
+  -I "$gbs_root/main" -I "$gbs_json" \
   "$gbs_root/main/logic.c" "$gbs_root/tests/test_logic.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_logic"
 "$gbs_root/build-host/test_logic"
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
-  -I "$gbs_root/tests/stubs" -I "$gbs_root/main" -I "$gbs_idf/components/json/cJSON" \
+  -I "$gbs_root/tests/stubs" -I "$gbs_root/main" -I "$gbs_json" \
   "$gbs_root/main/logic.c" "$gbs_root/tests/test_worker.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_worker"
 "$gbs_root/build-host/test_worker"
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
-  -I "$gbs_root/display" -I "$gbs_idf/components/json/cJSON" \
+  -I "$gbs_root/display" -I "$gbs_json" \
   "$gbs_root/display/gbs_ui_model.c" "$gbs_root/tests/test_display_model.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_display_model"
 "$gbs_root/build-host/test_display_model"
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
-  -I "$gbs_root/display" -I "$gbs_idf/components/json/cJSON" \
+  -I "$gbs_root/display" -I "$gbs_json" \
   "$gbs_root/display/gbs_hub.c" "$gbs_root/display/gbs_ui_model.c" "$gbs_root/tests/test_hub.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_hub"
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
-  -I "$gbs_root/display" -I "$gbs_idf/components/json/cJSON" \
+  -I "$gbs_root/display" -I "$gbs_json" \
   "$gbs_root/display/gbs_hub.c" "$gbs_root/display/gbs_ui_model.c" "$gbs_root/tests/test_hub_data.c" \
   "$gbs_root/build-host/cJSON.o" -lm -o "$gbs_root/build-host/test_hub_data"
 "$gbs_root/build-host/test_hub_data" "$gbs_root/tests/fixtures"

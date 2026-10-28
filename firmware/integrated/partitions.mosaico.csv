@@ -1,0 +1,9 @@
+# ESP-Mosaico 16 MB NOR flash; initial USB install required.
+# Name, Type, SubType, Offset, Size, Flags
+nvs, data, nvs, 0x9000, 0x15000,
+otadata, data, ota, 0x1e000, 0x2000,
+phy_init, data, phy, 0x20000, 0x1000,
+factory, app, factory, 0x30000, 5M,
+ota_0, app, ota_0, 0x530000, 5M,
+ota_1, app, ota_1, 0xa30000, 5M,
+nvs_keys, data, nvs_keys, 0xf30000, 0x1000, encrypted

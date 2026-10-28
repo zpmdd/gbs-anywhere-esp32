@@ -132,7 +132,8 @@ void gbs_recipe_follow_tick(bool accepted)
     request.deadline.enforced = true;
     uint32_t remaining = atomic_load(&permit_until_ms) - (uint32_t)(esp_timer_get_time() / 1000);
     request.deadline.client_ttl_present = true;
-    request.deadline.client_ttl_ms = remaining < 8000 ? remaining : 8000;
+    request.deadline.client_ttl_ms = remaining < HUB_COMMAND_DEADLINE_MAX_TTL_MS
+        ? remaining : HUB_COMMAND_DEADLINE_MAX_TTL_MS;
     unsigned dose = snapshot.dose1 == match.grams ? 1 : snapshot.dose2 == match.grams ? 2 : 0;
     if (dose) {
         request.kind = HUB_COMMAND_BBW_MODE;

@@ -3,6 +3,7 @@ import argparse,io,re,subprocess,shutil
 from PIL import Image
 from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
+from generate_flow_assets import generate_fonts as generate_flow_fonts, generate_icons as generate_flow_icons
 parser=argparse.ArgumentParser(description='Regenerate the embedded CJK fonts, Inter numerals and Tabler icons.')
 parser.add_argument('source_directory',type=Path,help='Cache containing the original fonts and tabler/package/icons')
 parser.add_argument('--new-cjk-only',action='store_true',help='Regenerate only the additional CJK sizes; preserve legacy fonts, numerals and icons')
@@ -30,6 +31,7 @@ if args.new_cjk_only:
     for path in generated_fonts:
         text=re.sub(r'^ \* Opts:.*\n','',path.read_text(),flags=re.M)
         path.write_text(text.rstrip()+'\n')
+    generate_flow_fonts(out, assets, cjk_only=True)
     print('Generated',len(generated_fonts),'losslessly compressed CJK sizes; legacy fonts and numerals unchanged')
     raise SystemExit(0)
 subprocess.run(['npx','--yes','lv_font_conv@1.5.3','--font',str(assets/'InterBattery-Semibold.ttf'),'--symbols','0123456789%—','--size','18','--bpp','4','--format','lvgl','--no-compress','--lv-include','lvgl.h','-o',str(out/'fonts/gbs_battery_18.c')],check=True)
@@ -71,6 +73,8 @@ for n in names:
     source+=['};','static const lv_img_dsc_t '+name+'={.header={.cf=LV_IMG_CF_ALPHA_8BIT,.w='+str(width)+',.h='+str(height)+'},.data_size=sizeof('+name+'_data),.data='+name+'_data};']
 source+=['const lv_img_dsc_t *const gbs_icons[GBS_ICON_COUNT]={'+','.join('&'+n.replace('-','_') for n in names)+'};']
 (out/'icons/gbs_icons.c').write_text('\n'.join(source)+'\n')
+generate_flow_fonts(out, assets)
+generate_flow_icons(out)
 print('Generated bold CJK, Inter numerals, and',len(names),'licensed icons')
 
 for path in (out/'fonts').glob('*.c'):

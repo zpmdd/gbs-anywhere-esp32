@@ -2,7 +2,7 @@
 
 [Overview](../README.md) · [中文](../README.zh-CN.md) · [Deutsch](../README.de.md)
 
-Updated 2026-10-23. **Implemented**, **build-checked** and **field-tested** are
+Updated 2026-10-28. **Implemented**, **build-checked** and **field-tested** are
 separate claims. Field results apply to a named board and binary, not every
 variant of a product family. No ready-to-flash general release is implied.
 
@@ -11,20 +11,27 @@ variant of a product family. No ready-to-flash general release is implied.
 | Board | Build entry | Flash / PSRAM | Display | Source / evidence |
 | --- | --- | --- | --- | --- |
 | Waveshare ESP32-S3-Touch-LCD-1.69, integrated | `firmware/integrated`: `sh tools/build-integrated.sh touchscreen` | 16 MB / 8 MB octal | 240 × 280, ST7789 / CST816 | `main`. Physical touch, two recipe-follow cups and a separate OTA/scale-state cycle. |
-| Waveshare ESP32-S3-Touch-AMOLED-2.16, integrated | `firmware/integrated`: `sh tools/build-integrated.sh amoled216` | 16 MB / 8 MB octal | 480 × 480, CO5300 / CST9220 | [AMOLED branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation). Physical rotation/touch, battery power cycles, retained scale battery and cup feedback. Latest display fix needs its own cross-cup check. |
+| Waveshare ESP32-S3-Touch-AMOLED-2.16, integrated | `firmware/integrated`: `sh tools/build-integrated.sh amoled216` | 16 MB / 8 MB octal | 480 × 480, CO5300 / CST9220 | [Current development branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port). Earlier S3 builds have rotation/touch, battery and cup evidence; current source passes an isolated S3 build regression. See [exact-build scope](AMOLED216.md). |
+| ESP-Mosaico, ESP32-S31, integrated | `firmware/integrated`: `sh tools/build-integrated.sh mosaico` | 16 MB NOR / 16 MB PSRAM | 480 × 480, CO5300 / CST9220 | [S31 branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port). USB installation, LAN OTA and automatic BLE temperature refresh; preceding builds have rotation/touch and sound evidence. [Cup and endurance gates remain open](MOSAICO.md). |
 | ESP32-S3, lightweight companion | Root: `idf.py build` | 8 MB / 8 MB octal | None | `main`. Historical feedback/boot evidence has [build-specific limits](UPSTREAM.md#validation). |
 | ESP32-S3, integrated headless | `firmware/integrated`: `sh tools/build-integrated.sh headless` | 8 MB / 8 MB octal | None | `main`. Local build checks; dedicated hardware acceptance pending. |
 | Waveshare 1.69-inch, external-Hub preview | Root: `GBS_TOUCHSCREEN=ON` | 16 MB / 8 MB octal | 240 × 280 | `main`. Synthetic UI/client checks; separate Hub required. See [guide](TOUCHSCREEN.md). |
 
 Default display orientation is USB-C on the right. AMOLED automatic rotation
 also maps touch to the chosen orientation. This is a board-specific adaptation;
-matching an ESP32-S3 chip name alone does not establish pin or display compatibility.
-Other ESP families, pinouts and memory layouts need separate work.
+matching a chip name or resolution alone does not establish pin or display
+compatibility. The earlier S3-only AMOLED source remains on
+[`codex/amoled-216-local-adaptation`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation);
+the current S31 branch also retains the S3 profiles. Other boards, pinouts and
+memory layouts need separate work. S3 and S31 firmware images are not interchangeable.
 
 ### Toolchains
 
-- Integrated builds: **ESP-IDF 5.5.4**, as pinned in CI. A generic 5.5.0 install
+- S3 integrated builds: **ESP-IDF 5.5.4**, as pinned in CI. A generic 5.5.0 install
   lacks an API needed by the pinned WebSocket component.
+- ESP-Mosaico: a separate **ESP-IDF 6.2 preview** checkout at the revision in
+  [MOSAICO.md](MOSAICO.md), with the `esp32s31` toolchain. Build once before host
+  checks so IDF downloads the managed cJSON dependency.
 - Root companion: ESP-IDF 5.5, native USB Serial/JTAG, host C compiler, Python
   environment and Node.js 18+ for offline tests.
 - Native simulators: SDL2, CMake and cJSON from the IDF environment. They use
@@ -61,20 +68,22 @@ Cloud-independent.
 
 ## Feature matrix
 
-| Feature | Lightweight | Integrated LCD | Integrated AMOLED | Integrated headless |
-| --- | --- | --- | --- | --- |
-| Generic WiFi feedback | Yes | Yes | Yes | Yes |
-| Persistent task journal / startup baseline | Yes | Yes | Yes | Yes |
-| Browser status in 8 languages | Yes | Not this UI | Not this UI | Not this UI |
-| Coffee-machine controls | No | Yes | Yes | API; hardware pending |
-| Recipe target following | No | Yes | Yes | Code path; hardware pending |
-| Native LVGL controls, history and existing-plan editing | No | Yes | Yes | No display |
-| Authenticated application OTA | No | Yes | Yes | Yes |
-| Framebuffer preview | No | 240 × 280 | 480 × 480 | No display |
-| Scale battery retained across ESP shutdown | No | No | Yes | No display history |
-| Device battery, automatic rotation, physical keys and node cues | No | No | Yes | No board-specific UI |
+| Feature | Lightweight | Integrated LCD | S3 AMOLED | ESP-Mosaico | Integrated headless |
+| --- | --- | --- | --- | --- | --- |
+| Generic WiFi feedback | Yes | Yes | Yes | Yes | Yes |
+| Persistent task journal / startup baseline | Yes | Yes | Yes | Yes | Yes |
+| Browser status in 8 languages | Yes | Not this UI | Not this UI | Not this UI | Not this UI |
+| Coffee-machine controls | No | Yes | Yes | Yes | API; hardware pending |
+| Recipe target following | No | Yes | Yes | Yes | Code path; hardware pending |
+| Native LVGL controls, history and existing-plan editing | No | Yes | Yes | Yes | No display |
+| Authenticated application OTA | No | Yes | Yes | Yes | Yes |
+| Framebuffer preview | No | 240 × 280 | 480 × 480 | 480 × 480 | No display |
+| Scale battery retained across ESP shutdown | No | No | Yes | Yes | No display history |
+| Device battery, automatic rotation, physical keys and node cues | No | No | Yes | Yes | No board-specific UI |
 
-AMOLED entries refer to its development branch. The earlier external-Hub
+“Yes” identifies an implemented feature, not acceptance on every board or build.
+S3 AMOLED and Mosaico entries refer to their development branches; the S31
+port shares the workflow while using its own board driver. The earlier external-Hub
 preview is a separate root application and is intentionally not grouped with
 integrated LCD support; see its [scope](TOUCHSCREEN.md).
 
@@ -87,6 +96,11 @@ integrated LCD support; see its [scope](TOUCHSCREEN.md).
 - AMOLED: [power, battery and cup evidence](AMOLED216.md#validation-status-2026-10-23),
   including accepted node cues on `f8b54b1a`; subsequent `211d2963` has local
   UI and startup checks, with the physical cross-cup check still open.
+- ESP-Mosaico: final installed build `8d4984d3` passed four automatic BLE
+  temperature refreshes over 100 seconds with Cloud and grinder ready. USB
+  installation and LAN OTA were exercised during the port. Four-direction
+  rotation/touch passed on `0436954d`; sound was confirmed on an earlier S31
+  build. These precursor results do not establish a complete cup on `8d4984d3`.
 
 Long-duration use, real outages, battery runtime/charging transitions, further
 models and production security gates remain open. A completed control, a

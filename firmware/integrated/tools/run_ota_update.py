@@ -311,7 +311,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Upload a local ESP32-S3 Hub firmware image through the protected Wi-Fi OTA route.")
+    parser = argparse.ArgumentParser(description="Upload a local Hub firmware image through the protected Wi-Fi OTA route.")
     parser.add_argument("--base-url", default=os.environ.get("LAMABUDDY_ESP_HUB_BASE_URL", "http://lamabuddy-hub.local:8787"))
     parser.add_argument("--token")
     parser.add_argument("--token-file", type=Path)

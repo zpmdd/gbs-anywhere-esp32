@@ -81,7 +81,7 @@ int main(void)
     reset(); gbs_recipe_follow_tick(false); assert(!downloads && !commands);
     gbs_recipe_follow_tick(true); assert(downloads == 1 && commands == 1);
     assert(captured.grinder_recipe_generation && captured.deadline.enforced && captured.kind == HUB_COMMAND_BBW_MODE);
-    assert(captured.deadline.client_ttl_present && captured.deadline.client_ttl_ms == 8000);
+    assert(captured.deadline.client_ttl_present && captured.deadline.client_ttl_ms == 12000);
     assert(!strcmp(captured.value.bbw_mode.mode, "Dose2") && captured.value.bbw_mode.preset_grams == 30);
     assert(!strcmp(captured.expected_serial_number, gbs_config.serial));
     gbs_recipe_follow_tick(true); assert(downloads == 1 && commands == 1);
@@ -89,6 +89,7 @@ int main(void)
     gbs_recipe_follow_tick(true); assert(downloads == 1 && commands == 1);
     reset(); snapshot.dose2 = 40; gbs_recipe_follow_tick(true);
     assert(captured.kind == HUB_COMMAND_QUICK_WEIGHT && captured.value.quick_weight.require_no_stored_match && captured.value.quick_weight.grams == 30);
+    assert(captured.deadline.client_ttl_ms == 12000);
     cold_boot(); // A pre-cut pending quick-weight and its permit are not persisted or replayed.
     gbs_recipe_follow_begin(ID); gbs_recipe_follow_tick(true);
     assert(!commands&&downloads==1&&!strcmp(phase,"machine_unavailable"));

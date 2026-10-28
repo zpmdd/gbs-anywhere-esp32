@@ -87,14 +87,15 @@ def main():
             assert read(base, 'synthetic', path)['status'] == 302
             assert Hub.calls[-1] == ('GET', path) and len(Hub.calls) == 4
             Hub.redirect = False
-            Hub.model = 'lamabuddy-esp32s3-amoled216'
-            Hub.calls = []
-            amoled = record(base, 'synthetic', Path(temp) / 'amoled-capture', 1)
-            assert amoled['health']['data']['deviceModel'] == Hub.model
-            assert amoled['samples'] == 1 and amoled['failedReads'] == 0
-            assert Hub.calls == [('GET', p) for p in FIELDS]
+            for model in ('lamabuddy-esp32s3-amoled216', 'lamabuddy-esp32s31-mosaico'):
+                Hub.model = model
+                Hub.calls = []
+                capture = record(base, 'synthetic', Path(temp) / model, 1)
+                assert capture['health']['data']['deviceModel'] == Hub.model
+                assert capture['samples'] == 1 and capture['failedReads'] == 0
+                assert Hub.calls == [('GET', p) for p in FIELDS]
             for model in ('lamabuddy-esp32s3-headless', 'amoled216',
-                          'lamabuddy-esp32s3-amoled216-other', 'unknown', None):
+                          'lamabuddy-esp32s3-amoled216-other', 'lamabuddy-esp32s31-mosaico-other', 'unknown', None):
                 Hub.model = model
                 Hub.calls = []
                 output = Path(temp) / 'wrong-device'

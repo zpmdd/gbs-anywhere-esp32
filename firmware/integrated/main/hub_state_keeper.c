@@ -12,6 +12,7 @@
 #include "hub_ble.h"
 #include "hub_cloud.h"
 #ifdef HUB_AMOLED_216
+#include "esp_heap_caps.h"
 #include "hub_command_coordinator.h"
 #include "hub_grinder.h"
 #endif
@@ -125,8 +126,6 @@ static uint32_t ready_interval_ms(int64_t now, int64_t activity_ms, int64_t acti
 #ifdef HUB_AMOLED_216
 typedef struct {
     hub_machine_selection_identity_t binding;
-    bool observed;
-    unsigned attempts;
     int64_t next_ms;
 } scale_battery_reads_t;
 
@@ -140,20 +139,19 @@ static void scale_battery_tick(scale_battery_reads_t *reads,
         || strcmp(reads->binding.serial_number, binding.serial_number)) {
         *reads = (scale_battery_reads_t){.binding = binding, .next_ms = now + 90000};
     }
-    // Latch ordinary Dashboard observations before their 60-second freshness expires.
-    if (hub_cloud_has_fresh_scale_battery()
-        && hub_config_machine_selection_matches(&binding)) reads->observed = true;
-    if (cloud_due || reads->observed || reads->attempts >= 2 || now < reads->next_ms) return;
+    // Reuse ordinary observations, including explicit disconnection, before polling again.
+    int64_t due = reads->next_ms;
+    if (status->scale_observed_ms > 0 && status->scale_observed_ms <= now
+        && status->scale_observed_ms + 180000 > due) due = status->scale_observed_ms + 180000;
+    if (cloud_due || now < due) return;
     if (!status->is_ready || status->refresh_pending || !hub_wifi_station_has_ip()
         || hub_command_idle_background_deferred() || hub_grinder_busy()) return;
     bool attempted = false;
     (void)hub_cloud_refresh_scale(&attempted);
-    if (attempted) ++reads->attempts;
-    reads->next_ms = now_ms() + (attempted ? 90000 : 30000);
-    // An in-flight TLS read cannot be preempted; do not reserve grinder admission.
-    if (hub_cloud_has_fresh_scale_battery()
-        && hub_config_machine_selection_matches(&binding)) reads->observed = true;
+    // An in-flight TLS read cannot be preempted; throttle failures as well as successes.
+    reads->next_ms = now_ms() + (attempted ? 180000 : 30000);
 }
+
 #endif
 
 static void hub_state_keeper_task(void *arg)
@@ -184,6 +182,8 @@ static void hub_state_keeper_task(void *arg)
     bool was_snapshot_ready = false;
 #ifdef HUB_AMOLED_216
     scale_battery_reads_t scale_reads = {0};
+    int64_t observation_retry_ms = 0;
+    bool token_retry_deferred = false;
 #endif
 
     while (true) {
@@ -212,10 +212,25 @@ static void hub_state_keeper_task(void *arg)
             ? cold_interval_ms(cold_attempt)
             : ready_interval_ms(now, activity_ms, active_ms,
                 hub_ble_has_cached_state() && !status.is_connected);
+#ifdef HUB_AMOLED_216
+        bool observe_boilers = status.has_cached_snapshot
+            && (!status.is_connected || !status.has_complete_bbw || status.boiler_warmup_pending);
+        // Discover power-on without BLE and keep warm-up snapshots inside their five-minute freshness window.
+        if (observe_boilers && interval_ms > 120000) interval_ms = 120000;
+#endif
 
         bool initial_attempt = last_attempt_ms == 0;
-        int64_t cadence_due_ms = initial_attempt ? now : last_attempt_ms + interval_ms;
+        int64_t cadence_due_ms = initial_attempt || recovery ? now : last_attempt_ms + interval_ms;
+#ifdef HUB_AMOLED_216
+        if ((observe_boilers || recovery) && observation_retry_ms > cadence_due_ms) cadence_due_ms = observation_retry_ms;
+#endif
         int64_t token_due_ms = hub_cloud_token_renewal_due_ms();
+        int64_t renewal_due_ms = token_due_ms;
+#ifdef HUB_AMOLED_216
+        // An already-due renewal rejected by the same lock must not spin; keep Cloud's deadline intact.
+        if (token_retry_deferred && renewal_due_ms > 0 && renewal_due_ms < observation_retry_ms)
+            renewal_due_ms = observation_retry_ms;
+#endif
         int64_t next_due_ms = cadence_due_ms;
         /*
          * Token renewal is independent from machine snapshot readiness.
@@ -223,15 +238,25 @@ static void hub_state_keeper_task(void *arg)
          * cadence for hours; ignoring token_due_ms in that state creates a
          * gap where Cloud controls fail until the next cold refresh.
          */
-        if (token_due_ms > 0 && token_due_ms < next_due_ms) {
-            next_due_ms = token_due_ms;
+        if (renewal_due_ms > 0 && renewal_due_ms < next_due_ms) {
+            next_due_ms = renewal_due_ms;
         }
-        bool due = initial_attempt || recovery || now >= next_due_ms;
+        bool due = now >= next_due_ms;
 #ifdef HUB_AMOLED_216
         scale_battery_tick(&scale_reads, &status,
             due || (token_due_ms > 0 && token_due_ms <= now + 5000));
         now = now_ms();
         due = due || now >= next_due_ms;
+        if (due && !initial_attempt && ((observe_boilers && !recovery)
+                || (recovery && observation_retry_ms > 0))
+            && !(token_due_ms > 0 && now >= token_due_ms)
+            && (!hub_wifi_station_has_ip() || (status.refresh_pending && !recovery)
+                || hub_command_idle_background_deferred() || hub_grinder_busy()
+                || heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 4096)) {
+            due = false;
+            next_due_ms = now + LOCAL_STATE_POLL_MS;
+            if (renewal_due_ms > 0 && renewal_due_ms < next_due_ms) next_due_ms = renewal_due_ms;
+        }
 #endif
         if (!due) {
             uint32_t wait_ms = (uint32_t)(next_due_ms - now);
@@ -245,9 +270,28 @@ static void hub_state_keeper_task(void *arg)
         }
 
         bool recovery_wake = consume_recovery_request();
+#ifdef HUB_AMOLED_216
+        int64_t previous_attempt_ms = last_attempt_ms;
+        int64_t previous_refresh_ms = hub_cloud_last_refresh_ms();
+#endif
         last_attempt_ms = now_ms();
         uint32_t refresh_ticket = hub_cloud_refresh_request_generation();
         esp_err_t err = hub_cloud_refresh();
+#ifdef HUB_AMOLED_216
+        if (err == ESP_ERR_INVALID_STATE && hub_cloud_last_refresh_ms() == previous_refresh_ms
+            && (recovery_wake || (observe_boilers && !initial_attempt
+                && !(token_due_ms > 0 && last_attempt_ms >= token_due_ms)
+                && !hub_cloud_refresh_is_running()))) {
+            // Preserve the ticket: a busy TLS owner has not performed this requested refresh.
+            token_retry_deferred = token_due_ms > 0 && last_attempt_ms >= token_due_ms;
+            last_attempt_ms = previous_attempt_ms;
+            observation_retry_ms = now_ms() + LOCAL_STATE_POLL_MS;
+            if (recovery_wake) hub_state_keeper_request_recovery();
+            continue;
+        }
+        observation_retry_ms = 0;
+        token_retry_deferred = false;
+#endif
         if (err == ESP_ERR_INVALID_STATE && hub_cloud_refresh_is_running()) {
             vTaskDelay(pdMS_TO_TICKS(250));
             hub_state_keeper_request_recovery();

@@ -1,4 +1,16 @@
+if(IDF_TARGET STREQUAL "esp32s31")
+    set(HUB_MOSAICO ON)
+    set(HUB_AMOLED_216 ON)
+    set(HUB_TOUCHSCREEN ON)
+    set(HUB_GRINDER ON)
+endif()
 set(integrated_sources "")
+set(board_dependencies "")
+set(json_dependency json)
+if(HUB_MOSAICO)
+    list(APPEND board_dependencies usb_hs_console)
+    set(json_dependency cjson)
+endif()
 if(HUB_GRINDER)
     list(APPEND integrated_sources "../integrated/main/main.c" "../integrated/main/logic.c" "../integrated/main/network.c" "../integrated/main/recipe_log.c")
     list(APPEND integrated_sources "../integrated/main/recipe_follow.c")
@@ -36,6 +48,7 @@ idf_component_register(
         "hub_wifi.c"
     INCLUDE_DIRS "."
     REQUIRES
+        ${board_dependencies}
         display
         bt
         esp_app_format
@@ -49,7 +62,7 @@ idf_component_register(
         esp_timer
         esp_wifi
         app_update
-        json
+        ${json_dependency}
         mbedtls
         mdns
         nvs_flash
@@ -65,4 +78,7 @@ endif()
 
 if(HUB_AMOLED_216)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE HUB_AMOLED_216=1)
+endif()
+if(HUB_MOSAICO)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE HUB_MOSAICO=1)
 endif()

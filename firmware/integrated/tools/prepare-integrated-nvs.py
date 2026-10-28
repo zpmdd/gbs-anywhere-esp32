@@ -58,7 +58,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source',type=Path)
     parser.add_argument('output',type=Path,help='New private directory; must not exist')
-    parser.add_argument('--profile',choices=['touchscreen','amoled216','headless'],default='touchscreen',
+    parser.add_argument('--profile',choices=['touchscreen','amoled216','mosaico','headless'],default='touchscreen',
                         help='Partition layout for the new board (default: touchscreen)')
     parser.add_argument('--include-cloud',action='store_true',help='Use only the retired device cloud identity')
     parser.add_argument('--include-grinder',action='store_true',help='Import retired pairing in monitor mode')

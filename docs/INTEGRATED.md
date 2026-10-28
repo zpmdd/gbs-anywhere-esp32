@@ -1,4 +1,4 @@
-# One ESP32-S3: Hub, grinder and native touchscreen
+# One ESP32: Hub, grinder and native touchscreen
 
 The application in [`firmware/integrated`](../firmware/integrated) runs coffee
 controls, Generic WiFi feedback, the native display and LAN OTA on one board.
@@ -13,6 +13,13 @@ always-on computer is needed at runtime. La Marzocco Cloud is still required.
 | `touchscreen` | Waveshare ESP32-S3-Touch-LCD-1.69, 16 MB / 8 MB octal | `build-integrated` | `0x15000` |
 | `headless` | ESP32-S3, 8 MB / 8 MB octal | `build-integrated-headless` | `0x6000` |
 | `amoled216` (experimental) | Waveshare ESP32-S3-Touch-AMOLED-2.16, 16 MB / 8 MB octal | `build-integrated-amoled216` | `0x15000` |
+| `mosaico` (experimental) | ESP-Mosaico ESP32-S31, 16 MB NOR / 16 MB PSRAM | `build-integrated-mosaico` | `0x15000` |
+
+Current S31 and shared AMOLED maintenance is on
+[`codex/s31-mosaico-port`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port).
+The earlier S3 AMOLED adaptation remains on
+[`codex/amoled-216-local-adaptation`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation);
+`main` retains the integrated LCD/headless scope.
 
 The AMOLED profile is a separate 480 x 480 adaptation with CO5300/CST9220,
 AXP2101 power telemetry, QMI8658 orientation and optional short audio cues.
@@ -21,6 +28,12 @@ device model is `lamabuddy-esp32s3-amoled216`; it is not a drop-in image for
 the LCD or headless board. Field validation covers rotation/touch, power cycles,
 scale battery retention and real cups; the latest display fix has separate
 local and startup evidence. See the profile's exact-build validation status.
+
+ESP-Mosaico shares the 480 x 480 interface and workflow with its own board
+driver, BMI270, read-only BQ27220 and ES8311 audio. Its model is
+`lamabuddy-esp32s31-mosaico`. It requires its S31 SDK and partition table;
+equal screen resolution does not make the S3 binary compatible. See
+[Mosaico installation and validation](MOSAICO.md).
 
 The touchscreen is 240 x 280, with **USB-C on the right**. ST7789 pins are
 DC4/CS5/SCLK6/MOSI7/RST8/BL15; CST816 pins are SDA11/SCL10/RST13/INT14.
@@ -36,8 +49,8 @@ older Cloud snapshot from silently clearing the selected weight.
 
 ## Build and local checks
 
-Install ESP-IDF **5.5.4** with the ESP32-S3 toolchain, matching the pinned public
-CI image. The field binary used a local 5.5.4-based checkout; public rebuilding
+For the S3 profiles, install ESP-IDF **5.5.4** with the ESP32-S3 toolchain,
+matching the pinned public CI image. The field binary used a local 5.5.4-based checkout; public rebuilding
 is separate from that exact-binary acceptance. ESP-IDF 5.5.0 lacks a transport API used by
 the pinned WebSocket component and cannot build this application. Host checks need a C compiler,
 Python from the IDF environment and zlib development headers (`zlib1g-dev` on
@@ -54,6 +67,21 @@ sh tools/build-integrated.sh headless
 sh tools/build-integrated.sh amoled216
 ```
 
+For `mosaico`, select the S31 branch and export its separate **ESP-IDF 6.2 preview**
+checkout, at the revision documented in [MOSAICO.md](MOSAICO.md). From
+`firmware/integrated`, run:
+
+```sh
+sh tools/build-integrated.sh mosaico
+sh tools/check-integrated.sh
+```
+
+The first S31 build downloads the managed cJSON sources needed by the host
+checks. Use separate shells for the two SDK environments. Build directories
+have separate configuration, but `managed_components` and the dependency lock
+belong to the source checkout: do not build S3 and S31 concurrently there.
+Use separate source copies for parallel cross-target regression builds.
+
 `sdkconfig` is scoped to each build directory. The dependency lock is included;
 no private checkout, asset cache or pre-generated local build directory is
 needed. Generated C fonts/icons are checked in with their licenses. The
@@ -65,7 +93,7 @@ select this integrated application.
 ## First installation and identity handover
 
 Initial pairing remains an upstream desktop task. Follow the root
-[pairing/export instructions](../README.md#migrating-from-docker), using an
+[pairing/export instructions](COMPANION.md#migrating-from-docker), using an
 upstream version with PR15's recovery fixes. Keep a single active client:
 stop the previous bridge before the new board takes over its imported identity,
 and stop all clients during any pairing recovery quiet period.
@@ -85,19 +113,24 @@ python firmware/integrated/tools/prepare-integrated-nvs.py \
   --profile touchscreen --include-cloud --include-grinder
 ```
 
-For a new headless installation, use `--profile headless` and a different output
-directory. The generator creates a fresh Hub token and imports the retired
-Cloud/pairing identity, with grinder mode initially **monitor**. It writes a
+For another board, use its matching `--profile headless`, `--profile amoled216`
+or `--profile mosaico` and a different output directory. The generator creates
+a fresh Hub token and imports the retired Cloud/pairing identity, with grinder
+mode initially **monitor**. It writes a
 0700 directory with 0600 files and never opens a serial port. Do not import the
 identity while another client is still using it.
 
 The generated `nvs.bin` belongs at offset `0x9000` in the selected integrated
 partition table. After backing up the intended board, install its matching
 bootloader/partition/application through USB using `idf.py -B <build-directory>
--p <port> flash`, then write that profile's generated NVS at `0x9000` and reboot.
+-p <port> flash` (add `--preview` for Mosaico), then write that profile's
+generated NVS at `0x9000` and reboot.
 The lightweight companion's NVS image and partition layout are different.
 The touchscreen application slots start at `0x30000`, `0x430000`, `0x830000`;
-the headless slots start at `0x20000`, `0x220000`, `0x420000`.
+the headless slots start at `0x20000`, `0x220000`, `0x420000`. Mosaico uses
+three 5 MB slots at `0x30000`, `0x530000`, `0xa30000`; follow its
+[initial-install guide](MOSAICO.md). Application-only OTA cannot change a chip
+target or partition layout.
 
 Never use this initial NVS import for an application update: it would replace
 configuration and journal state. The public development profiles do not arm
@@ -109,8 +142,9 @@ LAN HTTP, not a public internet service.
 ## Confirm setup and enable recipe following
 
 The touchscreen advertises `lamabuddy-touch.local:8787`; headless advertises
-`lamabuddy-integrated.local:8787`. Authenticate with the generated token using
-the existing `Authorization: Bearer` API. Verify the model and selected machine
+`lamabuddy-integrated.local:8787`, S3 AMOLED `lamabuddy-amoled216.local:8787`
+and Mosaico `lamabuddy-mosaico.local:8787`. Authenticate with the generated
+token using the existing `Authorization: Bearer` API. Verify the model and selected machine
 before enabling controls. Configuration requests should be made from a private
 client that does not print tokens or passwords.
 
@@ -132,7 +166,7 @@ client that does not print tokens or passwords.
 Unix time; zero means no valid connection observation. Compare it with the same
 device's uptime and never carry it across reboot or machine selection.
 
-The shared keeper retains its original full-refresh and token-renewal schedule;
+The LCD/headless keeper retains its original full-refresh and token-renewal schedule;
 there is no additional periodic scale GET. Existing successful Dashboard reads
 and control preflight reads publish scale fields, with control preflight
 publication leaving temperature and preset freshness unchanged. The touchscreen
@@ -140,18 +174,23 @@ still offers a coalesced manual refresh through the existing Cloud owner.
 GET `/machine/state` itself does no Cloud IO. An idle observation can expire
 before the next existing refresh; the UI then shows unavailable or expired data.
 
-Observations expire at 60 seconds. Missing/invalid connection fields, an offline
+LCD/headless observations expire at 60 seconds. Missing/invalid connection fields, an offline
 machine or expired observations produce `null` scale values instead of a stale
 online/offline claim. Battery and calibration are shown only for a fresh connected
 scale; battery must be finite and within 0..100. The two connection fields retain
 their separate upstream meanings, with BBW connection taking precedence for
 battery availability. This is Cloud-observed state, not direct scale telemetry.
 
-The standalone `hub_cloud_refresh_scale()` API is retained but has no automatic
+The standalone `hub_cloud_refresh_scale()` API has no automatic LCD/headless
 caller. Its optional one-GET path still uses the shared IO owner and foreground
 admission checks. Removing the extra scale cadence restores the existing
 scheduling boundary; it does not establish control latency or scale power-state
 acceptance on the current board. Record those results against the installed build.
+
+S3 AMOLED and Mosaico use the shared AMOLED policy: five-minute connection
+freshness, retained battery history and bounded idle accessory reads. See
+[AMOLED scale observations](AMOLED216.md#interface-and-device-state) for that
+policy; the S3 board's battery-session results are not S31 acceptance.
 
 Recipe following is opt-in. After successful `brewAccept` of a fresh grind,
 the worker performs one Owner-authenticated ordinary log export. It validates
@@ -163,8 +202,13 @@ The matched target reuses an existing equal-weight Dose if possible; otherwise
 it uses the guarded quick-weight path. A fresh Dashboard read checks preset
 identity and machine availability before writing. Manual weight changes cancel
 automatic work. The write window is the first 15 seconds of the task, with at
-most 8 seconds per command; the 180-second countdown waits for the shot result.
+most 12 seconds per command; the 180-second countdown waits for the shot result.
 Unknown outcomes are not automatically replayed.
+
+Touchscreen smart weights and automatic recipe weights explicitly request the
+12-second network margin and return as soon as they finish. Clients that omit
+`clientTtlMs` retain the 8-second default. Fresh-read validation, absolute expiry
+and the no-replay rule remain unchanged.
 
 There is not yet a reliable live extraction-start signal. **Wait for the target
 weight to be highlighted and the recipe command to complete before pulling

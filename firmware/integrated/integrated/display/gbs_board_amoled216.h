@@ -12,9 +12,10 @@ void gbs_board_amoled216_deinit(void);
 void gbs_board_amoled216_start_services(void);
 /* Called only by the display task; sensor and audio work run in separate tasks. */
 bool gbs_board_amoled216_tick(int64_t now_ms, bool touching, bool auto_rotate,
-    bool sound_enabled, gbs_tone_t tone, gbs_device_status_t *status);
+    unsigned volume_percent, gbs_tone_t tone, gbs_device_status_t *status);
 esp_err_t gbs_board_amoled216_brightness(unsigned percent);
 gbs_orientation_t gbs_board_amoled216_orientation(void);
+bool gbs_board_amoled216_touch_active(void);
 /* Read-only diagnostics; acceleration uses the policy's board axes. */
 bool gbs_board_amoled216_acceleration(float xyz[3]);
 typedef struct {
@@ -28,5 +29,5 @@ bool gbs_board_amoled216_pmu_diagnostics(gbs_pmu_diagnostics_t *snapshot);
 bool gbs_board_amoled216_buttons(int64_t now_ms, bool blank,
     gbs_button_event_t *user_key, gbs_button_event_t *boot_key);
 
-typedef struct { unsigned success, failure, notice, errors; } gbs_audio_diagnostics_t;
+typedef struct { unsigned success, failure, notice, errors, volume_percent; } gbs_audio_diagnostics_t;
 gbs_audio_diagnostics_t gbs_board_amoled216_audio_diagnostics(void);

@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 from validate_stability_foundation import function_body
 from test_quick_weight_control import ESP_ERR_STUB
+from host_cjson import cjson_source_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = ROOT / "main"
@@ -167,7 +168,7 @@ def main():
     state=(MAIN/"hub_state.c").read_text()
     binding="static void copy_json_safe(char *dest,size_t dest_len,const char *source) {"+function_body(state,"copy_json_safe")+"}\n"
     binding+="const char *hub_state_machine_binding_json(void) {"+function_body(state,"hub_state_machine_binding_json")+"}"
-    json_dir=Path(os.environ["IDF_PATH"])/"components/json/cJSON"
+    json_dir=cjson_source_dir()
     with tempfile.TemporaryDirectory(prefix="schedule-host-") as temp:
         directory=Path(temp)
         (directory/"esp_err.h").write_text(ESP_ERR_STUB)

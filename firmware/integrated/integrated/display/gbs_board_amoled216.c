@@ -17,6 +17,9 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <string.h>
+#ifdef GBS_CUE_PCM_HEADER
+#include GBS_CUE_PCM_HEADER
+#endif
 
 static const char *TAG="amoled216";
 static i2c_master_bus_handle_t bus;
@@ -38,7 +41,7 @@ static StackType_t sensor_stack[4096 / sizeof(StackType_t)], tone_stack[4096 / s
 static QueueHandle_t tone_queue;
 static StaticQueue_t tone_queue_storage;
 static uint8_t tone_queue_buffer[4*sizeof(gbs_tone_t)];
-static atomic_bool sound_allowed;
+static atomic_uint audio_volume_percent;
 static atomic_uint audio_played[4], audio_errors;
 static bool add_sensor(unsigned address, i2c_master_dev_handle_t *device);
 
@@ -71,6 +74,7 @@ esp_err_t gbs_board_amoled216_brightness(unsigned percent)
 }
 
 gbs_orientation_t gbs_board_amoled216_orientation(void) { return rotation.current; }
+bool gbs_board_amoled216_touch_active(void) { return gpio_get_level(11)==0; }
 
 bool gbs_board_amoled216_acceleration(float xyz[3])
 {
@@ -96,7 +100,8 @@ gbs_audio_diagnostics_t gbs_board_amoled216_audio_diagnostics(void)
 {
     return (gbs_audio_diagnostics_t){.success=atomic_load(&audio_played[GBS_TONE_SUCCESS]),
         .failure=atomic_load(&audio_played[GBS_TONE_FAILURE]),
-        .notice=atomic_load(&audio_played[GBS_TONE_NOTICE]),.errors=atomic_load(&audio_errors)};
+        .notice=atomic_load(&audio_played[GBS_TONE_NOTICE]),.errors=atomic_load(&audio_errors),
+        .volume_percent=atomic_load(&audio_volume_percent)};
 }
 
 bool gbs_board_amoled216_buttons(int64_t now, bool blank,
@@ -314,18 +319,58 @@ static bool play_note(unsigned frequency, unsigned milliseconds)
     unsigned samples=milliseconds*16;
     const float fade_samples=192.0f; /* 12 ms at 16 kHz. */
     for (unsigned offset=0;offset<samples;offset+=160) {
-        if (!atomic_load(&sound_allowed)) return false;
+        unsigned volume=atomic_load(&audio_volume_percent);
+        if (!volume) return false;
+        float amplitude=25000.0f*volume/100.0f;
         unsigned count=samples-offset<160?samples-offset:160;
         for (unsigned i=0;i<count;i++) {
             unsigned n=offset+i;
             float envelope=fminf(1.0f,fminf(n/fade_samples,(samples-1-n)/fade_samples));
-            int16_t sample=(int16_t)(20000.0f*envelope*sinf(6.28318530718f*frequency*n/16000.0f));
+            int16_t sample=(int16_t)(amplitude*envelope*sinf(6.28318530718f*frequency*n/16000.0f));
             pcm[i*2]=pcm[i*2+1]=sample;
         }
         size_t written=0,bytes=count*2*sizeof(int16_t);
         if (i2s_channel_write(audio_tx,pcm,bytes,&written,50)!=ESP_OK || written!=bytes) return false;
     }
     return true;
+}
+
+#ifdef GBS_CUE_PCM_HEADER
+/* Optional build-local 16 kHz signed mono PCM; no heap allocation or decoding. */
+static bool play_pcm(const int16_t *samples, size_t sample_count)
+{
+    int16_t pcm[160*2];
+    for (size_t offset=0;offset<sample_count;offset+=160) {
+        unsigned volume=atomic_load(&audio_volume_percent);
+        if (!volume) return false;
+        size_t count=sample_count-offset<160?sample_count-offset:160;
+        for (size_t i=0;i<count;i++) {
+            int16_t sample=(int16_t)((int32_t)samples[offset+i]*(int32_t)volume/100);
+            pcm[i*2]=pcm[i*2+1]=sample;
+        }
+        size_t written=0,bytes=count*2*sizeof(int16_t);
+        if (i2s_channel_write(audio_tx,pcm,bytes,&written,50)!=ESP_OK || written!=bytes) return false;
+    }
+    return true;
+}
+#endif
+
+static bool play_success(void)
+{
+#ifdef GBS_CUE_PCM_HEADER
+    return play_pcm(gbs_success_pcm,sizeof(gbs_success_pcm)/sizeof(gbs_success_pcm[0]));
+#else
+    return play_note(880,240)&&play_note(0,90)&&play_note(1320,320);
+#endif
+}
+
+static bool play_failure(void)
+{
+#ifdef GBS_CUE_PCM_HEADER
+    return play_pcm(gbs_failure_pcm,sizeof(gbs_failure_pcm)/sizeof(gbs_failure_pcm[0]));
+#else
+    return play_note(784,260)&&play_note(0,100)&&play_note(523,400);
+#endif
 }
 
 static void audio_task(void *unused)
@@ -335,30 +380,29 @@ static void audio_task(void *unused)
     for (;;) {
         gbs_tone_t tone;
         xQueueReceive(tone_queue,&tone,portMAX_DELAY);
-        if (!atomic_load(&sound_allowed) || esp_timer_get_time()/1000<retry_after) continue;
+        if (!atomic_load(&audio_volume_percent) || esp_timer_get_time()/1000<retry_after) continue;
         if (!codec && !audio_init()) {
             atomic_fetch_add(&audio_errors,1);
             ESP_LOGW(TAG,"ES8311 output unavailable; skipping tone");
             retry_after=esp_timer_get_time()/1000+30000; continue;
         }
         esp_codec_dev_sample_info_t format={.sample_rate=16000,.channel=2,.bits_per_sample=16};
-        /* Unity codec gain and a 20000/32767 PCM peak retain 4.3 dB of
-         * headroom, about 14.4 dB above the earlier quiet cue. */
+        /* Keep unity codec gain. 80% reproduces the previous 20000 PCM peak;
+         * the 100% peak of 25000 still leaves headroom below int16 clipping. */
         bool ok=esp_codec_dev_open(codec,&format)==ESP_CODEC_DEV_OK &&
             esp_codec_dev_set_out_vol(codec,100)==ESP_CODEC_DEV_OK &&
             esp_codec_dev_set_out_mute(codec,false)==ESP_CODEC_DEV_OK;
         /* Write silence through DMA between notes; a task delay could let
          * the previous DMA buffer repeat instead of producing a quiet gap. */
-        if (ok) ok=tone==GBS_TONE_SUCCESS ? (play_note(880,240)&&play_note(0,90)&&play_note(1320,320)) :
-            tone==GBS_TONE_NOTICE ? play_note(1046,240) :
-            (play_note(784,260)&&play_note(0,100)&&play_note(523,400));
+        if (ok) ok=tone==GBS_TONE_SUCCESS ? play_success() :
+            tone==GBS_TONE_NOTICE ? play_note(1046,240) : play_failure();
         /* Drain the <=40 ms DMA queue before closing the DAC. Only this
          * worker waits; the UI and sensors continue running. */
-        if (ok && atomic_load(&sound_allowed)) vTaskDelay(pdMS_TO_TICKS(50));
+        if (ok && atomic_load(&audio_volume_percent)) vTaskDelay(pdMS_TO_TICKS(50));
         esp_codec_dev_set_out_mute(codec,true);
         /* Release internal-memory DMA and codec objects between cues. */
         audio_cleanup();
-        if(atomic_load(&sound_allowed)) {
+        if(atomic_load(&audio_volume_percent)) {
             if(ok) atomic_fetch_add(&audio_played[tone],1);
             else { atomic_fetch_add(&audio_errors,1); ESP_LOGW(TAG,"Tone output interrupted"); }
         }
@@ -384,12 +428,13 @@ void gbs_board_amoled216_start_services(void)
 }
 
 bool gbs_board_amoled216_tick(int64_t now, bool touching, bool auto_rotate,
-    bool sound_enabled, gbs_tone_t tone, gbs_device_status_t *status)
+    unsigned volume_percent, gbs_tone_t tone, gbs_device_status_t *status)
 {
     /* The active-low touch IRQ also covers a press before LVGL's next poll. */
     touching=touching || gpio_get_level(11)==0;
-    atomic_store(&sound_allowed,sound_enabled);
-    if (!sound_enabled) xQueueReset(tone_queue);
+    if (volume_percent>100) volume_percent=100;
+    atomic_store(&audio_volume_percent,volume_percent);
+    if (!volume_percent) xQueueReset(tone_queue);
     else audio_enqueue(tone);
     float xyz[3]; int64_t sampled; bool valid;
     xSemaphoreTake(sensor_mutex,portMAX_DELAY);

@@ -92,6 +92,7 @@ static void reset(void)
     memset(&grinder_health, 0, sizeof(grinder_health)); memset(&cloud_health, 0, sizeof(cloud_health));
     memset(&latest, 0, sizeof(latest)); memset(&current, 0, sizeof(current));
     memset(&answer, 0, sizeof(answer)); event_uuid[0]=0;
+    memset(&last_result, 0, sizeof(last_result)); last_job_uuid[0]=0;
     active = cloud_initialized = storage_ok = true;
     atomic_store(&desired_active, true); atomic_store(&wifi_online, true);
     baseline_jobs = have_job = pending = accepted = canceled = ongoing_missing = pairing_problem = invalid_coffee = local_busy = false;
@@ -129,6 +130,8 @@ static void cold_boot(void)
     assert(cJSON_GetObjectItemCaseSensitive(display,"job_deadline_ms")->valuedouble==0);
     assert(cJSON_GetObjectItemCaseSensitive(display,"answer_deadline_ms")->valuedouble==0);
     assert(!cJSON_GetObjectItemCaseSensitive(display,"unconfirmed_grams"));
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
+    assert(!cJSON_GetObjectItemCaseSensitive(display,"flow_job_uuid")->valuestring[0]);
     cJSON_Delete(display);
 }
 static void measured(void);
@@ -166,6 +169,19 @@ static void boot_recovery(void)
     }
     reset(); listed_job=true; jobs_tick(); measured();
     assert(ledger.successes==1&&!strcmp(ledger.last_outcome,"success"));
+    cJSON *display=cJSON_CreateObject(); add_display_state(display);
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(display,"flow_job_uuid")->valuestring,ID));
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
+    assert(cJSON_GetObjectItemCaseSensitive(display,"flow_result_grams")->valuedouble==29.8);
+    cJSON_Delete(display);
+    const char *completed_id=ID; ID=NEW_ID; listed_job=true; jobs_tick();
+    assert(have_job);
+    display=cJSON_CreateObject(); add_display_state(display);
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(display,"flow_job_uuid")->valuestring,NEW_ID));
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
+    cJSON_Delete(display);
+    ID=completed_id;
+    reset(); listed_job=true; jobs_tick(); measured();
     cold_boot();
     assert(ledger.successes==1&&ledger.last_duration_ms==33052&&ledger.last_mass_mg==29800);
     assert(!ledger.last_outcome[0]&&gbs_seen(&ledger,ID)); // History survives without a current-cup success.
@@ -258,12 +274,15 @@ int main(void)
     assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "have_job")));
     assert(cJSON_GetObjectItemCaseSensitive(display, "job_deadline_ms")->valuedouble == job_deadline_us / 1000);
     assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "pending")));
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(display,"flow_job_uuid")->valuestring,ID));
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
     cJSON_Delete(display);
     gbs_coffee_t empty = {0}; prepare_answer(&empty, true);
     display = cJSON_CreateObject(); add_display_state(display);
     assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display, "canceling")));
     assert(cJSON_GetObjectItemCaseSensitive(display, "answer_deadline_ms")->valuedouble == answer_deadline_us / 1000);
     assert(cJSON_GetObjectItemCaseSensitive(display, "job_deadline_ms")->valuedouble == 0);
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
     cJSON_Delete(display);
     reset();
     fail_poll = true; for (int i = 0; i < 100; ++i) jobs_tick();
@@ -286,16 +305,23 @@ int main(void)
     display = cJSON_CreateObject(); add_display_state(display);
     assert(cJSON_GetObjectItemCaseSensitive(display, "unconfirmed_grams")->valuedouble == 29.8);
     assert(cJSON_GetObjectItemCaseSensitive(display, "unconfirmed_seconds")->valuedouble == 33.052);
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
+    assert(cJSON_GetObjectItemCaseSensitive(display,"flow_result_grams")->valuedouble==29.8);
     cJSON_Delete(display);
     canceled = true;
     display = cJSON_CreateObject(); add_display_state(display);
     assert(!cJSON_GetObjectItemCaseSensitive(display, "unconfirmed_grams"));
     assert(!cJSON_GetObjectItemCaseSensitive(display, "unconfirmed_seconds"));
+    assert(!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
     cJSON_Delete(display); canceled = false;
     local_busy = false; jobs_tick();
     assert(!have_job && done_calls == 1 && ledger.successes == 1);
     display = cJSON_CreateObject(); add_display_state(display);
     assert(!cJSON_GetObjectItemCaseSensitive(display, "unconfirmed_grams"));
+    assert(!strcmp(cJSON_GetObjectItemCaseSensitive(display,"flow_job_uuid")->valuestring,ID));
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(display,"flow_result_valid")));
+    assert(cJSON_GetObjectItemCaseSensitive(display,"flow_result_grams")->valuedouble==29.8);
+    assert(cJSON_GetObjectItemCaseSensitive(display,"flow_result_seconds")->valuedouble==33.052);
     cJSON_Delete(display);
 
     reset(); listed_job = true; jobs_tick();

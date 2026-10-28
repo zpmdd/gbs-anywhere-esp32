@@ -1,5 +1,19 @@
 dependencies:
   idf:
-    version: "==5.5.4"
+    matches:
+      - if: "target == esp32s31"
+        version: ">=6.2,<6.3"
+      - if: "target != esp32s31"
+        version: "==5.5.4"
   espressif/mdns: "^1.11.1"
   espressif/esp_websocket_client: "1.7.0"
+  espressif/cjson:
+    version: "^1.7.19"
+    rules:
+      - if: "target == esp32s31"
+  usb_hs_console:
+    git: https://github.com/esp-mosaico/esp-mosaico-claw.git
+    path: boards/esp_mosaico/components/usb_hs_console
+    version: 2654a4a9f76f5d7ea108e4dff7ade7b1df4c1c5c
+    rules:
+      - if: "target == esp32s31"

@@ -34,6 +34,7 @@ int hub_touchscreen_exchange(const char *path,const char *body,const char *seria
     if(!body&&!strcmp(path,"/machine/state")) status=copy(hub_state_machine_state_json(),reply,size,true);
     else if(!body&&!strcmp(path,"/machine/capabilities")) status=copy(hub_state_capabilities_json(),reply,size,true);
     else if(!body&&!strcmp(path,"/machine/binding")) status=copy(hub_state_machine_binding_json(),reply,size,false);
+    else if(!body&&!strcmp(path,"/diagnostics/ble")) status=copy(hub_state_ble_diagnostics_json(),reply,size,true);
     else if(!body&&(!strcmp(path,"/machine/schedule")||!strcmp(path,"/machine/statistics?days=7"))) {
         hub_state_slow_read_result_t result=!strcmp(path,"/machine/schedule")?hub_state_schedule_read():hub_state_statistics_read(7);
         *stale=result.stale;

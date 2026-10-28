@@ -12,6 +12,7 @@ import tempfile
 
 from validate_stability_foundation import function_body
 from test_quick_weight_control import ESP_ERR_STUB
+from host_cjson import cjson_source_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 ERRORS = ESP_ERR_STUB + '\n#define ESP_ERR_INVALID_SIZE 0x104\n#define ESP_ERR_NOT_FOUND 0x105\n'
@@ -97,6 +98,8 @@ static bool bbw_mode_is_valid(const char *m) { return !strcmp(m,"Dose1")||!strcm
 static void set_command_result(hub_cloud_command_result_t *r,bool ok,int64_t t,const char *m) { (void)t;(void)m;r->ok=ok; }
 static esp_err_t ensure_cloud_controls_ready_or_fail(hub_cloud_command_result_t *r,int64_t t) { (void)r;(void)t;return ESP_OK; }
 static bool hub_command_requires_online_machine(void) { return automatic; }
+static void restore_offline_bbw_doses(cloud_snapshot_t *current) { assert(current); } // Covered by test_cloud_quick_weight.py.
+static bool publish_control_bbw_snapshot(const cloud_snapshot_t *observed) { (void)observed;return true; }
 static esp_err_t cloud_command_io_lock(const hub_command_deadline_t *d,uint32_t reserve) { (void)d;(void)reserve;assert(!locked);locked=!lock_error;return lock_error; }
 static void cloud_command_io_unlock(void) { assert(locked);locked=false; }
 static void cloud_http_session_cleanup(esp_http_client_handle_t *session) { assert(locked&&session);*session=NULL; }
@@ -178,6 +181,7 @@ int main(void) {
         snprintf(body,sizeof(body),"{\"serialNumber\":\"SYNTHETIC\",\"connected\":%s,\"widgets\":[{\"code\":\"CMMachineStatus\",\"output\":{\"status\":\"%s\"}}]}",connections[i],modes[m]);
         assert(parse_dashboard_snapshot(body,"SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
         assert(out.connected==(i==0||(i==2&&m!=0)));
+        assert(out.explicitly_offline==(i==1));
     }
     const char *doses[]={"20.0","\"20.0\"","null"};
     for(unsigned i=0;i<3;++i) {
@@ -186,6 +190,7 @@ int main(void) {
         assert(parse_dashboard_snapshot(body,"SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
         assert(out.connected&&!out.bbw_scale_connected&&out.bbw_scale_connected_set);
         assert(out.dose1_set==(i<2)&&out.dose2_set&&out.dose2==30);
+        assert(out.bbw_doses_invalid==(i==2));
         if(i<2)assert(out.dose1==20);
         assert(!strcmp(out.bbw_mode,"Continuous"));
     }
@@ -196,6 +201,7 @@ int main(void) {
         snprintf(body,sizeof(body),"{\"serialNumber\":\"SYNTHETIC\",\"widgets\":[{\"code\":\"ThingScale\",\"output\":{\"connected\":false,\"batteryLevel\":%s}}]}",batteries[i]);
         assert(parse_dashboard_snapshot(body,"SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
         assert(out.thing_scale_connected_set&&!out.thing_scale_connected);
+        assert(!out.explicitly_offline);
         assert(out.scale_battery_level_set==(i<4));
         if(i<4)assert(out.scale_battery_level==expected[i]);
         assert(out.scale_observed_ms==1000); // An explicit connection observation dates this response.
@@ -473,7 +479,7 @@ def provisioning():
     with tempfile.TemporaryDirectory(prefix='gbs-private-nvs-') as temporary:
         directory=Path(temporary)
         source=directory/'source.json';source.write_text(json.dumps(config))
-        for profile,size in [('touchscreen',0x15000),('amoled216',0x15000),('headless',0x6000)]:
+        for profile,size in [('touchscreen',0x15000),('amoled216',0x15000),('mosaico',0x15000),('headless',0x6000)]:
             output=directory/profile
             result=subprocess.run([sys.executable,str(ROOT/'tools/prepare-integrated-nvs.py'),
                                    str(source),str(output),'--profile',profile,
@@ -502,7 +508,7 @@ def main():
         for name in ['parse_double_string','json_item_to_double','json_number_to_double','parse_machine_status','parse_brew_by_weight','parse_thing_scale','preserve_missing_bbw_fields','parse_dashboard_snapshot']:
             signature=re.search(r'static (?:bool|void|esp_err_t) '+name+r'\([^;{]*\)\s*\{',cloud)
             pieces.append(signature.group()+function_body(cloud,name)+'}')
-        json_dir=Path(os.environ.get('IDF_PATH',str(Path.home()/'esp/esp-idf')))/'components/json/cJSON'
+        json_dir=cjson_source_dir()
         compile_run(directory,'dashboard',DASHBOARD.replace('/* TYPES */',types).replace('/* FUNCTIONS */','\n'.join(pieces)),['-I',json_dir,json_dir/'cJSON.c','-Wno-deprecated-declarations'])
         pieces=[]
         for name in ['control_decimal_value_is_valid','hub_cloud_set_bbw_mode_checked_with_deadline']:

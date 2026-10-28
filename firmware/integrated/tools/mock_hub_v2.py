@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 DEFAULT_TTL_MS = 8_000
-MAX_TTL_MS = 8_000
+MAX_TTL_MS = 12_000
 MAX_BODY_BYTES = 16_384
 SCENARIO_DELAYS_MS = {
     "success": 300,

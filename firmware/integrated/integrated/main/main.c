@@ -64,6 +64,8 @@ static gbs_health_t cloud_health, grinder_health;
 static bool baseline_jobs = true, storage_ok = true;
 static gbs_job_t current;
 static gbs_coffee_t latest, answer;
+static gbs_coffee_t last_result;
+static char last_job_uuid[37];
 static char event_uuid[37], issue[192], storage_issue[128], api_status[80];
 static int64_t job_deadline_us, answer_deadline_us;
 static int64_t next_jobs;
@@ -103,6 +105,14 @@ static void add_display_state(cJSON *j)
     cJSON_AddNumberToObject(j, "answer_deadline_ms", pending ? answer_deadline_us / 1000 : 0);
     cJSON_AddNumberToObject(j, "grinder_retry_at_ms", next_jobs / 1000);
     cJSON_AddBoolToObject(j, "mode_change_failed", !strcmp(issue, "mode persistence failed"));
+    cJSON_AddStringToObject(j, "flow_job_uuid", have_job ? current.uuid : last_job_uuid);
+    const gbs_coffee_t *result = have_job ? (pending && !canceled ? &answer : NULL) : &last_result;
+    bool result_valid = result && result->usable;
+    cJSON_AddBoolToObject(j, "flow_result_valid", result_valid);
+    if (result_valid) {
+        cJSON_AddNumberToObject(j, "flow_result_grams", result->mass_mg / 1000.0);
+        cJSON_AddNumberToObject(j, "flow_result_seconds", result->duration_ms / 1000.0);
+    }
     if (!canceled && answer.usable &&
         (pending || (!have_job && !strcmp(ledger.last_outcome, "delivery_unknown")))) {
         cJSON_AddNumberToObject(j, "unconfirmed_grams", answer.mass_mg / 1000.0);
@@ -200,6 +210,9 @@ static void restore_ledger(esp_err_t read_error, size_t size)
 static void finish_job(const char *outcome)
 {
     gbs_recipe_follow_cancel();
+    // Retain display evidence across a result and acknowledgement in one worker tick.
+    snprintf(last_job_uuid, sizeof(last_job_uuid), "%s", current.uuid);
+    last_result = pending && !canceled && answer.usable ? answer : (gbs_coffee_t){0};
     snprintf(ledger.last_outcome, sizeof(ledger.last_outcome), "%s", outcome);
     ledger.inflight[0] = 0;
     save_ledger();

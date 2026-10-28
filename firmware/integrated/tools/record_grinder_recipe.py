@@ -87,7 +87,7 @@ def record(base_url, token, output, duration):
         raise ValueError('duration_must_be_1_to_3600_seconds')
     health = read(base_url, token, '/health')
     if health.get('data', {}).get('deviceModel') not in (
-            'lamabuddy-esp32s3-touch', 'lamabuddy-esp32s3-amoled216'):
+            'lamabuddy-esp32s3-touch', 'lamabuddy-esp32s3-amoled216', 'lamabuddy-esp32s31-mosaico'):
         raise RuntimeError('touchscreen_device_not_verified')
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     summary = {'startedAt': utc_now(), 'readOnly': True, 'health': health,

@@ -2,6 +2,11 @@
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.de.md">Deutsch</a>
 </p>
 
+> **New hardware support (2026-10-28):** experimental ESP-Mosaico / ESP32-S31
+> support is on [`codex/s31-mosaico-port`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port).
+> See the [Mosaico guide](docs/MOSAICO.md) for its 480 × 480 display, 16 MB PSRAM,
+> separate SDK and validation limits. The overview below retains its earlier S3 scope.
+
 # gbs-anywhere ESP32-S3
 
 **用一块 ESP32-S3，连接磨豆机、咖啡机和每天的咖啡流程。**

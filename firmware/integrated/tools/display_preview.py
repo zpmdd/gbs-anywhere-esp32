@@ -53,13 +53,14 @@ status.textContent='已连接 · '+new Date().toLocaleTimeString()+' · 第 '+(+
 </script></html>'''.encode()
 
 
-def make_handler(base_url, token, width=WIDTH, height=HEIGHT):
+def make_handler(base_url, token, width=WIDTH, height=HEIGHT, device_model=None):
     if (width, height) not in {(240, 280), (480, 480)}:
         raise ValueError('unsupported display size')
     frame_bytes = width * height * 2
     page = PAGE
     if (width, height) == (480, 480):
-        page = (PAGE.replace('设备 3'.encode(), b'2.16 AMOLED')
+        title = b'ESP-Mosaico' if device_model == 'lamabuddy-esp32s31-mosaico' else b'2.16 AMOLED'
+        page = (PAGE.replace('设备 3'.encode(), title)
                 .replace('240 × 280'.encode(), '480 × 480'.encode())
                 .replace(b'height:560px', b'height:480px')
                 .replace(b'aspect-ratio:6/7', b'aspect-ratio:1/1'))
@@ -124,10 +125,12 @@ def main():
     request = urllib.request.Request(base_url + '/health')
     with OPENER.open(request, timeout=6) as response:
         health = json.load(response)
-    dimensions = {'lamabuddy-esp32s3-touch': (240, 280), 'lamabuddy-esp32s3-amoled216': (480, 480)}.get(health.get('deviceModel'))
+    model = health.get('deviceModel')
+    dimensions = {'lamabuddy-esp32s3-touch': (240, 280), 'lamabuddy-esp32s3-amoled216': (480, 480),
+                  'lamabuddy-esp32s31-mosaico': (480, 480)}.get(model)
     if dimensions is None:
         parser.error('Target is not the integrated touchscreen profile')
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(base_url, token, *dimensions))
+    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(base_url, token, *dimensions, model))
     print(f'Read-only device preview: http://127.0.0.1:{server.server_port}', flush=True)
     try:
         server.serve_forever()

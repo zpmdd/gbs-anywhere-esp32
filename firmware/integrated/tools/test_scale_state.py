@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Offline scale parsing/cache checks and bounded accessory-read admission."""
-import os
 from pathlib import Path
 import re
 import tempfile
 
 from test_integrated_support import ERRORS, ROOT, compile_run, function_body
+from host_cjson import cjson_source_dir
 
 
 HARNESS = r'''
@@ -40,6 +40,9 @@ bool hub_config_machine_selection_matches(const hub_machine_selection_identity_t
     return target->generation==selection.generation&&!strcmp(target->serial_number,selection.serial_number);
 }
 esp_err_t hub_config_get_bbw_selection(const hub_machine_selection_identity_t *target,hub_bbw_selection_t *out) {
+    (void)target;(void)out;return ESP_ERR_NOT_FOUND;
+}
+esp_err_t hub_config_get_bbw_doses(const hub_machine_selection_identity_t *target,hub_bbw_doses_t *out) {
     (void)target;(void)out;return ESP_ERR_NOT_FOUND;
 }
 const char *hub_cloud_machine_name(void) { return "Synthetic"; }
@@ -249,7 +252,12 @@ static void freshness_and_connection(void) {
     snapshot.scale_battery_level_set=true;snapshot.scale_battery_level=70;
     snapshot.scale_calibration_required_set=snapshot.scale_calibration_required=true;
     strcpy(snapshot.scale_name,"Synthetic scale");
-    const int64_t times[]={10000,69999,70000,9999};
+    #ifdef HUB_AMOLED_216
+    const int64_t expires=310000;
+#else
+    const int64_t expires=70000;
+#endif
+    const int64_t times[]={10000,expires-1,expires,9999};
     for(unsigned i=0;i<sizeof(times)/sizeof(*times);++i) {
         clock_ms=times[i];bool fresh=i<2;assert(scale_snapshot_fresh(&snapshot,clock_ms)==fresh);
         cJSON *json=state_json();
@@ -312,7 +320,7 @@ static void fresh_battery_observation(void) {
     snapshot.bbw_scale_connected_set=snapshot.bbw_scale_connected=true;assert(hub_cloud_has_fresh_scale_battery());
     snapshot.connected=false;assert(!hub_cloud_has_fresh_scale_battery());snapshot.connected=true;
     clock_ms=69999;assert(hub_cloud_has_fresh_scale_battery());
-    clock_ms=70000;assert(!hub_cloud_has_fresh_scale_battery());
+    clock_ms=310000;assert(!hub_cloud_has_fresh_scale_battery());
     clock_ms=9999;assert(!hub_cloud_has_fresh_scale_battery());clock_ms=10000;
     snapshot.scale_observed_ms=0;assert(!hub_cloud_has_fresh_scale_battery());snapshot.scale_observed_ms=10000;
     cached_snapshot=false;assert(!hub_cloud_has_fresh_scale_battery());cached_snapshot=true;
@@ -418,7 +426,7 @@ def main():
         signature = re.search(r"^(?:static )?[^\n;{}]+\b" + name + r"\([^;{]*\)\s*\{", cloud, re.M)
         assert signature, name
         functions.append(signature.group() + function_body(cloud, name) + "}")
-    json_dir = Path(os.environ["IDF_PATH"]) / "components/json/cJSON"
+    json_dir = cjson_source_dir()
     with tempfile.TemporaryDirectory(prefix="hub-scale-state-") as temp:
         directory = Path(temp)
         (directory / "esp_err.h").write_text(ERRORS)
@@ -427,6 +435,8 @@ def main():
         source = HARNESS.replace("/* TYPES */", types).replace("/* FUNCTIONS */", "\n".join(functions)).replace("/* CONSTANTS */", constants)
         compile_run(directory, "scale_state", source,
                     ["-UHUB_GRINDER", "-I", json_dir, json_dir / "cJSON.c", "-Wno-deprecated-declarations", "-fno-sanitize-recover=all"])
+        compile_run(directory, "scale_state_amoled", source,
+                    ["-DHUB_AMOLED_216", "-DHUB_GRINDER", "-I", json_dir, json_dir / "cJSON.c", "-Wno-deprecated-declarations", "-fno-sanitize-recover=all"])
         compile_run(directory, "scale_state_grinder", source,
                     ["-DHUB_GRINDER", "-I", json_dir, json_dir / "cJSON.c", "-Wno-deprecated-declarations", "-fno-sanitize-recover=all"])
     print("Scale state PASS: on/off/on, battery observation bounds/TTL/binding, priority/grace/grinder admission, attempted-budget classification, session cleanup and no-IO cooldown suppression")

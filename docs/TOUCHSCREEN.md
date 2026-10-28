@@ -109,7 +109,7 @@ Partial application and unknown outcomes remain distinct. A stale callback canno
 complete a newer UI request. The UI wait ends after 30 seconds with an unknown
 outcome; this is not a promise that remote execution was canceled. HTTP operations
 use at most a three-second socket timeout and never start after the wait deadline.
-Only smart weight selection carries the Hub's supported eight-second `clientTtlMs`;
+Only smart weight selection carries a twelve-second `clientTtlMs` for network variation;
 explicit dose and mode editors use the ordinary Hub commands without that field.
 The existing v2 surface enum has no touchscreen value, so requests use `diagnostic`.
 

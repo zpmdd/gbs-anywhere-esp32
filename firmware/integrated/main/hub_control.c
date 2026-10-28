@@ -745,27 +745,12 @@ esp_err_t hub_control_execute_quick_weight_checked_with_deadline(
         return deadline_expired_before_side_effect("quickWeight", started, result);
     }
 
-    /*
-     * Quick weight is one serialized coordinator command.  The mode restore
-     * and Dose1 update therefore cannot be interleaved with another control.
-     * Always send the explicit settings: phone Cloud writes can make the ESP
-     * display snapshot stale. The dose helper freshly reads its paired value.
-     */
-    hub_cloud_command_result_t mode_result = {0};
-    esp_err_t mode_err = require_no_stored_match
-        ? hub_cloud_set_bbw_mode_checked_with_deadline(
-            "Dose1", grams, true, deadline,
-            HUB_COMMAND_DEADLINE_QUICK_WEIGHT_DOSE_RESERVE_MS,
-            &mode_result
-        )
-        : deadline != NULL && deadline->enforced
-        ? hub_cloud_set_bbw_mode_with_deadline(
-            "Dose1",
-            deadline,
-            HUB_COMMAND_DEADLINE_QUICK_WEIGHT_DOSE_RESERVE_MS,
-            &mode_result
-        )
-        : hub_cloud_set_bbw_mode("Dose1", &mode_result);
+    // The Cloud helper keeps both writes under one lock and reuses its fresh snapshot and HTTP session.
+    hub_cloud_command_result_t mode_result = {0}, dose_result = {0};
+    esp_err_t cloud_err = hub_cloud_set_quick_weight_with_deadline(
+        grams, require_no_stored_match, deadline, &mode_result, &dose_result
+    );
+    esp_err_t mode_err = mode_result.ok ? ESP_OK : cloud_err;
     if (mode_err != ESP_OK || !mode_result.ok) {
         set_result(
             result,
@@ -813,52 +798,7 @@ esp_err_t hub_control_execute_quick_weight_checked_with_deadline(
         return mode_err != ESP_OK ? mode_err : ESP_FAIL;
     }
 
-    if (!hub_command_deadline_can_start_step(
-            deadline,
-            now_ms(),
-            HUB_COMMAND_DEADLINE_QUICK_WEIGHT_DOSE_RESERVE_MS
-        )) {
-        set_result(
-            result,
-            false,
-            "quickWeight",
-            mode_result.request_started
-                ? HUB_CONTROL_TRANSPORT_CLOUD
-                : HUB_CONTROL_TRANSPORT_NONE,
-            HUB_CONTROL_TRANSPORT_CLOUD,
-            HUB_CONTROL_TRANSPORT_NONE,
-            false,
-            HUB_CONTROL_RISK_MEDIUM,
-            false,
-            started,
-            mode_result.request_started
-                ? "Quick-weight mode was applied, but the deadline cannot admit the Dose1 step."
-                : "Quick-weight deadline cannot admit the Dose1 step."
-        );
-        set_ble_diagnostics(result, false, NULL, "");
-        set_cloud_diagnostics(result, true, &mode_result);
-        result->response_http_status = 200;
-        if (mode_result.request_started) {
-            result->v2_status = HUB_API_V2_COMMAND_STATUS_PARTIAL_APPLY;
-            snprintf(result->error_code, sizeof(result->error_code), "partialApply");
-        } else {
-            result->v2_status = HUB_API_V2_COMMAND_STATUS_COMPLETED;
-            snprintf(result->error_code, sizeof(result->error_code), "commandExpired");
-        }
-        record_control_result(result);
-        return ESP_ERR_TIMEOUT;
-    }
-
-    hub_cloud_command_result_t dose_result = {0};
-    esp_err_t dose_err = deadline != NULL && deadline->enforced
-        ? hub_cloud_set_bbw_dose_with_deadline(
-            "dose1",
-            grams,
-            deadline,
-            0,
-            &dose_result
-        )
-        : hub_cloud_set_bbw_dose("dose1", grams, &dose_result);
+    esp_err_t dose_err = cloud_err;
     const bool ok = dose_err == ESP_OK && dose_result.ok;
     const bool partial_apply = !ok && mode_result.request_started;
     const bool unknown_outcome = cloud_command_outcome_is_unknown(dose_err, &dose_result);

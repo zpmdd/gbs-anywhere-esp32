@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Run the real local UI adapter and command parser against synthetic Hub services."""
 from pathlib import Path
-import os
 import subprocess
 import tempfile
 from test_command_coordinator import ESP_ERR_STUB
 from validate_stability_foundation import function_body
+from host_cjson import cjson_source_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
@@ -22,6 +22,7 @@ static bool busy,locked,refresh_pending,refresh_failed;
 static int submissions,refresh_requests;
 static double weight=30;
 static const char *readiness="ready";
+static const char *ble_connected="false";
 static char completed_id[37];
 static const char *ID="11111111-1111-4111-8111-111111111111";
 int64_t esp_timer_get_time(void) { return clock_ms*1000; }
@@ -39,6 +40,12 @@ const char *hub_state_machine_binding_json(void)
 { return "{\"selected\":true,\"serialNumber\":\"SYNTHETIC\",\"generation\":1}"; }
 const char *hub_state_capabilities_json(void)
 { return "{\"supportsSmartPresetDecisionValidation\":true,\"brewByWeightDose1\":{\"available\":true},\"brewByWeightDose2\":{\"available\":true},\"brewByWeightMode\":{\"available\":true},\"schedule\":{\"available\":true}}"; }
+const char *hub_state_ble_diagnostics_json(void)
+{
+    static char data[256];
+    snprintf(data,sizeof(data),"{\"configured\":true,\"workerConnected\":%s,\"cachedConnected\":true,\"controlSessionReady\":false,\"workerStatus\":\"connecting\"}",ble_connected);
+    return data;
+}
 const char *hub_state_machine_state_json(void)
 {
     static char data[1024];
@@ -56,6 +63,7 @@ hub_command_submit_status_t hub_command_submit(const hub_command_request_t *c,hu
     (void)fn; (void)ctx; assert(locked); ++submissions;
     assert(!strcmp(c->expected_serial_number,"SYNTHETIC"));
     assert(c->kind==HUB_COMMAND_QUICK_WEIGHT&&c->deadline.enforced);
+    assert(c->deadline.client_ttl_present&&c->deadline.client_ttl_ms==12000);
     assert(c->value.quick_weight.require_no_stored_match);
     weight=c->value.quick_weight.grams; strcpy(completed_id,c->request_id);
     memset(out,0,sizeof(*out)); strcpy(out->result.request_id,c->request_id);
@@ -90,7 +98,10 @@ int main(void)
         assert(command.client_surface==HUB_API_V2_SURFACE_DIAGNOSTIC);
         if(i==0) assert(command.value.quick_weight.require_no_stored_match);
         if(i==1) assert(command.value.bbw_mode.has_preset_grams&&command.value.bbw_mode.preset_grams==35);
+        if(i<2) assert(command.deadline.client_ttl_present&&command.deadline.client_ttl_ms==12000);
     }
+    snprintf(body,sizeof(body),"{\"requestId\":\"%s\",\"grams\":40,\"clientTtlMs\":12001}",ID);
+    assert(!hub_touchscreen_parse_command("/controls/quick-weight",body,"SYNTHETIC",&command));
     snprintf(body,sizeof(body),"{\"requestId\":\"%s\",\"confirm\":false,\"enabled\":true}",ID);
     assert(!hub_touchscreen_parse_command("/controls/power",body,"SYNTHETIC",&command));
     snprintf(body,sizeof(body),"{\"requestId\":\"%s\",\"grams\":1e100}",ID);
@@ -101,6 +112,12 @@ int main(void)
     gbs_hub_io_t io={.exchange=exchange,.now=now,.wait=wait_ms,.reply=reply,.reply_size=sizeof(reply)};
     assert(gbs_hub_refresh(&config,&io,10000,&machine));
     assert(machine.coffee==92.1&&machine.steam==127.2&&machine.weight==30);
+    assert(machine.ble.valid&&machine.ble.configured&&!machine.ble.connected&&machine.ble.cached_fresh);
+    assert(!strcmp(machine.ble.status,"connecting")&&machine.ble.observed_ms==clock_ms);
+    assert(!submissions&&!refresh_requests);
+    ble_connected="true";
+    assert(gbs_hub_refresh(&config,&io,10000,&machine)&&machine.ble.connected&&!machine.ble.control_ready);
+    assert(!submissions&&!refresh_requests);
     assert(gbs_hub_execute(&config,&io,GBS_ACTION_WEIGHT,40,ID,10000,&machine)==GBS_UI_CONTROL_CONFIRMED);
     assert(submissions==1&&machine.weight==40&&!locked);
     readiness="warming";
@@ -126,13 +143,19 @@ int main(void)
 '''
 
 SCALE_REQUEST = r'''
+#include "gbs_ui_model.h"
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #define pdTRUE 1
 #define pdMS_TO_TICKS(ms) (ms)
-static struct { int task,mutex; bool busy,scale_refresh_queued; int64_t scale_refresh_after; } hub={.task=1,.mutex=1};
+static struct {
+    int task,mutex; bool busy,queued,scale_refresh_queued; int64_t scale_refresh_after,deadline;
+    gbs_ui_machine_t machine,submitted_machine; gbs_ui_action_t action; gbs_ui_control_t result;
+    uint32_t request_id,completed_id; double value;
+} hub={.task=1,.mutex=1};
 static bool locked,lock_failed;
 static int notifications;
 static int64_t clock_ms=1000;
@@ -152,26 +175,40 @@ int main(void) {
     hub.busy=false;lock_failed=true;assert(!gbs_hub_request_scale_refresh());
     lock_failed=false;assert(gbs_hub_request_scale_refresh()&&notifications==3&&!locked);
     hub.task=0;assert(!gbs_hub_request_scale_refresh());
+    hub.task=1;hub.busy=false;
+    hub.machine=(gbs_ui_machine_t){.available=true,.stale=true,.writable=GBS_UI_MACHINE_ACTIONS,.observed_ms=clock_ms};
+    gbs_ui_machine_t observed;uint32_t request_id;gbs_ui_control_t result;
+    assert(gbs_hub_read(&observed,&request_id,&result)&&gbs_ui_can_control(GBS_ACTION_WEIGHT,&observed));
+    assert(!gbs_hub_submit(GBS_ACTION_COFFEE,93,1,&observed));
+    assert(gbs_hub_submit(GBS_ACTION_WEIGHT,40,1,&observed)&&hub.queued);
+    assert(!gbs_hub_submit(GBS_ACTION_WEIGHT,40,2,&observed));
+    hub.busy=hub.queued=false;clock_ms+=GBS_UI_MACHINE_FRESH_MS;
+    assert(gbs_hub_read(&observed,&request_id,&result)&&observed.stale&&!observed.writable);
+    assert(!gbs_hub_submit(GBS_ACTION_WEIGHT,40,2,&observed));
+    hub.machine.observed_ms=clock_ms;hub.machine.writable=0;
+    assert(gbs_hub_read(&observed,&request_id,&result)&&!gbs_hub_submit(GBS_ACTION_WEIGHT,40,2,&observed));
     return 0;
 }
 '''
 
 def main():
-    idf=Path(os.environ.get("IDF_PATH",Path.home()/"esp/esp-idf"))
+    json_dir=cjson_source_dir()
     with tempfile.TemporaryDirectory(prefix="hub-integrated-test-") as directory:
         d=Path(directory)
         (d/"esp_err.h").write_text(ESP_ERR_STUB)
         (d/"esp_timer.h").write_text('#include <stdint.h>\nint64_t esp_timer_get_time(void);\n')
         (d/"esp_http_server.h").write_text('typedef void *httpd_handle_t;\ntypedef struct httpd_req httpd_req_t;\n')
         (d/"test.c").write_text(HARNESS)
-        cmd=["cc","-std=c11","-Wall","-Wextra","-Werror","-Wno-deprecated-declarations","-fsanitize=address,undefined","-g", "-I",str(d),"-I",str(ROOT/"main"),"-I",str(ROOT/"integrated/display"),"-I",str(idf/"components/json/cJSON")]
-        sources=[ROOT/"main/hub_touchscreen_command.c",ROOT/"main/hub_touchscreen.c",ROOT/"main/hub_schedule.c",ROOT/"integrated/display/gbs_hub.c",ROOT/"integrated/display/gbs_ui_model.c",idf/"components/json/cJSON/cJSON.c",d/"test.c"]
+        cmd=["cc","-std=c11","-Wall","-Wextra","-Werror","-Wno-deprecated-declarations","-fsanitize=address,undefined","-g", "-I",str(d),"-I",str(ROOT/"main"),"-I",str(ROOT/"integrated/display"),"-I",str(json_dir)]
+        sources=[ROOT/"main/hub_touchscreen_command.c",ROOT/"main/hub_touchscreen.c",ROOT/"main/hub_schedule.c",ROOT/"integrated/display/gbs_hub.c",ROOT/"integrated/display/gbs_ui_model.c",json_dir/"cJSON.c",d/"test.c"]
         subprocess.run(cmd+[str(p) for p in sources]+["-lm","-o",str(d/"test")],check=True)
         subprocess.run([str(d/"test")],check=True)
         client=(ROOT/"integrated/display/gbs_hub_client.c").read_text()
         function="bool gbs_hub_request_scale_refresh(void) {"+function_body(client,"gbs_hub_request_scale_refresh")+"}"
+        function+="bool gbs_hub_submit(gbs_ui_action_t action,double value,uint32_t request_id,const gbs_ui_machine_t *expected) {"+function_body(client,"gbs_hub_submit")+"}"
+        function+="bool gbs_hub_read(gbs_ui_machine_t *machine,uint32_t *request_id,gbs_ui_control_t *result) {"+function_body(client,"gbs_hub_read")+"}"
         (d/"scale_request.c").write_text(SCALE_REQUEST.replace("/* FUNCTION */",function))
-        subprocess.run(["cc","-std=c11","-Wall","-Wextra","-Werror","-fsanitize=address,undefined",
-                        str(d/"scale_request.c"),"-o",str(d/"scale_request")],check=True)
+        subprocess.run(cmd+[str(ROOT/"integrated/display/gbs_ui_model.c"),str(json_dir/"cJSON.c"),
+                        str(d/"scale_request.c"),"-lm","-o",str(d/"scale_request")],check=True)
         subprocess.run([str(d/"scale_request")],check=True)
 if __name__=="__main__": main()

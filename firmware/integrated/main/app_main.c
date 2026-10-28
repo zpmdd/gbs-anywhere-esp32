@@ -60,8 +60,8 @@ void app_main(void)
     hub_runtime_resources_t resources;
     hub_runtime_resources_snapshot(&resources);
 
-    ESP_LOGI(TAG, "LamaBuddy ESP32-S3 Hub booting");
-    ESP_LOGI(TAG, "chip=esp32s3 cores=%d", chip_info.cores);
+    ESP_LOGI(TAG, "%s booting", LAMABUDDY_MDNS_INSTANCE);
+    ESP_LOGI(TAG, "chip=" LAMABUDDY_CHIP_NAME " cores=%d", chip_info.cores);
     uint32_t flash_bytes=0;
     esp_flash_get_size(NULL,&flash_bytes);
     ESP_LOGI(TAG, "flash_bytes=%lu", (unsigned long)flash_bytes);

@@ -3598,6 +3598,7 @@ static void hub_ble_worker_task(void *param)
 
         hub_ble_worker_job_t job = {0};
         if (xQueueReceive(ble_worker_job_queue, &job, 0) == pdTRUE) {
+            uint32_t cache_sequence_before_job = ble_state.cache_sequence;
             ble_worker_job_yielded = false;
             ble_worker_job_owner = xTaskGetCurrentTaskHandle();
             ble_worker_job_active = true;
@@ -3605,6 +3606,13 @@ static void hub_ble_worker_task(void *param)
             ble_worker_job_active = false;
             ble_worker_job_owner = NULL;
             record_ble_worker_stack_high_water_mark();
+            /* HTTP job success alone does not prove a fresh BLE observation. */
+            if (!ble_worker_job_yielded
+                && ble_state.cache_sequence != cache_sequence_before_job
+                && ble_state.consecutive_failures == 0
+                && ble_cache_is_fresh()) {
+                full_read_delay_ms = HUB_BLE_WORKER_POLL_MS;
+            }
             ble_worker_job_yielded = false;
             xSemaphoreGive(ble_worker_job_complete);
             continue;

@@ -34,7 +34,7 @@ static esp_err_t publish_mdns_service(void)
     };
 
     ESP_RETURN_ON_ERROR(mdns_hostname_set(LAMABUDDY_MDNS_HOSTNAME), TAG, "mDNS hostname failed");
-    ESP_RETURN_ON_ERROR(mdns_instance_name_set("LamaBuddy ESP32-S3 Hub"), TAG, "mDNS instance failed");
+    ESP_RETURN_ON_ERROR(mdns_instance_name_set(LAMABUDDY_MDNS_INSTANCE), TAG, "mDNS instance failed");
 
     if (!s_legacy_mdns_service_added) {
         ESP_RETURN_ON_ERROR(

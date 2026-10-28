@@ -22,6 +22,12 @@ bool gbs_ui_scale_is_stale(const gbs_ui_machine_t *machine, int64_t now_ms)
         now_ms-machine->scale_observed_ms>=GBS_UI_SCALE_FRESH_MS;
 }
 
+bool gbs_ui_ble_is_stale(const gbs_ui_ble_t *ble, int64_t now_ms)
+{
+    return !ble->valid||ble->observed_ms<=0||now_ms<ble->observed_ms||
+        now_ms-ble->observed_ms>=GBS_UI_BLE_FRESH_MS;
+}
+
 bool gbs_ui_schedule_equal(const gbs_ui_schedule_t *a,const gbs_ui_schedule_t *b)
 {
     return !strcmp(a->id,b->id)&&a->on_minutes==b->on_minutes&&a->off_minutes==b->off_minutes&&
@@ -75,6 +81,15 @@ bool gbs_ui_parse_bridge(const char *json, gbs_ui_bridge_t *out)
     const cJSON *job_id = cJSON_GetObjectItemCaseSensitive(j, "grind_uuid");
     const cJSON *recipe_id = cJSON_GetObjectItemCaseSensitive(recipe, "grind_uuid");
     if(cJSON_IsString(job_id)&&strlen(job_id->valuestring)<sizeof(next.job_id)) strcpy(next.job_id,job_id->valuestring);
+    if(cJSON_IsString(recipe_id)&&strlen(recipe_id->valuestring)<sizeof(next.recipe_job_id)) strcpy(next.recipe_job_id,recipe_id->valuestring);
+    const cJSON *flow_id=cJSON_GetObjectItemCaseSensitive(j,"flow_job_uuid");
+    if(cJSON_IsString(flow_id)&&strlen(flow_id->valuestring)<sizeof(next.flow_job_id)) strcpy(next.flow_job_id,flow_id->valuestring);
+    else if(next.job) strcpy(next.flow_job_id,next.job_id);
+    const cJSON *grind_date=cJSON_GetObjectItemCaseSensitive(recipe,"grind_date");
+    // These match fields are assigned only after the complete successful log is validated.
+    next.recipe_log_valid=next.recipe_job_id[0]&&next.recipe_grams>=1&&next.recipe_grams<=200&&
+        floor(next.recipe_grams)==next.recipe_grams&&number(recipe,"csv_rows")>=1&&
+        cJSON_IsString(grind_date)&&strlen(grind_date->valuestring)==20&&strncmp(next.recipe_phase,"probe_",6);
     next.recipe_current=next.job&&next.job_id[0]&&cJSON_IsString(recipe_id)&&!strcmp(next.job_id,recipe_id->valuestring);
     if (next.job && cJSON_IsString(job_id) && cJSON_IsString(recipe_id) &&
         !strcmp(job_id->valuestring, recipe_id->valuestring) && next.recipe_grams >= 1 && next.recipe_grams <= 200)
@@ -82,11 +97,96 @@ bool gbs_ui_parse_bridge(const char *json, gbs_ui_bridge_t *out)
     next.result_grams = number(j, "last_success_grams"); next.result_seconds = number(j, "last_success_seconds");
     next.latest_grams = number(j, "latest_grams"); next.latest_seconds = number(j, "latest_seconds");
     next.unconfirmed_grams = number(j, "unconfirmed_grams"); next.unconfirmed_seconds = number(j, "unconfirmed_seconds");
+    next.flow_result_grams=number(j,"flow_result_grams"); next.flow_result_seconds=number(j,"flow_result_seconds");
+    next.flow_result_valid=flag(j,"flow_result_valid")&&next.flow_result_grams>0&&next.flow_result_grams<=5000&&
+        next.flow_result_seconds>0&&next.flow_result_seconds<=UINT32_MAX/1000.0;
     next.successes = (unsigned)fmin(number(j, "successes"), UINT32_MAX);
     next.free_internal = (unsigned)fmin(number(j, "free_internal"), UINT32_MAX);
     next.largest_internal = (unsigned)fmin(number(j, "largest_internal"), UINT32_MAX);
     *out = next;
     cJSON_Delete(j); return true;
+}
+
+static void flow_node(gbs_ui_flow_t *flow,unsigned node,gbs_ui_flow_node_t state)
+{
+    if(flow->nodes[node]!=GBS_FLOW_DONE) flow->nodes[node]=state;
+}
+
+void gbs_ui_flow_update(gbs_ui_flow_t *flow,const gbs_ui_bridge_t *s)
+{
+    if(!flow||!s||!s->valid) return;
+    const char *id=s->job?s->job_id:s->flow_job_id;
+    if(!id[0]) return;
+    if(s->job&&s->flow_job_id[0]&&strcmp(s->flow_job_id,id)) return;
+    if(!flow->initialized||strcmp(flow->job_id,id)) {
+        memset(flow,0,sizeof(*flow)); flow->initialized=true;
+        snprintf(flow->job_id,sizeof(flow->job_id),"%s",id);
+    }
+    if(s->job&&flow->job_deadline_ms<=0&&s->job_deadline_ms>0)
+        flow->job_deadline_ms=s->job_deadline_ms;
+    bool recipe=s->recipe_job_id[0]&&!strcmp(s->recipe_job_id,id);
+    if(recipe) {
+        bool matched=s->recipe_log_valid&&isfinite(s->recipe_grams)&&s->recipe_grams>=1&&s->recipe_grams<=200&&
+            floor(s->recipe_grams)==s->recipe_grams;
+        if(matched) {
+            flow->nodes[GBS_FLOW_GRIND]=flow->nodes[GBS_FLOW_RECIPE]=GBS_FLOW_DONE;
+            flow->recipe_grams=s->recipe_grams;
+        }
+        if(!strcmp(s->recipe_phase,"applied")) flow->nodes[GBS_FLOW_SETTING]=GBS_FLOW_DONE;
+        else if(!strcmp(s->recipe_phase,"unconfirmed")) flow_node(flow,GBS_FLOW_SETTING,GBS_FLOW_UNKNOWN);
+        else if(!strcmp(s->recipe_phase,"applying")) flow_node(flow,GBS_FLOW_SETTING,GBS_FLOW_ACTIVE);
+        else if(!strcmp(s->recipe_phase,"failed")) {
+            if(matched||flow->nodes[GBS_FLOW_RECIPE]==GBS_FLOW_DONE) flow_node(flow,GBS_FLOW_SETTING,GBS_FLOW_FAILED);
+            else {
+                flow_node(flow,GBS_FLOW_GRIND,GBS_FLOW_WAIT);
+                flow_node(flow,GBS_FLOW_RECIPE,GBS_FLOW_FAILED);
+                flow_node(flow,GBS_FLOW_SETTING,GBS_FLOW_WAIT);
+            }
+        } else if(!strcmp(s->recipe_phase,"machine_unavailable")) flow_node(flow,GBS_FLOW_SETTING,GBS_FLOW_FAILED);
+        else if(!strcmp(s->recipe_phase,"disabled")||!strcmp(s->recipe_phase,"skipped")) {
+            for(unsigned i=GBS_FLOW_GRIND;i<=GBS_FLOW_SETTING;++i) flow_node(flow,i,GBS_FLOW_SKIPPED);
+        } else if(s->job&&(!strcmp(s->recipe_phase,"waiting")||!strcmp(s->recipe_phase,"reading"))) {
+            // There is no live motor telemetry before the successful log arrives.
+            flow_node(flow,GBS_FLOW_RECIPE,GBS_FLOW_ACTIVE);
+        }
+    }
+    bool result=(!s->job||(s->pending&&!s->canceling))&&s->flow_result_valid&&s->flow_job_id[0]&&!strcmp(s->flow_job_id,id)&&
+        isfinite(s->flow_result_grams)&&s->flow_result_grams>0&&s->flow_result_grams<=5000&&
+        isfinite(s->flow_result_seconds)&&s->flow_result_seconds>0&&s->flow_result_seconds<=UINT32_MAX/1000.0;
+    if(result) {
+        flow->nodes[GBS_FLOW_RESULT]=GBS_FLOW_DONE;
+        flow->result_grams=s->flow_result_grams; flow->result_seconds=s->flow_result_seconds;
+    }
+    // Lock the first cancellation observation; later snapshots keep advancing uptime.
+    if(flow->nodes[GBS_FLOW_RESULT]==GBS_FLOW_DONE) flow->result_timed_out=false;
+    if(!flow->cancellation_observed&&((s->job&&s->canceling)||(!s->job&&!strcmp(s->outcome,"canceled")))) {
+        flow->cancellation_observed=true;
+        flow->result_timed_out=flow->nodes[GBS_FLOW_RESULT]!=GBS_FLOW_DONE&&
+            flow->job_deadline_ms>0&&s->observed_ms>=flow->job_deadline_ms;
+    }
+    if(s->job) {
+        if(s->canceling) {
+            flow_node(flow,GBS_FLOW_RESULT,GBS_FLOW_FAILED);
+            flow_node(flow,GBS_FLOW_DELIVERY,GBS_FLOW_SKIPPED);
+        } else if(s->pending) {
+            if(result) flow_node(flow,GBS_FLOW_DELIVERY,GBS_FLOW_ACTIVE);
+        } else if(s->invalid_coffee) flow_node(flow,GBS_FLOW_RESULT,GBS_FLOW_FAILED);
+        else if(flow->nodes[GBS_FLOW_SETTING]==GBS_FLOW_DONE) flow_node(flow,GBS_FLOW_RESULT,GBS_FLOW_ACTIVE);
+        return;
+    }
+    if(!strcmp(s->outcome,"success")) flow->nodes[GBS_FLOW_DELIVERY]=GBS_FLOW_DONE;
+    else if(!strcmp(s->outcome,"delivery_unknown")) flow_node(flow,GBS_FLOW_DELIVERY,GBS_FLOW_UNKNOWN);
+    else if(!strcmp(s->outcome,"delivery_refused")) flow_node(flow,GBS_FLOW_DELIVERY,GBS_FLOW_FAILED);
+    else if(!strcmp(s->outcome,"canceled")) {
+        flow_node(flow,GBS_FLOW_RESULT,GBS_FLOW_FAILED);
+        flow_node(flow,GBS_FLOW_DELIVERY,GBS_FLOW_SKIPPED);
+    }
+    else if(!strcmp(s->outcome,"delivery_expired")) {
+        flow_node(flow,GBS_FLOW_RESULT,GBS_FLOW_FAILED);
+        flow_node(flow,GBS_FLOW_DELIVERY,result?GBS_FLOW_FAILED:GBS_FLOW_SKIPPED);
+    } else if(!strcmp(s->outcome,"invalid_coffee")) flow_node(flow,GBS_FLOW_RESULT,GBS_FLOW_FAILED);
+    for(unsigned i=0;i<GBS_FLOW_COUNT;++i)
+        if(flow->nodes[i]==GBS_FLOW_ACTIVE) flow->nodes[i]=GBS_FLOW_SKIPPED;
 }
 
 gbs_ui_stage_t gbs_ui_stage(const gbs_ui_bridge_t *s)
@@ -141,6 +241,18 @@ bool gbs_ui_touch(bool down, bool blank, bool *wake_gesture)
 bool gbs_ui_machine_action(gbs_ui_action_t action)
 {
     return (unsigned)action < GBS_ACTION_COUNT && (GBS_UI_MACHINE_ACTIONS & (1u << action));
+}
+
+bool gbs_ui_can_control(gbs_ui_action_t action, const gbs_ui_machine_t *machine)
+{
+    return gbs_ui_machine_action(action) && machine->available && (machine->writable & (1u << action))
+        && (!machine->stale || action == GBS_ACTION_WEIGHT);
+}
+
+bool gbs_ui_variable_weight_valid(double grams)
+{
+    return isfinite(grams) && grams >= 1 && grams <= 200 && floor(grams) == grams &&
+        grams != 20 && grams != 30 && grams != 36;
 }
 
 double gbs_ui_action_value(gbs_ui_action_t action, const gbs_ui_machine_t *m)

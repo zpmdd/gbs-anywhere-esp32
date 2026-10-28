@@ -83,7 +83,7 @@ bool hub_touchscreen_parse_command(const char *path,const char *body,const char 
     } else ok=false;
     c->deadline.enforced=c->kind==HUB_COMMAND_QUICK_WEIGHT||c->kind==HUB_COMMAND_PREBREW||(c->kind==HUB_COMMAND_BBW_MODE&&c->value.bbw_mode.has_preset_grams);
     if(cJSON_GetObjectItemCaseSensitive(j,"clientTtlMs")) {
-        int ttl=0; ok=ok&&c->deadline.enforced&&integer(j,"clientTtlMs",&ttl)&&ttl>=1&&ttl<=8000;
+        int ttl=0; ok=ok&&c->deadline.enforced&&integer(j,"clientTtlMs",&ttl)&&ttl>=1&&ttl<=(int)HUB_COMMAND_DEADLINE_MAX_TTL_MS;
         c->deadline.client_ttl_present=true; c->deadline.client_ttl_ms=(uint32_t)ttl;
     }
     cJSON_Delete(j); return ok;

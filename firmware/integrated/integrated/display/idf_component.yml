@@ -1,8 +1,22 @@
 dependencies:
-  idf: ">=5.5.0,<6.0.0"
+  idf: ">=5.5.0,<6.3.0"
   lvgl/lvgl: "8.4.0"
   espressif/esp_lcd_touch_cst816s: "1.0.3"
   espressif/esp_lcd_touch: "1.2.1"
   espressif/esp_lcd_co5300: "2.2.0"
-  waveshare/esp_lcd_touch_cst9217: "2.0.0"
-  espressif/esp_codec_dev: "1.5.9"
+  waveshare/esp_lcd_touch_cst9217:
+    version: "2.0.0"
+    rules:
+      - if: "target != esp32s31"
+  espressif/esp_codec_dev:
+    matches:
+      - if: "target == esp32s31"
+        version: "~1.6"
+      - if: "target != esp32s31"
+        version: "1.5.9"
+  esp-mosaico-bsp:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    path: components/esp-mosaico-bsp
+    version: 7cbfb390638dcb93522fc3cde094b2d43cf907c2
+    rules:
+      - if: "target == esp32s31"

@@ -25,6 +25,9 @@ static gbs_ui_machine_t machine;
 static gbs_ui_action_t command;
 static double requested;
 static unsigned requests, sequence;
+static unsigned sound_requests, requested_volume;
+static unsigned saved_weight=40, weight_saves;
+static bool reject_weight_save;
 static uint32_t submitted_at;
 static uint32_t command_id;
 static bool pending;
@@ -126,8 +129,17 @@ static void finish_schedule(void)
 static bool submit(gbs_ui_action_t action, double value, uint32_t request_id, const gbs_ui_machine_t *expected, void *context)
 {
     (void)context;
+    if(action==GBS_ACTION_SOUND) {
+        assert(value>=0&&value<=100&&floor(value)==value&&!request_id&&!expected);
+        ++sound_requests;requested_volume=(unsigned)value;return !reject_submit;
+    }
+    if(action==GBS_ACTION_WEIGHT_PRESET) {
+        assert(gbs_ui_variable_weight_valid(value)&&!request_id&&!expected);
+        if(reject_weight_save) return false;
+        saved_weight=(unsigned)value; ++weight_saves; return true;
+    }
     if (reject_submit) return false;
-    if (action == GBS_ACTION_BRIGHTNESS || action == GBS_ACTION_DIM || action==GBS_ACTION_ROTATION_AUTO || action==GBS_ACTION_SOUND) return true;
+    if (action == GBS_ACTION_BRIGHTNESS || action == GBS_ACTION_DIM || action==GBS_ACTION_ROTATION_AUTO) return true;
     if(gbs_ui_machine_action(action)&&(!expected||!gbs_ui_action_unchanged(action,expected,&machine))) return false;
     ++requests; command = action; requested = value; command_id=request_id; pending = true; submitted_at = SDL_GetTicks();
     return true;
@@ -165,7 +177,7 @@ static void scene(unsigned n)
 {
     scenario = n;
     bridge = (gbs_ui_bridge_t){.valid=true, .wifi=true, .cloud=true, .grinder=true, .storage=true,
-        .active=true, .free_internal=80000, .largest_internal=32000};
+        .active=true, .free_internal=80000, .largest_internal=32000, .observed_ms=10000};
     strcpy(bridge.phase, "ready");
     machine = (gbs_ui_machine_t){.coffee=93, .coffee_target=93, .steam=128, .steam_target=128,
         .weight=30, .dose1=30, .dose2=40, .dose_mode=1, .available=true, .writable=GBS_UI_MACHINE_ACTIONS,
@@ -182,7 +194,19 @@ static void scene(unsigned n)
     if (n == 5) { bridge.grinder=false; bridge.retry_at_ms=15000; strcpy(bridge.phase, "grinder_waiting"); }
     if (n == 6) { strcpy(bridge.outcome, "success"); bridge.successes=12; bridge.result_grams=30; bridge.result_seconds=37; }
     if (n == 7 || n == 8) { bridge.pending=true; bridge.canceling=n==8; bridge.answer_deadline_ms=10000+(n==8?15000:90000); }
+    if(n==7) {bridge.unconfirmed_grams=30;bridge.unconfirmed_seconds=37;}
+    if(bridge.job||bridge.outcome[0]) {
+        strcpy(bridge.flow_job_id,"synthetic-scene-cup");
+        if(bridge.job) {strcpy(bridge.job_id,bridge.flow_job_id);bridge.recipe_current=true;}
+        strcpy(bridge.recipe_job_id,bridge.flow_job_id);
+        if(n==4||n==6||n==7) {
+            bridge.flow_result_valid=true;
+            bridge.flow_result_grams=n==6?bridge.result_grams:bridge.unconfirmed_grams;
+            bridge.flow_result_seconds=n==6?bridge.result_seconds:bridge.unconfirmed_seconds;
+        }
+    }
     #ifdef HUB_AMOLED_216
+    if(n!=0)machine.ble=(gbs_ui_ble_t){.valid=true,.configured=true,.connected=true,.control_ready=true,.observed_ms=10000};
     machine.scale_connected_known=machine.scale_connected=machine.scale_battery_known=true;
     machine.scale_battery_percent=78; machine.scale_observed_ms=10000;
     gbs_device_status_t device={.valid=true,.battery_present_known=true,.battery_present=true,
@@ -201,10 +225,21 @@ static lv_obj_t *find_text(lv_obj_t *root, const char *text)
     return NULL;
 }
 
+#ifdef HUB_AMOLED_216
+static lv_obj_t *find_text_containing(lv_obj_t *root,const char *text)
+{
+    if(lv_obj_check_type(root,&lv_label_class)&&strstr(lv_label_get_text(root),text)) return root;
+    for(unsigned i=0;i<lv_obj_get_child_cnt(root);++i) {
+        lv_obj_t *found=find_text_containing(lv_obj_get_child(root,i),text); if(found) return found;
+    }
+    return NULL;
+}
+#endif
+
 static void click(const char *text)
 {
 #ifdef HUB_AMOLED_216
-    if(gbs_ui_page()==GBS_PAGE_HOME){const char *presets[]={"20g","30g","35g","40g"};for(int i=0;i<4;++i)if(!strcmp(text,presets[i])){pointer_event(75+110*i,345,true);pointer_event(75+110*i,345,false);return;}}
+    if(gbs_ui_page()==GBS_PAGE_HOME){char variable[8];snprintf(variable,sizeof(variable),"%ug",gbs_ui_variable_weight());const char *presets[]={"20g","30g","36g",variable};for(int i=0;i<4;++i)if(!strcmp(text,presets[i])){pointer_event(75+110*i,345,true);pointer_event(75+110*i,345,false);return;}}
 #endif
     lv_obj_t *l = find_text(lv_scr_act(), text); assert(l);
     while (l && !lv_obj_has_flag(l, LV_OBJ_FLAG_CLICKABLE)) l = lv_obj_get_parent(l);
@@ -309,6 +344,8 @@ static void visible_labels(lv_obj_t *root)
 {
     if(lv_obj_check_type(root,&lv_label_class)&&lv_label_get_text(root)[0]) {
         lv_area_t area; lv_obj_get_coords(root,&area);
+        if(area.x1<0||area.x2>=WIDTH||area.y1<0||area.y2>=HEIGHT)
+            fprintf(stderr,"Label outside %ux%u: %s [%d,%d,%d,%d]\n",WIDTH,HEIGHT,lv_label_get_text(root),area.x1,area.y1,area.x2,area.y2);
         assert(area.x1>=0&&area.x2<WIDTH&&area.y1>=0&&area.y2<HEIGHT);
     }
     for(unsigned i=0;i<lv_obj_get_child_cnt(root);++i) visible_labels(lv_obj_get_child(root,i));
@@ -627,11 +664,13 @@ static void assert_amoled_preset(unsigned selected)
     unsigned found=0;
     for(unsigned i=0;i<lv_obj_get_child_cnt(lv_scr_act());++i) {
         lv_obj_t *button=lv_obj_get_child(lv_scr_act(),i);
-        if(lv_obj_get_y(button)!=310||lv_obj_get_child_cnt(button)!=2) continue;
+        if(lv_obj_get_y(button)!=299||lv_obj_get_child_cnt(button)!=2) continue;
         int index=(lv_obj_get_x(button)-24)/110;
         if(index<0||index>3) continue;
         lv_obj_t *face=lv_obj_get_child(button,1);
-        assert(lv_obj_get_style_bg_color(face,0).full==lv_color_hex((unsigned)index==selected?0xe3bb83:0x202420).full);
+        if((lv_obj_get_style_bg_color(face,0).full==lv_color_hex(0xe3bb83).full)!=((unsigned)index==selected))
+            fprintf(stderr,"Preset %d selected mismatch: expected %u, flow %s, outcome %s, request %u\n",index,selected,bridge.recipe_phase,bridge.outcome,command_id);
+        assert((lv_obj_get_style_bg_color(face,0).full==lv_color_hex(0xe3bb83).full)==((unsigned)index==selected));
         ++found;
     }
     assert(found==4);
@@ -651,29 +690,50 @@ static void assert_amoled_outline(int outlined)
     unsigned found=0;
     for(unsigned i=0;i<lv_obj_get_child_cnt(lv_scr_act());++i) {
         lv_obj_t *button=lv_obj_get_child(lv_scr_act(),i);
-        if(lv_obj_get_y(button)!=310||lv_obj_get_child_cnt(button)!=2) continue;
+        if(lv_obj_get_y(button)!=299||lv_obj_get_child_cnt(button)!=2) continue;
         int index=(lv_obj_get_x(button)-24)/110;
         if(index<0||index>3) continue;
         lv_obj_t *face=lv_obj_get_child(button,1);
-        assert(lv_obj_get_style_border_width(face,0)==(index==outlined?2:1));
-        if(index==outlined) assert(lv_obj_get_style_border_color(face,0).full==lv_color_hex(0xe3bb83).full);
+        assert((lv_obj_get_style_border_width(face,0)>=2)==(index==outlined));
         ++found;
     }
     assert(found==4);
 }
+static void assert_amoled_nodes(const char *states)
+{
+    lv_obj_update_layout(lv_scr_act());
+    unsigned found=0,rings=0;
+    for(unsigned i=0;i<lv_obj_get_child_cnt(lv_scr_act());++i) {
+        lv_obj_t *node=lv_obj_get_child(lv_scr_act(),i);
+        if(lv_obj_get_y(node)==105&&lv_obj_get_width(node)==36&&lv_obj_get_height(node)==36) {
+            int step=(lv_obj_get_x(node)-40)/91;assert(step>=0&&step<GBS_FLOW_COUNT);
+            assert(lv_obj_get_style_border_width(node,0)==0);
+            assert(lv_obj_get_style_bg_color(node,0).full==lv_color_hex(states[step]=='d'?0xa6edc4:0x101410).full);
+            ++found;
+        }
+        if(lv_obj_check_type(node,&lv_img_class)&&lv_obj_get_y(node)==103&&lv_obj_get_width(node)==40&&lv_obj_get_height(node)==40) {
+            int step=(lv_obj_get_x(node)-38)/91;assert(step>=0&&step<GBS_FLOW_COUNT);
+            char state=states[step];
+            assert(lv_obj_has_flag(node,LV_OBJ_FLAG_HIDDEN)==(state=='d'));
+            uint32_t color=state=='d'?0xa6edc4:state=='a'||state=='u'||state=='t'?0xffc179:state=='f'?0xe99d8b:0xb9b7ba;
+            assert(lv_obj_get_style_img_recolor(node,0).full==lv_color_hex(color).full);++rings;
+        }
+    }
+    assert(found==GBS_FLOW_COUNT&&rings==GBS_FLOW_COUNT);
+}
 static void amoled_manual_after_receipt_test(const char *directory)
 {
     gbs_ui_init(submit,NULL); scene(6); pending=false;
-    gbs_ui_set_device_preferences(false,true);
+    gbs_ui_set_device_preferences(false,80);
     unsigned count=requests,reads=data_requests;
     click("40g");
     if(directory) save_screen(directory,"manual-after-receipt-pending");
     assert(pending&&requests==count+1&&requested==40);
-    assert(find_text(lv_scr_act(),"手动")&&find_text(lv_scr_act(),"设定中"));
-    assert(!find_text(lv_scr_act(),"已接收")&&!find_text(lv_scr_act(),"30.0")&&!find_text(lv_scr_act(),"37.0s"));
-    assert_amoled_preset(1); assert_amoled_outline(3);
+    assert(find_text(lv_scr_act(),"正在设定液重"));
+    assert(!find_text(lv_scr_act(),"本杯已完成")&&!find_text_containing(lv_scr_act(),"37.0s"));
+    assert_amoled_preset(4); assert_amoled_outline(3);
     finish_requested();
-    assert(find_text(lv_scr_act(),"已设定")&&!find_text(lv_scr_act(),"已接收"));
+    assert(find_text(lv_scr_act(),"液重已设定")&&!find_text(lv_scr_act(),"本杯已完成"));
     assert_amoled_preset(3); assert_amoled_outline(-1);
     assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_set_bridge(&bridge); gbs_ui_set_machine(&machine); gbs_ui_tick(11000);
@@ -685,38 +745,41 @@ static void amoled_manual_after_receipt_test(const char *directory)
     if(directory) save_screen(directory,"manual-after-receipt-detail");
     gbs_ui_show(GBS_PAGE_HOME);
     bridge.job=true; bridge.job_deadline_ms=190000; bridge.recipe_enabled=true; bridge.recipe_grams=30;
-    strcpy(bridge.job_id,"next-cup"); strcpy(bridge.recipe_phase,"applying"); gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"配方")&&find_text(lv_scr_act(),"同步中")&&!find_text(lv_scr_act(),"手动"));
-    assert_amoled_preset(3); assert_amoled_outline(1);
+    strcpy(bridge.job_id,"next-cup"); strcpy(bridge.flow_job_id,bridge.job_id); strcpy(bridge.recipe_job_id,bridge.job_id);
+    bridge.recipe_current=bridge.recipe_log_valid=true;
+    strcpy(bridge.recipe_phase,"applying"); gbs_ui_set_bridge(&bridge);
+    assert(find_text(lv_scr_act(),"同步咖啡机")&&!find_text(lv_scr_act(),"液重已设定"));
+    assert_amoled_preset(4); assert_amoled_outline(1); assert_amoled_nodes("ddaww");
     if(directory) save_screen(directory,"next-cup-recipe-pending");
     strcpy(bridge.recipe_phase,"applied"); machine.weight=machine.dose1=30; machine.dose_mode=1;
     gbs_ui_set_machine(&machine); gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"已同步")); assert_amoled_preset(1); assert_amoled_outline(-1);
+    assert(find_text(lv_scr_act(),"等待本杯结果")); assert_amoled_preset(1); assert_amoled_outline(-1); assert_amoled_nodes("dddaw");
     if(directory) save_screen(directory,"next-cup-recipe-confirmed");
     click("40g"); finish_requested();
     gbs_ui_show(GBS_PAGE_LINK);
     assert(find_text(lv_scr_act(),"设定已完成，本次自动跟随已取消"));
     gbs_ui_show(GBS_PAGE_HOME);
     bridge.job=false; ++bridge.successes; bridge.result_grams=39.9; bridge.result_seconds=26.1;
+    bridge.flow_result_valid=true; bridge.flow_result_grams=39.9; bridge.flow_result_seconds=26.1;
     gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"已接收")&&find_text(lv_scr_act(),"39.9")&&!find_text(lv_scr_act(),"手动"));
+    assert(find_text(lv_scr_act(),"本杯已完成")&&find_text_containing(lv_scr_act(),"39.9")&&!find_text(lv_scr_act(),"液重已设定"));
     assert_amoled_preset(3); assert_amoled_outline(-1);
-    click("35g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_FAILED); pending=false;
-    assert(find_text(lv_scr_act(),"失败")&&!find_text(lv_scr_act(),"已接收"));
-    assert_amoled_preset(3); assert_amoled_outline(2);
+    click("36g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_FAILED); pending=false;
+    assert(find_text(lv_scr_act(),"液重设定失败")&&!find_text(lv_scr_act(),"本杯已完成"));
+    assert_amoled_preset(4); assert_amoled_outline(-1);
     click("20g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN); pending=false;
-    assert(find_text(lv_scr_act(),"未确认")&&!find_text(lv_scr_act(),"已设定"));
-    assert_amoled_preset(3); assert_amoled_outline(0);
+    assert(find_text(lv_scr_act(),"设定结果未确认")&&!find_text(lv_scr_act(),"液重已设定"));
+    assert_amoled_preset(4); assert_amoled_outline(-1);
     assert(requests==count+4&&data_requests==reads);
     puts("AMOLED consecutive cups: completed receipt -> manual preset -> next recipe, exact outline state, failures, new receipt and no extra requests passed");
 }
 static void amoled_cup_tone_test(void)
 {
-    gbs_ui_init(submit,NULL); scene(1); gbs_ui_set_device_preferences(false,true);
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_set_device_preferences(false,80);
     unsigned controls=requests,reads=data_requests;
     bridge.job=true;bridge.job_deadline_ms=190000;strcpy(bridge.job_id,"cup-one");
     bridge.recipe_enabled=bridge.recipe_current=true;strcpy(bridge.recipe_phase,"waiting");
-    gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NOTICE&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     bridge.recipe_current=false;strcpy(bridge.recipe_phase,"applied");gbs_ui_set_bridge(&bridge);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE); // An old recipe is not this cup's success.
@@ -726,37 +789,120 @@ static void amoled_cup_tone_test(void)
     assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_set_bridge(&bridge);assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     bridge.pending=true;bridge.unconfirmed_grams=29.7;bridge.unconfirmed_seconds=25.656;gbs_ui_set_bridge(&bridge);
-    assert(gbs_ui_take_tone()==GBS_TONE_NOTICE&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_set_bridge(&bridge);assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     bridge.job=bridge.pending=false;bridge.successes=1;strcpy(bridge.outcome,"success");gbs_ui_set_bridge(&bridge);
     assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_set_bridge(&bridge);assert(gbs_ui_take_tone()==GBS_TONE_NONE);
-    // Coalesced snapshots must not overwrite adjacent node notifications.
+    // Even coalesced snapshots only notify recipe confirmation and final acknowledgement.
     bridge.job=true;bridge.job_deadline_ms+=100000;strcpy(bridge.job_id,"cup-two");gbs_ui_set_bridge(&bridge);
     bridge.job=false;bridge.successes=2;gbs_ui_set_bridge(&bridge);
-    assert(gbs_ui_take_tone()==GBS_TONE_NOTICE&&gbs_ui_take_tone()==GBS_TONE_SUCCESS);
-    assert(gbs_ui_take_tone()==GBS_TONE_NOTICE&&gbs_ui_take_tone()==GBS_TONE_SUCCESS);
+    assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_SUCCESS);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE);
+    // A fast acknowledgement skips result receipt without synthesizing another success cue.
+    bridge.job=true;strcpy(bridge.job_id,"cup-three");strcpy(bridge.recipe_phase,"waiting");gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE);
+    strcpy(bridge.recipe_phase,"applied");gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    bridge.job=false;bridge.successes=3;gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    gbs_ui_set_bridge(&bridge);gbs_ui_show(GBS_PAGE_LINK);gbs_ui_show(GBS_PAGE_HOME);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     const char *phases[]={"failed","unconfirmed"};
     for(unsigned i=0;i<2;++i) {
-        gbs_ui_init(submit,NULL);scene(1);gbs_ui_set_device_preferences(false,true);
+        gbs_ui_init(submit,NULL);scene(1);gbs_ui_set_device_preferences(false,80);
         bridge.job=true;strcpy(bridge.job_id,"cup-fault");bridge.recipe_enabled=bridge.recipe_current=true;
         strcpy(bridge.recipe_phase,phases[i]);gbs_ui_set_bridge(&bridge);
-        assert(gbs_ui_take_tone()==GBS_TONE_NOTICE);
-        assert(gbs_ui_take_tone()==(i?GBS_TONE_NOTICE:GBS_TONE_FAILURE));
+        assert(gbs_ui_take_tone()==GBS_TONE_FAILURE&&gbs_ui_take_tone()==GBS_TONE_NONE);
         gbs_ui_set_bridge(&bridge);assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     }
-    // Booting into a cached live job is quiet; its next new measurement can still notify.
-    gbs_ui_init(submit,NULL);gbs_ui_set_device_preferences(false,true);
+    // Booting into a cached live job and receiving a measurement are quiet; final receipt still notifies.
+    gbs_ui_init(submit,NULL);gbs_ui_set_device_preferences(false,80);
     strcpy(bridge.recipe_phase,"applied");gbs_ui_set_bridge(&bridge);assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     bridge.pending=true;bridge.unconfirmed_grams=20;bridge.unconfirmed_seconds=25;gbs_ui_set_bridge(&bridge);
-    assert(gbs_ui_take_tone()==GBS_TONE_NOTICE);
-    gbs_ui_set_device_preferences(false,false);strcpy(bridge.job_id,"muted-cup");gbs_ui_set_bridge(&bridge);
-    assert(gbs_ui_take_tone()==GBS_TONE_NONE);gbs_ui_set_device_preferences(false,true);gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE);
+    bridge.job=bridge.pending=false;++bridge.successes;strcpy(bridge.outcome,"success");gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    bridge.job=true;
+    gbs_ui_set_device_preferences(false,0);strcpy(bridge.job_id,"muted-cup");gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE);gbs_ui_set_device_preferences(false,80);gbs_ui_set_bridge(&bridge);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE); // Enabling sound never replays muted stages.
     bridge.job=false;bridge.pending=false;gbs_ui_set_bridge(&bridge);
     bridge.job=true;gbs_ui_set_bridge(&bridge);assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     assert(controls==requests&&reads==data_requests);
+    puts("AMOLED cup cues: two key successes, quiet intermediate stages, fast acknowledgements, failures, deduplication and mute passed");
+}
+
+static lv_obj_t *amoled_slider(void)
+{
+    for(unsigned i=0;i<lv_obj_get_child_cnt(lv_scr_act());++i) {
+        lv_obj_t *child=lv_obj_get_child(lv_scr_act(),i);
+        if(lv_obj_check_type(child,&lv_slider_class)) return child;
+    }
+    assert(false);return NULL;
+}
+static void edit_volume(unsigned volume)
+{
+    lv_obj_t *slider=amoled_slider();
+    assert(lv_slider_get_min_value(slider)==0&&lv_slider_get_max_value(slider)==100);
+    lv_slider_set_value(slider,volume,LV_ANIM_OFF);lv_event_send(slider,LV_EVENT_VALUE_CHANGED,NULL);
+}
+static void amoled_sound_volume_test(const char *directory)
+{
+    gbs_ui_init(submit,NULL);scene(1);pending=false;reject_submit=false;
+    unsigned controls=requests,reads=data_requests,saves=sound_requests;
+    assert(gbs_ui_sound_volume()==0&&!gbs_ui_sound_enabled());
+    gbs_ui_show(GBS_PAGE_DISPLAY);click("音量");assert(gbs_ui_page()==GBS_PAGE_SOUND);
+    assert(find_text(lv_scr_act(),"0%")&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    edit_volume(80);
+    assert(gbs_ui_sound_volume()==0&&sound_requests==saves&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    tap(48,48);click("继续编辑");assert(gbs_ui_page()==GBS_PAGE_SOUND&&lv_slider_get_value(amoled_slider())==80);
+    click("保存");
+    assert(gbs_ui_sound_volume()==80&&sound_requests==saves+1&&requested_volume==80);
+    assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    if(directory)save_screen(directory,"amoled-sound-80");
+    edit_volume(100);assert(gbs_ui_sound_volume()==80&&sound_requests==saves+1&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    assert(!find_text(lv_scr_act(),"已保存")&&find_text(lv_scr_act(),"0% 静音 · 保存后提示"));
+    click("保存");assert(gbs_ui_sound_volume()==100&&requested_volume==100);
+    assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    if(directory)save_screen(directory,"amoled-sound-100");
+    edit_volume(0);reject_submit=true;click("保存");reject_submit=false;
+    assert(gbs_ui_sound_volume()==100&&find_text(lv_scr_act(),"保存失败，请重试"));
+    assert(gbs_ui_take_tone()==GBS_TONE_FAILURE&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    click("保存");assert(gbs_ui_sound_volume()==0&&!gbs_ui_sound_enabled()&&requested_volume==0);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE&&find_text(lv_scr_act(),"已静音"));
+    if(directory)save_screen(directory,"amoled-sound-muted");
+    tap(48,48);assert(gbs_ui_page()==GBS_PAGE_DISPLAY&&find_text(lv_scr_act(),"0%"));
+    click("音量");edit_volume(80);saves=sound_requests;tap(48,48);click("放弃修改");
+    assert(gbs_ui_page()==GBS_PAGE_DISPLAY&&gbs_ui_sound_volume()==0&&sound_requests==saves);
+    gbs_ui_init(submit,NULL);gbs_ui_set_device_preferences(false,80);
+    assert(gbs_ui_sound_volume()==80&&gbs_ui_sound_enabled()&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    gbs_ui_set_device_preferences(false,101);assert(gbs_ui_sound_volume()==0);
+    assert(requests==controls&&data_requests==reads&&!pending);
+    puts("AMOLED sound volume: 0/80/100, draft isolation, save failure, discard, quiet restore and no Cloud controls passed");
+}
+
+static void assert_boiler_group_centered(const char *coffee,const char *steam)
+{
+    unsigned units=0;
+    for(unsigned i=0;i<lv_obj_get_child_cnt(lv_scr_act());++i) {
+        lv_obj_t *unit=lv_obj_get_child(lv_scr_act(),i);
+        if(!lv_obj_check_type(unit,&lv_label_class)||strcmp(lv_label_get_text(unit),"分钟"))continue;
+        bool right=lv_obj_get_x(unit)>240;lv_obj_t *clock=NULL;
+        for(unsigned j=0;j<lv_obj_get_child_cnt(lv_scr_act());++j) {
+            lv_obj_t *o=lv_obj_get_child(lv_scr_act(),j);
+            if(lv_obj_check_type(o,&lv_img_class)&&lv_obj_get_y(o)==438&&lv_obj_get_width(o)==21&&
+               (lv_obj_get_x(o)>240)==right)clock=o;
+        }
+        assert(clock);
+        const lv_font_t *font=lv_obj_get_style_text_font(unit,0);
+        int edge=lv_obj_get_x(unit)+lv_txt_get_width("分钟",strlen("分钟"),font,0,LV_TEXT_FLAG_NONE);
+        assert(abs(lv_obj_get_x(clock)+edge-2*(right?356:129))<=1);
+        lv_obj_t *number=find_text(lv_scr_act(),right?steam:coffee);assert(number);
+        assert(lv_obj_get_x(number)-lv_obj_get_x(clock)-lv_obj_get_width(clock)==9);
+        assert(lv_obj_get_y(unit)+font->line_height-font->base_line==462);++units;
+    }
+    assert(units==2);
 }
 
 static void amoled_boiler_warmup_test(const char *directory)
@@ -767,24 +913,36 @@ static void amoled_boiler_warmup_test(const char *directory)
     machine.machine_mode=1; machine.boiler_observed_unix=now;
     machine.coffee_ready_unix=now+270; machine.steam_ready_unix=now+450;
     gbs_ui_set_machine(&machine); gbs_ui_show(GBS_PAGE_HOME); paint();
-    lv_obj_t *coffee=find_text(lv_scr_act(),"~5 min"),*steam=find_text(lv_scr_act(),"~8 min");
+    lv_obj_t *coffee=find_text(lv_scr_act(),"5"),*steam=find_text(lv_scr_act(),"8");
     assert(coffee&&steam&&lv_obj_get_style_text_color(coffee,0).full==lv_color_hex(0xe3bb83).full);
     const lv_font_t *countdown_font=lv_obj_get_style_text_font(coffee,0);
+    assert(countdown_font->line_height>=45&&find_text(lv_scr_act(),"咖啡预热")&&find_text(lv_scr_act(),"蒸汽预热"));
+    assert_boiler_group_centered("5","8");
     lv_area_t area; lv_obj_get_coords(steam,&area); assert(area.x2<WIDTH&&area.y2<HEIGHT);
     assert_idle_refresh(); if(directory) save_screen(directory,"boiler-warming-both");
+    machine.coffee_ready_unix=now+720;gbs_ui_set_machine(&machine);paint();
+    assert(find_text(lv_scr_act(),"12"));assert_boiler_group_centered("12","8");
+    if(directory)save_screen(directory,"boiler-warming-two-digits");
+    machine.coffee_ready_unix=now+1440*60;gbs_ui_set_machine(&machine);paint();
+    lv_obj_t *long_estimate=find_text(lv_scr_act(),"1440");assert(long_estimate);
+    assert(lv_obj_get_height(long_estimate)<=countdown_font->line_height);
+    assert_boiler_group_centered("1440","8");
+    visible_labels(lv_scr_act());
+    if(directory)save_screen(directory,"boiler-warming-four-digits");
     machine.coffee_ready_unix=now-1; gbs_ui_set_machine(&machine); paint();
-    assert(find_text(lv_scr_act(),"93°")&&find_text(lv_scr_act(),"~8 min")&&!find_text(lv_scr_act(),"~5 min"));
-    assert(lv_obj_get_style_text_font(find_text(lv_scr_act(),"93°"),0)!=countdown_font);
+    assert(find_text(lv_scr_act(),"/ 93°")&&find_text(lv_scr_act(),"8")&&!find_text(lv_scr_act(),"咖啡预热"));
+    assert(lv_obj_get_style_text_font(find_text(lv_scr_act(),"/ 93°"),0)!=countdown_font);
+    assert(lv_obj_get_x(find_text(lv_scr_act(),"/ 93°"))==159);
     if(directory) save_screen(directory,"boiler-steam-still-warming");
     machine.steam_enabled_known=true;machine.steam_enabled=false;gbs_ui_set_machine(&machine);paint();
-    assert(!find_text(lv_scr_act(),"~8 min"));
+    assert(!find_text(lv_scr_act(),"蒸汽预热"));
     machine.steam_enabled=true;machine.boiler_observed_unix=now-300;gbs_ui_set_machine(&machine);paint();
-    assert(!find_text(lv_scr_act(),"~8 min")); assert_idle_refresh();
+    assert(!find_text(lv_scr_act(),"蒸汽预热")); assert_idle_refresh();
     if(directory) save_screen(directory,"boiler-estimate-expired");
     machine.boiler_observed_unix=now;machine.stale=true;gbs_ui_set_machine(&machine);paint();
-    assert(!find_text(lv_scr_act(),"~8 min"));
+    assert(!find_text(lv_scr_act(),"蒸汽预热"));
     machine.stale=false;machine.steam_ready_unix=0;gbs_ui_set_machine(&machine);paint();
-    assert(!find_text(lv_scr_act(),"~8 min")&&requests==controls&&data_requests==reads);
+    assert(!find_text(lv_scr_act(),"蒸汽预热")&&requests==controls&&data_requests==reads);
 }
 
 static void amoled_scale_history_test(const char *directory)
@@ -796,29 +954,33 @@ static void amoled_scale_history_test(const char *directory)
     for(unsigned i=0;i<3;++i) {
         char text[16],name[48];snprintf(text,sizeof(text),"%u%%",percentages[i]);
         machine.scale_battery_percent=percentages[i];gbs_ui_set_machine(&machine);
-        gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage(text,0x9fd2aa);
+        gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage(text,percentages[i]<=20?0xffc179:0xa6edc4);
         assert(!find_text(lv_scr_act(),"28%"));
         if(directory) {snprintf(name,sizeof(name),"scale-current-%u-home",percentages[i]);save_screen(directory,name);}
-        gbs_ui_show(GBS_PAGE_SCALE);assert_scale_percentage(text,0x9fd2aa);
+        gbs_ui_show(GBS_PAGE_SCALE);assert_scale_percentage(text,percentages[i]<=20?0xffc179:0xa6edc4);
         assert(!find_text(lv_scr_act(),"上次电量"));
     }
+    gbs_ui_show(GBS_PAGE_HOME);
+    gbs_ui_tick(machine.scale_observed_ms+180000);assert_scale_percentage("100%",0xa6edc4);
+    gbs_ui_tick(machine.scale_observed_ms+300000);assert_scale_percentage("28%",0x858c86);
+    gbs_ui_tick(10000);
     machine.scale_connected=false;machine.scale_battery_known=false;
     for(unsigned i=0;i<3;++i) {
         char text[16],name[48];snprintf(text,sizeof(text),"%u%%",percentages[i]);
         machine.scale_battery_last_percent=percentages[i];gbs_ui_set_machine(&machine);
-        gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage(text,0xb6beb3);
+        gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage(text,0x858c86);
         if(directory) {snprintf(name,sizeof(name),"scale-history-%u-home",percentages[i]);save_screen(directory,name);}
-        gbs_ui_show(GBS_PAGE_SCALE);assert_scale_percentage(text,0xb6beb3);
+        gbs_ui_show(GBS_PAGE_SCALE);assert_scale_percentage(text,0x858c86);
         assert(find_text(lv_scr_act(),"未连接")&&find_text(lv_scr_act(),"上次电量")&&
                find_text(lv_scr_act(),"上次读取 2026-10-22 10:47 UTC"));
         if(directory) {snprintf(name,sizeof(name),"scale-history-%u-detail",percentages[i]);save_screen(directory,name);}
     }
     machine.scale_battery_last_percent=28;machine.scale_connected=true;
-    gbs_ui_set_machine(&machine);assert_scale_percentage("28%",0xb6beb3);
+    gbs_ui_set_machine(&machine);assert_scale_percentage("28%",0x858c86);
     assert(find_text(lv_scr_act(),"已连接")&&find_text(lv_scr_act(),"上次电量"));
     if(directory)save_screen(directory,"scale-online-history-detail");
     machine.scale_battery_known=true;machine.scale_battery_percent=78;machine.scale_stale=true;
-    gbs_ui_set_machine(&machine);gbs_ui_tick(80000);assert_scale_percentage("28%",0xb6beb3);
+    gbs_ui_set_machine(&machine);gbs_ui_tick(80000);assert_scale_percentage("28%",0x858c86);
     assert(find_text(lv_scr_act(),"状态已过期")&&!find_text(lv_scr_act(),"78%"));
     if(directory)save_screen(directory,"scale-stale-history-detail");
     gbs_ui_init(submit,NULL);scene(1);
@@ -826,13 +988,22 @@ static void amoled_scale_history_test(const char *directory)
     machine.scale_stale=true;machine.scale_observed_ms=0;
     machine.scale_battery_last_known=true;machine.scale_battery_last_percent=28;
     machine.scale_battery_last_observed_unix=1792666020;
-    gbs_ui_set_machine(&machine);gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage("28%",0xb6beb3);
+    gbs_ui_set_machine(&machine);gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage("28%",0x858c86);
     assert_idle_refresh();if(directory)save_screen(directory,"scale-coldboot-history-home");
-    unsigned before=requests;click("35g");assert(pending&&requests==before+1&&requested==35);
+    unsigned before=requests;click("36g");assert(pending&&requests==before+1&&requested==36);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN);pending=false;
-    gbs_ui_show(GBS_PAGE_SCALE);assert_scale_percentage("28%",0xb6beb3);
+    gbs_ui_show(GBS_PAGE_SCALE);assert_scale_percentage("28%",0x858c86);
     assert(find_text(lv_scr_act(),"状态未知")&&find_text(lv_scr_act(),"上次电量"));
     assert_idle_refresh();if(directory)save_screen(directory,"scale-coldboot-history-detail");
+    machine.scale_battery_last_percent=41;machine.scale_battery_last_observed_unix=time(NULL)-180;
+    gbs_ui_set_machine(&machine);gbs_ui_show(GBS_PAGE_HOME);assert_scale_percentage("41%",0xa6edc4);
+    if(directory)save_screen(directory,"scale-recent-battery-disconnected");
+    machine.scale_battery_last_percent=15;gbs_ui_set_machine(&machine);assert_scale_percentage("15%",0xffc179);
+    machine.scale_battery_last_percent=41;machine.scale_battery_last_observed_unix=time(NULL)-3600;
+    gbs_ui_set_machine(&machine);assert_scale_percentage("41%",0x858c86);
+    machine.scale_battery_last_observed_unix=time(NULL)+60;gbs_ui_set_machine(&machine);assert_scale_percentage("41%",0x858c86);
+    machine.scale_battery_last_percent=28;gbs_ui_set_machine(&machine);gbs_ui_show(GBS_PAGE_SCALE);
+
     machine.scale_battery_last_observed_unix=0;gbs_ui_set_machine(&machine);paint();
     assert(find_text(lv_scr_act(),"上次读取时间未知")&&!find_text(lv_scr_act(),"上次读取 2026-10-22 10:47 UTC"));
     if(directory)save_screen(directory,"scale-history-unknown-time-detail");
@@ -843,8 +1014,261 @@ static void amoled_scale_history_test(const char *directory)
     gbs_ui_set_machine(&machine);paint();assert(!find_text(lv_scr_act(),"101%")&&find_text(lv_scr_act(),"—"));
     puts("AMOLED scale history: current priority, gray retained battery, 0/1/100%, cold start, unknown time and unchanged refresh passed");
 }
+static void assert_amoled_image_color(int x,int y,uint32_t color)
+{
+    lv_obj_update_layout(lv_scr_act());
+    unsigned found=0;
+    for(unsigned i=0;i<lv_obj_get_child_cnt(lv_scr_act());++i) {
+        lv_obj_t *image=lv_obj_get_child(lv_scr_act(),i);
+        if(!lv_obj_check_type(image,&lv_img_class)||lv_obj_get_x(image)!=x||lv_obj_get_y(image)!=y)continue;
+        assert(lv_obj_get_style_img_recolor(image,0).full==lv_color_hex(color).full);++found;
+    }
+    assert(found==1);
+}
+static void assert_amoled_ble_color(uint32_t color)
+{
+    assert_amoled_image_color(108,23,color);
+    assert_amoled_image_color(147,22,color);
+}
+static void amoled_top_status_clock_test(void)
+{
+    const uint32_t green=0xa6edc4,gray=0x858c86;
+    gbs_ui_init(submit,NULL);scene(1);paint();
+    uint32_t header[WIDTH*78];memcpy(header,pixels,sizeof(header));
+    // Reproduce a bridge poll arriving before the independent 250 ms UI tick.
+    bridge.observed_ms=10200;gbs_ui_set_bridge(&bridge);paint();
+    assert_amoled_image_color(36,23,gray);assert_amoled_image_color(180,23,gray);
+    assert(memcmp(header,pixels,sizeof(header))!=0);
+    puts("AMOLED clock regression: old snapshot-before-tick order reproduces a gray connected header");
+    // Every updated frame needs a current clock after snapshots, including bridge-only polls.
+    for(unsigned i=0;i<4;++i) {
+        if(i%2==0)bridge.observed_ms=10200+i*500;
+        gbs_ui_set_bridge(&bridge);gbs_ui_tick(10250+i*500);paint();
+        assert_amoled_image_color(36,23,green);assert_amoled_image_color(180,23,green);
+        assert(memcmp(header,pixels,sizeof(header))==0);
+    }
+    gbs_ui_tick(bridge.observed_ms+14999);paint();
+    assert_amoled_image_color(36,23,green);assert_amoled_image_color(180,23,green);
+    gbs_ui_tick(bridge.observed_ms+15000);paint();
+    assert_amoled_image_color(36,23,gray);assert_amoled_image_color(180,23,gray);
+    bridge.observed_ms+=15010;bridge.grinder=false;bridge.cloud=false;bridge.retry_at_ms=0;
+    gbs_ui_set_bridge(&bridge);gbs_ui_tick(bridge.observed_ms+1);paint();
+    assert_amoled_image_color(36,23,gray);assert_amoled_image_color(180,23,0xffc179);
+    bridge.wifi=false;gbs_ui_set_bridge(&bridge);gbs_ui_tick(bridge.observed_ms+2);paint();
+    assert_amoled_image_color(180,23,gray);
+    puts("AMOLED clock regression: fresh/cached snapshots stay pixel-stable; real disconnect and 15 s expiry remain visible");
+}
+static void amoled_top_status_test(void)
+{
+    unsigned controls=requests,reads=data_requests;
+    gbs_ui_init(submit,NULL);scene(1);
+    assert_amoled_ble_color(0xa6edc4);
+    machine.ble.control_ready=false;gbs_ui_set_machine(&machine);
+    assert_amoled_ble_color(0xffc179);
+    machine.ble.connected=false;machine.ble.cached_fresh=true;strcpy(machine.ble.status,"disconnected");
+    gbs_ui_set_machine(&machine);assert_amoled_ble_color(0x858c86);
+    machine.ble.connected=machine.ble.control_ready=true;strcpy(machine.ble.status,"ready");
+    gbs_ui_set_machine(&machine);gbs_ui_tick(24999);assert_amoled_ble_color(0xa6edc4);
+    gbs_ui_tick(25000);assert_amoled_ble_color(0x858c86);
+    scene(1);bridge.pairing=true;gbs_ui_set_bridge(&bridge);
+    assert_amoled_image_color(36,23,0xf08f83);
+    assert_amoled_image_color(322,23,0xa6edc4);
+    scene(1);bridge.cloud=false;gbs_ui_set_bridge(&bridge);
+    assert_amoled_image_color(180,23,0xffc179);
+    bridge.wifi=false;gbs_ui_set_bridge(&bridge);
+    assert_amoled_image_color(180,23,0x858c86);
+    assert_amoled_image_color(396,23,0xc0c8bd);
+    assert(requests==controls&&data_requests==reads);
+    puts("AMOLED top status: BLE evidence, readiness, cached disconnect, 15 s expiry, pairing, cloud and independent battery colors passed");
+}
+static void amoled_early_cancel_test(void)
+{
+    unsigned controls=requests,reads=data_requests;
+    gbs_ui_init(submit,NULL);scene(2);
+    int64_t cancel_started=bridge.job_deadline_ms-10000;
+    bridge.pending=bridge.canceling=true;bridge.observed_ms=cancel_started;bridge.answer_deadline_ms=cancel_started+20000;
+    gbs_ui_set_bridge(&bridge);gbs_ui_tick(cancel_started);paint();
+    assert(find_text(lv_scr_act(),"正在结束任务 · 等待确认")&&find_text(lv_scr_act(),"取消剩余")&&find_text(lv_scr_act(),"00:20"));
+    assert(!find_text_containing(lv_scr_act(),"超时"));
+    // Crossing the old brew deadline during cancellation cannot change its cause.
+    gbs_ui_tick(cancel_started+11000);
+    assert(find_text(lv_scr_act(),"正在结束任务 · 等待确认")&&find_text(lv_scr_act(),"取消剩余")&&find_text(lv_scr_act(),"00:09"));
+    assert(!find_text_containing(lv_scr_act(),"超时"));
+    bridge.observed_ms=cancel_started+11000;gbs_ui_set_bridge(&bridge);
+    assert(find_text(lv_scr_act(),"取消剩余")&&find_text(lv_scr_act(),"00:09")&&!find_text_containing(lv_scr_act(),"超时"));
+    bridge.observed_ms=200000;gbs_ui_set_bridge(&bridge);gbs_ui_tick(200000);
+    assert(find_text(lv_scr_act(),"正在结束任务 · 等待确认")&&!find_text_containing(lv_scr_act(),"超时"));
+    bridge.job=bridge.pending=bridge.canceling=false;bridge.job_id[0]=0;strcpy(bridge.outcome,"canceled");
+    gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"本杯已结束 · 本杯未回传")&&find_text(lv_scr_act(),"已结束"));
+    assert(!find_text_containing(lv_scr_act(),"超时")&&requests==controls&&data_requests==reads);
+    puts("AMOLED early cancel: neutral 20 s closing state remains distinct from a brew timeout after its original deadline");
+}
+static void amoled_variable_weight_test(const char *directory)
+{
+    gbs_ui_init(submit,NULL); scene(1); pending=false;
+    saved_weight=40; weight_saves=0;
+    unsigned controls=requests,reads=data_requests;
+    assert(gbs_ui_variable_weight()==40);
+    assert(find_text(lv_scr_act(),"20")&&find_text(lv_scr_act(),"30")&&find_text(lv_scr_act(),"36")&&find_text(lv_scr_act(),"40"));
+    assert_amoled_preset(1); assert_amoled_outline(-1);
+    if(directory)save_screen(directory,"variable-default");
+    pointer_event(405,335,true);
+    for(unsigned i=0;i<8;++i){lv_tick_inc(100);lv_timer_handler();}
+    pointer_event(405,335,false);
+    assert(gbs_ui_page()==GBS_PAGE_VARIABLE_WEIGHT&&requests==controls&&!pending);
+    machine.weight=machine.dose1=35;++machine.revision;gbs_ui_set_machine(&machine);
+    assert(find_text(lv_scr_act(),"40")&&!find_text(lv_scr_act(),"35"));
+    tap(350,340); tap(350,340);
+    assert(find_text(lv_scr_act(),"42")&&find_text(lv_scr_act(),"应用并记住"));
+    if(directory)save_screen(directory,"variable-edit-42");
+    tap(240,432);
+    assert(pending&&requested==42&&requests==controls+1&&weight_saves==0);
+    gbs_ui_show(GBS_PAGE_HOME);paint();
+    assert(find_text(lv_scr_act(),"42")&&gbs_ui_variable_weight()==40);
+    assert_amoled_preset(4);assert_amoled_outline(3);
+    tap(405,335);assert(requests==controls+1);
+    gbs_ui_control_result(command_id+1,GBS_UI_CONTROL_CONFIRMED);assert(weight_saves==0);
+    finish_requested();
+    assert(saved_weight==42&&gbs_ui_variable_weight()==42&&weight_saves==1);
+    assert_amoled_preset(3);assert_amoled_outline(-1);
+    if(directory)save_screen(directory,"variable-saved-42");
+    gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);assert(weight_saves==1);
+    const char *fixed[]={"20g","30g","36g"};
+    for(unsigned i=0;i<3;++i){click(fixed[i]);finish_requested();assert_amoled_preset(i);assert(saved_weight==42&&weight_saves==1);}
+    gbs_ui_show(GBS_PAGE_VARIABLE_WEIGHT);
+    assert(find_text(lv_scr_act(),"42")&&!find_text(lv_scr_act(),"已设定"));
+    tap(350,340);tap(40,110);
+    assert(find_text(lv_scr_act(),"放弃修改"));click("放弃修改");
+    assert(gbs_ui_variable_weight()==42&&weight_saves==1);
+    const gbs_ui_control_t failures[]={GBS_UI_CONTROL_FAILED,GBS_UI_CONTROL_PARTIAL,GBS_UI_CONTROL_UNKNOWN};
+    for(unsigned i=0;i<3;++i) {
+        gbs_ui_show(GBS_PAGE_VARIABLE_WEIGHT);tap(350,340);tap(240,432);
+        assert(pending&&requested==43);
+        gbs_ui_control_result(command_id,failures[i]);pending=false;
+        gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
+        gbs_ui_show(GBS_PAGE_HOME);
+        assert(saved_weight==42&&gbs_ui_variable_weight()==42&&weight_saves==1);
+        assert_amoled_preset(4);assert_amoled_outline(-1);
+    }
+    gbs_ui_show(GBS_PAGE_VARIABLE_WEIGHT);tap(350,340);tap(240,432);
+    reject_weight_save=true;finish_requested();reject_weight_save=false;
+    assert(saved_weight==42&&gbs_ui_variable_weight()==42&&weight_saves==1);
+    assert(find_text(lv_scr_act(),"保存失败，请重试"));
+    controls=requests;
+    gbs_ui_init(submit,NULL);gbs_ui_set_variable_weight(saved_weight);scene(1);
+    assert(gbs_ui_variable_weight()==42&&find_text(lv_scr_act(),"42"));
+    assert(requests==controls&&weight_saves==1&&data_requests==reads);
+    assert_amoled_preset(1);assert_amoled_outline(-1);
+    if(directory)save_screen(directory,"variable-restored-cloud-selection");
+    click("42g");finish_requested();click("42g");finish_requested();
+    assert(requests==controls+2&&weight_saves==1);
+    bridge.job=true;bridge.recipe_enabled=bridge.recipe_current=bridge.recipe_log_valid=true;
+    bridge.recipe_grams=48;bridge.job_deadline_ms=190000;
+    strcpy(bridge.job_id,"variable-cup");strcpy(bridge.flow_job_id,bridge.job_id);strcpy(bridge.recipe_job_id,bridge.job_id);
+    strcpy(bridge.recipe_phase,"applying");gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_variable_weight()==42&&weight_saves==1&&find_text(lv_scr_act(),"48"));
+    assert_amoled_preset(4);assert_amoled_outline(3);
+    controls=requests;tap(405,335);assert(requests==controls);
+    strcpy(bridge.recipe_phase,"failed");gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_variable_weight()==42&&find_text(lv_scr_act(),"42"));
+    assert_amoled_preset(4);assert_amoled_outline(-1);
+    strcpy(bridge.recipe_phase,"applied");strcpy(bridge.recipe_job_id,"old-cup");gbs_ui_set_bridge(&bridge);
+    assert(weight_saves==1);
+    strcpy(bridge.recipe_job_id,bridge.job_id);gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_variable_weight()==48&&saved_weight==48&&weight_saves==2);
+    assert_amoled_preset(3);assert_amoled_outline(-1);
+    if(directory)save_screen(directory,"variable-recipe-saved-48");
+    gbs_ui_show(GBS_PAGE_VARIABLE_WEIGHT);tap(350,340);tap(240,432);finish_requested();
+    assert(gbs_ui_variable_weight()==49&&weight_saves==3);
+    for(unsigned i=0;i<3;++i){gbs_ui_set_bridge(&bridge);gbs_ui_set_machine(&machine);}
+    assert(gbs_ui_variable_weight()==49&&weight_saves==3);
+    bridge.job=false;bridge.result_grams=47.8;bridge.result_seconds=28;++bridge.successes;
+    gbs_ui_set_bridge(&bridge);assert(gbs_ui_variable_weight()==49&&weight_saves==3);
+    bridge.job=true;++bridge.job_deadline_ms;strcpy(bridge.job_id,"fixed-cup");strcpy(bridge.recipe_job_id,bridge.job_id);
+    bridge.recipe_grams=36;gbs_ui_set_bridge(&bridge);
+    gbs_ui_show(GBS_PAGE_HOME);assert_amoled_preset(2);
+    assert(gbs_ui_variable_weight()==49&&weight_saves==3&&data_requests==reads);
+    controls=requests;
+    gbs_ui_init(submit,NULL);gbs_ui_set_variable_weight(saved_weight);scene(1);
+    assert(gbs_ui_variable_weight()==49&&requests==controls&&weight_saves==3);
+    assert_amoled_preset(1);assert_amoled_outline(-1);
+    puts("AMOLED variable preset: long press, fresh editor snapshot, success-only save, fixed slots, cancel, failure/unknown/partial, NVS rejection, restart, auto recipe, stale job and manual override PASS");
+}
+
+static void amoled_current_weight_test(const char *directory)
+{
+    unsigned controls=requests,reads=data_requests,saves=weight_saves;
+    gbs_ui_init(submit,NULL);gbs_ui_set_variable_weight(42);pending=false;
+    assert_amoled_preset(4);assert_amoled_outline(-1);
+    scene(1);
+    assert_amoled_preset(1);assert_amoled_outline(-1);
+    assert(gbs_ui_variable_weight()==42);
+    if(directory)save_screen(directory,"current-cloud-after-restart");
+    const unsigned grams[]={20,30,36,42};
+    for(unsigned i=0;i<4;++i) {
+        machine.weight=grams[i];machine.dose1=20;machine.dose2=grams[i];machine.dose_mode=2;
+        gbs_ui_set_machine(&machine);assert_amoled_preset(i);
+    }
+    machine.weight=machine.dose1=20;machine.dose_mode=1;
+    gbs_ui_set_machine(&machine);assert_amoled_preset(0);
+    machine.stale=true;machine.writable=0;bridge.grinder=false;gbs_ui_set_bridge(&bridge);
+    gbs_ui_set_machine(&machine);assert_amoled_preset(0);assert_amoled_outline(-1);
+    for(unsigned i=0;i<4;++i) {
+        lv_obj_t *face=lv_obj_get_parent(find_text(lv_scr_act(),i==0?"20":i==1?"30":i==2?"36":"42"));
+        assert(lv_obj_has_state(lv_obj_get_parent(face),LV_STATE_DISABLED));
+        tap(75+110*i,345);
+    }
+    assert(requests==controls);
+    if(directory)save_screen(directory,"current-offline-controls-disabled");
+    gbs_ui_init(submit,NULL);gbs_ui_set_variable_weight(42);
+    assert_amoled_preset(4);
+    gbs_ui_set_bridge(&bridge);gbs_ui_set_machine(&machine);assert_amoled_preset(0);
+    machine.weight=machine.dose2=42;machine.dose_mode=2;
+    gbs_ui_set_machine(&machine);assert_amoled_preset(3);
+    if(directory)save_screen(directory,"current-variable-cloud-selection");
+    machine.weight=NAN;machine.dose_mode=0;
+    gbs_ui_set_machine(&machine);assert_amoled_preset(4);
+    machine.weight=30;machine.available=false;
+    gbs_ui_set_machine(&machine);assert_amoled_preset(4);
+    machine.available=true;machine.stale=false;machine.dose_mode=2;machine.dose2=30;
+    bridge.grinder=true;gbs_ui_set_bridge(&bridge);gbs_ui_set_machine(&machine);
+    assert_amoled_preset(1);assert_amoled_outline(-1);scene(1);assert_idle_refresh();
+    assert(requests==controls&&data_requests==reads&&weight_saves==saves&&gbs_ui_variable_weight()==42);
+    assert(gbs_ui_take_tone()==GBS_TONE_NONE);
+    puts("AMOLED current weight: Cloud restores selection across restart/offline, dose changes update it, absent data stays neutral, disabled controls and no extra writes/reads PASS");
+}
+
+static void amoled_offline_weight_test(const char *directory)
+{
+    gbs_ui_init(submit,NULL);scene(1);pending=false;saved_weight=40;weight_saves=0;
+    unsigned controls=requests,reads=data_requests;
+    machine.stale=true;bridge.grinder=false;gbs_ui_set_bridge(&bridge);gbs_ui_set_machine(&machine);
+    click("36g");assert(requests==controls+1&&pending&&requested==36);
+    assert(find_text(lv_scr_act(),"正在设定液重"));assert_amoled_preset(4);assert_amoled_outline(2);
+    if(directory)save_screen(directory,"offline-weight-pending");
+    finish_requested();assert(machine.stale&&machine.weight==36);assert_amoled_preset(2);
+    assert(find_text(lv_scr_act(),"手动目标 36g · Cloud 已设定"));
+    assert(weight_saves==0&&gbs_ui_variable_weight()==40);
+    if(directory)save_screen(directory,"offline-weight-confirmed");
+    gbs_ui_show(GBS_PAGE_VARIABLE_WEIGHT);tap(350,340);tap(240,432);
+    assert(pending&&requested==41&&requests==controls+2);finish_requested();
+    assert(saved_weight==41&&weight_saves==1&&gbs_ui_variable_weight()==41);
+    gbs_ui_show(GBS_PAGE_HOME);assert_amoled_preset(3);
+    click("20g");assert(pending&&requests==controls+3);
+    gbs_ui_control_result(command_id,GBS_UI_CONTROL_FAILED);pending=false;
+    assert_amoled_preset(4);assert(weight_saves==1&&gbs_ui_variable_weight()==41);
+    assert(find_text(lv_scr_act(),"液重设定失败"));
+    machine.writable=0;gbs_ui_set_machine(&machine);click("36g");assert(requests==controls+3);
+    assert(data_requests==reads);
+    puts("AMOLED offline weight: pending/confirmed/failed, variable success-only memory and Cloud-unavailable guard PASS");
+}
+
 static void amoled_self_test(const char *directory)
 {
+    amoled_offline_weight_test(directory);
+    amoled_current_weight_test(directory);
+    amoled_variable_weight_test(directory);
     amoled_manual_after_receipt_test(directory);
     gbs_ui_init(submit,NULL); scene(1); pending=false;
     gbs_ui_set_scale_refresh(scale_read);
@@ -852,8 +1276,15 @@ static void amoled_self_test(const char *directory)
     paint(); visible_labels(lv_scr_act());
     assert(find_text(lv_scr_act(),"78%")&&find_text(lv_scr_act(),"84%")&&find_text(lv_scr_act(),"30"));
     if(directory) save_screen(directory,"amoled-home");
+    const gbs_ui_page_t top_pages[]={GBS_PAGE_LINK,GBS_PAGE_MACHINE,GBS_PAGE_CONNECTIONS,GBS_PAGE_SCALE,GBS_PAGE_DEVICE_BATTERY,GBS_PAGE_SETTINGS};
+    unsigned top_controls=requests;
+    for(unsigned i=0;i<6;++i) {
+        gbs_ui_show(GBS_PAGE_HOME);tap(60+72*i,48);assert(gbs_ui_page()==top_pages[i]);
+        tap(48,48);assert(gbs_ui_page()==GBS_PAGE_HOME);
+    }
+    assert(requests==top_controls);
     tap(420,48); assert(gbs_ui_page()==GBS_PAGE_SETTINGS);
-    gbs_ui_show(GBS_PAGE_HOME); tap(255,48); assert(gbs_ui_page()==GBS_PAGE_SCALE);
+    gbs_ui_show(GBS_PAGE_HOME); tap(276,48); assert(gbs_ui_page()==GBS_PAGE_SCALE);
     unsigned reads=data_requests; click("刷新"); assert(data_requests==reads+1);
     if(directory) save_screen(directory,"amoled-scale");
     machine.scale_connected=false; gbs_ui_set_machine(&machine); paint();
@@ -864,7 +1295,7 @@ static void amoled_self_test(const char *directory)
     machine.scale_observed_ms=10000;machine.scale_connected_known=true;
     machine.scale_stale=false; machine.scale_connected=true; machine.scale_battery_percent=1;
     gbs_ui_set_machine(&machine); assert(find_text(lv_scr_act(),"1%"));
-    gbs_ui_show(GBS_PAGE_HOME); tap(315,48); assert(gbs_ui_page()==GBS_PAGE_DEVICE_BATTERY);
+    gbs_ui_show(GBS_PAGE_HOME); tap(348,48); assert(gbs_ui_page()==GBS_PAGE_DEVICE_BATTERY);
     if(directory) save_screen(directory,"amoled-battery");
     gbs_device_status_t missing={.valid=true,.battery_present_known=true}; gbs_ui_set_device(&missing);
     assert(find_text(lv_scr_act(),"未检测到")&&!find_text(lv_scr_act(),"84%"));
@@ -875,63 +1306,67 @@ static void amoled_self_test(const char *directory)
     gbs_device_status_t rotated={.valid=true,.orientation=GBS_ORIENTATION_USB_TOP}; gbs_ui_set_device(&rotated);
     click("自动旋转"); assert(!gbs_ui_rotation_auto()&&find_text(lv_scr_act(),"USB-C 在上侧"));
     if(directory) save_screen(directory,"amoled-orientation");
-    gbs_ui_show(GBS_PAGE_SOUND); click("成功与失败提示音"); assert(gbs_ui_sound_enabled());
+    gbs_ui_show(GBS_PAGE_SOUND); edit_volume(80);click("保存"); assert(gbs_ui_sound_enabled());
     assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS&&gbs_ui_take_tone()==GBS_TONE_NONE);
     if(directory) save_screen(directory,"amoled-sound");
     gbs_ui_tick(13000);
     gbs_ui_show(GBS_PAGE_HOME); scene(1); unsigned count=requests;
     machine.scale_connected=false; machine.scale_stale=true; gbs_ui_set_machine(&machine);
-    click("35g"); click("40g"); assert(requests==count+1&&requested==35&&machine.weight==30);
-    assert(find_text(lv_scr_act(),"设定中")&&!find_text(lv_scr_act(),"已设定"));
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"设定中"),0).full==lv_color_hex(0xf0c178).full);
-    assert_amoled_preset(1);
+    click("36g"); click("40g"); assert(requests==count+1&&requested==36&&machine.weight==30);
+    assert(find_text(lv_scr_act(),"正在设定液重")&&!find_text(lv_scr_act(),"液重已设定"));
+    assert_amoled_outline(2);
+    assert_amoled_preset(4);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_control_result(command_id+1,GBS_UI_CONTROL_CONFIRMED);
-    assert(find_text(lv_scr_act(),"设定中")&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    assert(find_text(lv_scr_act(),"正在设定液重")&&gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED); pending=false;
     gbs_ui_set_machine(&machine); gbs_ui_tick(13001); // Refresh must not consume the queued tone.
-    assert(find_text(lv_scr_act(),"已设定")&&!find_text(lv_scr_act(),"待核对")&&gbs_ui_take_tone()==GBS_TONE_SUCCESS);
+    assert(find_text(lv_scr_act(),"液重已设定")&&!find_text(lv_scr_act(),"设定结果未确认")&&gbs_ui_take_tone()==GBS_TONE_SUCCESS);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     uint32_t completed_id=command_id;
     gbs_ui_control_result(completed_id,GBS_UI_CONTROL_CONFIRMED);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE);
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"已设定"),0).full==lv_color_hex(0x9fd2aa).full);
+    assert_amoled_outline(-1);
     assert_amoled_preset(2);
     if(directory) save_screen(directory,"amoled-manual-accepted");
     gbs_ui_show(GBS_PAGE_LINK); paint();
     assert(find_text(lv_scr_act(),"已设定")&&find_text(lv_scr_act(),"设定已完成"));
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"已设定"),0).full==lv_color_hex(0x9fd2aa).full);
+    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"已设定"),0).full==lv_color_hex(0xa6edc4).full);
     if(directory) save_screen(directory,"amoled-manual-detail");
     gbs_ui_show(GBS_PAGE_HOME);
     click("40g");
     gbs_ui_control_result(completed_id,GBS_UI_CONTROL_CONFIRMED);
-    assert(find_text(lv_scr_act(),"设定中")&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    assert(find_text(lv_scr_act(),"正在设定液重")&&gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_FAILED); pending=false;
-    assert(find_text(lv_scr_act(),"失败")&&!find_text(lv_scr_act(),"已设定")&&gbs_ui_take_tone()==GBS_TONE_FAILURE);
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"失败"),0).full==lv_color_hex(0xeaa28d).full);
-    assert_amoled_preset(1);
+    assert(find_text(lv_scr_act(),"液重设定失败")&&!find_text(lv_scr_act(),"液重已设定")&&gbs_ui_take_tone()==GBS_TONE_FAILURE);
+    assert_amoled_outline(-1);
+    assert_amoled_preset(4);
     if(directory) save_screen(directory,"amoled-manual-failed");
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_FAILED); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     click("20g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN); pending=false;
-    assert(find_text(lv_scr_act(),"未确认")&&!find_text(lv_scr_act(),"失败")&&!find_text(lv_scr_act(),"已设定")&&gbs_ui_take_tone()==GBS_TONE_NOTICE);
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"未确认"),0).full==lv_color_hex(0xeaa28d).full);
-    assert_amoled_preset(1);
+    assert(find_text(lv_scr_act(),"设定结果未确认")&&!find_text(lv_scr_act(),"液重设定失败")&&!find_text(lv_scr_act(),"液重已设定")&&gbs_ui_take_tone()==GBS_TONE_FAILURE);
+    assert_amoled_outline(-1);
+    assert_amoled_preset(4);
     if(directory) save_screen(directory,"amoled-manual-unknown");
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
-    assert(find_text(lv_scr_act(),"未确认")&&gbs_ui_take_tone()==GBS_TONE_NONE);
-    click("35g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_PARTIAL); pending=false;
-    assert(gbs_ui_take_tone()==GBS_TONE_NOTICE);
+    assert(find_text(lv_scr_act(),"设定结果未确认")&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    count=requests;
+    for(unsigned i=0;i<3;++i) {gbs_ui_set_machine(&machine);gbs_ui_set_bridge(&bridge);gbs_ui_tick(14000+i*1000);}
+    assert(requests==count&&find_text(lv_scr_act(),"设定结果未确认"));
+    click("36g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_PARTIAL); pending=false;
+    assert(gbs_ui_take_tone()==GBS_TONE_FAILURE);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE);
-    gbs_ui_set_device_preferences(false,false);
+    gbs_ui_set_device_preferences(false,0);
     click("20g"); gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED); pending=false;
-    assert(find_text(lv_scr_act(),"已设定")&&gbs_ui_take_tone()==GBS_TONE_NONE);
-    gbs_ui_init(submit,NULL); gbs_ui_set_device_preferences(false,true); scene(6);
+    assert(find_text(lv_scr_act(),"液重已设定")&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    gbs_ui_init(submit,NULL); gbs_ui_set_device_preferences(false,80); scene(6);
     assert(gbs_ui_take_tone()==GBS_TONE_NONE); // A startup snapshot is not a new event.
     ++bridge.successes; gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_SUCCESS);
     gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
-    scene(2); bridge.job=false; strcpy(bridge.outcome,"job_disappeared"); gbs_ui_set_bridge(&bridge);
-    assert(gbs_ui_take_tone()==GBS_TONE_NOTICE);
+    scene(2); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
+    bridge.job=false; strcpy(bridge.outcome,"job_disappeared"); gbs_ui_set_bridge(&bridge);
+    assert(gbs_ui_take_tone()==GBS_TONE_FAILURE);
     scene(2); bridge.job=false; strcpy(bridge.outcome,"delivery_refused"); gbs_ui_set_bridge(&bridge);
     assert(gbs_ui_take_tone()==GBS_TONE_FAILURE);
     gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
@@ -940,45 +1375,52 @@ static void amoled_self_test(const char *directory)
     gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     scene(2); machine.weight=20;gbs_ui_set_machine(&machine);
     ++bridge.job_deadline_ms; bridge.recipe_enabled=true; bridge.recipe_grams=30; strcpy(bridge.recipe_phase,"applied");
+    bridge.recipe_log_valid=true; strcpy(bridge.recipe_job_id,bridge.job_id);
     gbs_ui_set_bridge(&bridge); gbs_ui_show(GBS_PAGE_HOME); paint();
-    assert(find_text(lv_scr_act(),"已同步")&&!find_text(lv_scr_act(),"待核对")&&gbs_ui_take_tone()==GBS_TONE_NONE);
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"已同步"),0).full==lv_color_hex(0x9fd2aa).full);
+    assert(find_text(lv_scr_act(),"等待本杯结果")&&!find_text(lv_scr_act(),"设定结果未确认")&&gbs_ui_take_tone()==GBS_TONE_SUCCESS);
+    assert_amoled_outline(-1);
     assert_amoled_preset(1);
     if(directory) save_screen(directory,"amoled-recipe-accepted");
     gbs_ui_show(GBS_PAGE_LINK); paint();
     assert(find_text(lv_scr_act(),"已同步")&&find_text(lv_scr_act(),"配方设定已完成"));
-    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"已同步"),0).full==lv_color_hex(0x9fd2aa).full);
+    assert(lv_obj_get_style_text_color(find_text(lv_scr_act(),"已同步"),0).full==lv_color_hex(0xa6edc4).full);
     if(directory) save_screen(directory,"amoled-recipe-detail");
     gbs_ui_show(GBS_PAGE_HOME);
     strcpy(bridge.recipe_phase,"unconfirmed"); gbs_ui_set_bridge(&bridge); paint();
-    assert(find_text(lv_scr_act(),"未确认")&&!find_text(lv_scr_act(),"已同步")&&gbs_ui_take_tone()==GBS_TONE_NONE);
-    assert_amoled_preset(0);
+    assert(find_text(lv_scr_act(),"设定结果未确认")&&!find_text(lv_scr_act(),"等待本杯结果")&&gbs_ui_take_tone()==GBS_TONE_NONE);
+    assert_amoled_preset(4);
     strcpy(bridge.recipe_phase,"applying"); gbs_ui_set_bridge(&bridge); paint();
-    assert(find_text(lv_scr_act(),"同步中")); if(directory) save_screen(directory,"amoled-recipe-applying");
+    assert(find_text(lv_scr_act(),"同步咖啡机")); if(directory) save_screen(directory,"amoled-recipe-applying");
     strcpy(bridge.recipe_phase,"failed"); gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"失败")&&gbs_ui_take_tone()==GBS_TONE_FAILURE);
+    assert(find_text(lv_scr_act(),"咖啡机设定失败")&&gbs_ui_take_tone()==GBS_TONE_NONE);
     gbs_ui_set_bridge(&bridge); assert(gbs_ui_take_tone()==GBS_TONE_NONE);
     if(directory) save_screen(directory,"amoled-recipe-failed");
     strcpy(bridge.recipe_phase,"applying"); gbs_ui_set_bridge(&bridge);
     click("40g"); assert(pending&&requested==40&&bridge.job);
-    assert(find_text(lv_scr_act(),"手动")&&find_text(lv_scr_act(),"40")&&find_text(lv_scr_act(),"40g"));
+    assert(find_text(lv_scr_act(),"正在设定液重")&&find_text_containing(lv_scr_act(),"40g"));
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED); pending=false;
     gbs_ui_show(GBS_PAGE_COFFEE);
     assert(find_text(lv_scr_act(),"93")&&!find_text(lv_scr_act(),"40.0")&&!find_text(lv_scr_act(),"已设定"));
     gbs_ui_show(GBS_PAGE_HOME); ++bridge.job_deadline_ms; gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"配方")&&find_text(lv_scr_act(),"30")&&!find_text(lv_scr_act(),"手动"));
+    assert(find_text(lv_scr_act(),"同步咖啡机")&&!find_text(lv_scr_act(),"液重已设定"));
     gbs_ui_init(submit,NULL); scene(4); machine.stale=true; gbs_ui_set_machine(&machine);
-    assert(find_text(lv_scr_act(),"未知")&&!find_text(lv_scr_act(),"已过期"));
+    assert(find_text(lv_scr_act(),"回传结果未确认")&&!find_text(lv_scr_act(),"机器状态已过期"));
     if(directory) save_screen(directory,"amoled-unknown-stale-machine");
+    gbs_ui_init(submit,NULL); scene(1);
+    strcpy(bridge.outcome,"delivery_unknown");strcpy(bridge.flow_job_id,"cold-start-unknown");gbs_ui_set_bridge(&bridge);
+    assert(find_text(lv_scr_act(),"回传结果未确认")&&find_text(lv_scr_act(),"结果未确认 · 请查看详情"));
+    assert(!find_text_containing(lv_scr_act(),"0.0g")&&!find_text_containing(lv_scr_act(),"0.0s"));
     gbs_ui_init(submit,NULL); scene(2); bridge.recipe_enabled=true; bridge.recipe_grams=30; strcpy(bridge.recipe_phase,"applied");
     gbs_ui_set_bridge(&bridge); gbs_ui_tick(bridge.job_deadline_ms);
-    assert(find_text(lv_scr_act(),"收尾")&&find_text(lv_scr_act(),"00:00")&&find_text(lv_scr_act(),"—")&&!find_text(lv_scr_act(),"待核对"));
-    machine.stale=true; gbs_ui_set_machine(&machine); assert(find_text(lv_scr_act(),"收尾"));
+    assert(find_text(lv_scr_act(),"正在结束本杯")&&find_text(lv_scr_act(),"00:00")&&!find_text(lv_scr_act(),"本杯已完成"));
+    machine.stale=true; gbs_ui_set_machine(&machine); assert(find_text(lv_scr_act(),"正在结束本杯"));
     if(directory) save_screen(directory,"amoled-wait-expired");
-    bridge.pending=bridge.canceling=true; bridge.answer_deadline_ms=bridge.job_deadline_ms+20000; gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"收尾")&&find_text(lv_scr_act(),"00:00"));
-    gbs_ui_init(submit,NULL); scene(1); machine.stale=true; gbs_ui_set_machine(&machine);
-    count=requests; click("35g"); assert(requests==count); // Handler also rejects a stale source.
+    bridge.pending=bridge.canceling=true;bridge.observed_ms=bridge.job_deadline_ms+1;
+    bridge.answer_deadline_ms=bridge.observed_ms+20000;bridge.job_deadline_ms=0;
+    gbs_ui_set_bridge(&bridge);gbs_ui_tick(bridge.observed_ms);
+    assert(find_text(lv_scr_act(),"正在结束本杯")&&find_text(lv_scr_act(),"本杯超时 · 尚无有效结果")&&find_text(lv_scr_act(),"00:00"));
+    gbs_ui_init(submit,NULL); scene(1); machine.stale=true;machine.writable=0; gbs_ui_set_machine(&machine);
+    count=requests; click("36g"); assert(requests==count); // A lost Cloud channel cannot submit a preset.
     gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_WEIGHT); tap(350,340);
     assert(find_text(lv_scr_act(),"应用 31g")); tap(240,432); assert(requested==31&&pending);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_CONFIRMED); pending=false;
@@ -986,7 +1428,7 @@ static void amoled_self_test(const char *directory)
     if(directory) save_screen(directory,"amoled-weight");
     gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_WEIGHT); tap(350,340);
     assert(find_text(lv_scr_act(),"应用 31g")); count=requests;
-    gbs_ui_home_safe(); assert(find_text(lv_scr_act(),"放弃这次修改？")&&requests==count);
+    tap(40,110); assert(find_text(lv_scr_act(),"放弃这次修改？")&&requests==count);
     click("继续编辑"); assert(gbs_ui_page()==GBS_PAGE_WEIGHT&&find_text(lv_scr_act(),"应用 31g"));
     gbs_ui_toggle_rotation(); assert(gbs_ui_rotation_auto()&&gbs_ui_page()==GBS_PAGE_WEIGHT&&requests==count);
     assert(find_text(lv_scr_act(),"应用 31g")&&find_text(lv_scr_act(),"自动旋转已开启"));
@@ -995,20 +1437,34 @@ static void amoled_self_test(const char *directory)
     gbs_ui_tick(13000); assert(!find_text(lv_scr_act(),"保存失败，请重试"));
     gbs_ui_home_safe(); click("放弃修改"); assert(gbs_ui_page()==GBS_PAGE_HOME&&requests==count&&machine.weight==30);
     gbs_ui_home_safe(); assert(gbs_ui_page()==GBS_PAGE_HOME);
-    click("35g"); assert(pending); gbs_ui_show(GBS_PAGE_LINK); gbs_ui_home_safe();
+    click("36g"); assert(pending); gbs_ui_show(GBS_PAGE_LINK); gbs_ui_home_safe();
     assert(gbs_ui_page()==GBS_PAGE_HOME&&pending&&gbs_ui_keep_awake());
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN); pending=false;
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_WEIGHT);
+    tap(373,340);tap(373,340);count=requests;
+    assert(find_text(lv_scr_act(),"应用 32g"));tap(420,48);
+    assert(find_text(lv_scr_act(),"放弃这次修改？")&&requests==count);
+    click("继续编辑");assert(gbs_ui_page()==GBS_PAGE_WEIGHT&&find_text(lv_scr_act(),"应用 32g"));
+    tap(420,48);click("放弃修改");
+    assert(gbs_ui_page()==GBS_PAGE_SETTINGS&&requests==count&&machine.weight==30);
+    gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_WEIGHT); tap(373,340);count=requests;
+    machine.weight=machine.dose1=40;++machine.revision;gbs_ui_set_machine(&machine);
+    assert(find_text(lv_scr_act(),"设置已变化，请返回")&&find_text(lv_scr_act(),"应用 31g"));
+    tap(240,432);assert(requests==count&&!pending);
+    tap(40,110);click("继续编辑");assert(find_text(lv_scr_act(),"应用 31g"));
+    tap(40,110);click("放弃修改");assert(requests==count&&machine.weight==40);
     gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_BBW);
     tap(220,236); assert(gbs_ui_page()==GBS_PAGE_DOSE2); tap(350,340);
     assert(find_text(lv_scr_act(),"应用 41g")); tap(240,432);
     assert(pending&&command==GBS_ACTION_DOSE2&&requested==41);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN); pending=false;
     gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_STEAM);
-    tap(420,48); assert(pending&&command==GBS_ACTION_STEAM_ENABLED&&requested==0);
+    tap(426,110); assert(pending&&command==GBS_ACTION_STEAM_ENABLED&&requested==0);
     gbs_ui_control_result(command_id,GBS_UI_CONTROL_UNKNOWN); pending=false;
     gbs_ui_init(submit,NULL); scene(1); gbs_ui_show(GBS_PAGE_SETTINGS);
     click("显示与声音");assert(gbs_ui_page()==GBS_PAGE_DISPLAY);
-    click("短提示音");assert(gbs_ui_sound_enabled());gbs_ui_take_tone();
+    click("音量");assert(gbs_ui_page()==GBS_PAGE_SOUND);edit_volume(80);click("保存");
+    assert(gbs_ui_sound_enabled());gbs_ui_take_tone();tap(48,48);
     click("自动调暗 / 熄屏");assert(gbs_ui_page()==GBS_PAGE_DISPLAY);
     click("屏幕亮度");assert(gbs_ui_page()==GBS_PAGE_BRIGHTNESS);
     lv_obj_t *brightness_slider=NULL;
@@ -1030,23 +1486,27 @@ static void amoled_self_test(const char *directory)
         if(directory) {char name[40]; snprintf(name,sizeof(name),"amoled-page-%02u",p); save_screen(directory,name);}
     }
     gbs_ui_init(submit,NULL);scene(1);bridge.valid=false;gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"准备中")&&!find_text(lv_scr_act(),"就绪"));
-    bridge.valid=true;bridge.baseline=true;gbs_ui_set_bridge(&bridge);assert(find_text(lv_scr_act(),"建立新任务基线"));
-    strcpy(bridge.phase,"clock_waiting");gbs_ui_set_bridge(&bridge);assert(find_text(lv_scr_act(),"校时中"));
-    scene(7);bridge.unconfirmed_grams=30.2;bridge.unconfirmed_seconds=27.7;gbs_ui_set_bridge(&bridge);
-    assert(find_text(lv_scr_act(),"30.2")&&find_text(lv_scr_act(),"27.7s"));
-    bridge.unconfirmed_grams=5000;gbs_ui_set_bridge(&bridge);paint();lv_obj_t *large=find_text(lv_scr_act(),"5000.0");assert(large);
-    const lv_font_t *small_font=lv_obj_get_style_text_font(large,0);lv_area_t large_area;lv_obj_get_coords(large,&large_area);
-    assert(large_area.x2<=310&&lv_obj_get_height(large)<=small_font->line_height);if(directory)save_screen(directory,"measurement-5000");
-    bridge.unconfirmed_grams=30.2;gbs_ui_set_bridge(&bridge);paint();assert(lv_obj_get_style_text_font(find_text(lv_scr_act(),"30.2"),0)->line_height>small_font->line_height);
+    assert(find_text(lv_scr_act(),"正在准备联动")&&!find_text(lv_scr_act(),"等待磨粉"));
+    bridge.valid=true;bridge.baseline=true;gbs_ui_set_bridge(&bridge);assert(find_text(lv_scr_act(),"正在建立基线"));
+    strcpy(bridge.phase,"clock_waiting");gbs_ui_set_bridge(&bridge);assert(find_text(lv_scr_act(),"正在同步时间"));
+    scene(7);bridge.flow_result_grams=bridge.unconfirmed_grams=30.2;bridge.flow_result_seconds=bridge.unconfirmed_seconds=27.7;gbs_ui_set_bridge(&bridge);
+    assert(find_text_containing(lv_scr_act(),"30.2")&&find_text_containing(lv_scr_act(),"27.7s"));
+    bridge.flow_result_grams=bridge.unconfirmed_grams=5000;gbs_ui_set_bridge(&bridge);paint();lv_obj_t *large=find_text_containing(lv_scr_act(),"5000.0");assert(large);
+    lv_area_t large_area;lv_obj_get_coords(large,&large_area);
+    assert(large_area.x2<WIDTH&&large_area.y2<HEIGHT);visible_labels(lv_scr_act());if(directory)save_screen(directory,"measurement-5000");
+    bridge.flow_result_grams=bridge.unconfirmed_grams=30.2;gbs_ui_set_bridge(&bridge);paint();assert(find_text_containing(lv_scr_act(),"30.2"));
     if(directory)save_screen(directory,"measurement-return-30.2");
     gbs_ui_show(GBS_PAGE_RECORD);assert(find_text(lv_scr_act(),"30.2")&&find_text(lv_scr_act(),"27.7"));
     bridge.job=bridge.pending=false;bridge.successes=1;bridge.result_grams=30.2;bridge.result_seconds=27.7;strcpy(bridge.outcome,"success");gbs_ui_set_bridge(&bridge);
     assert(find_text(lv_scr_act(),"已接收")&&find_text(lv_scr_act(),"30.2"));
     amoled_cup_tone_test();
+    amoled_sound_volume_test(directory);
     amoled_boiler_warmup_test(directory);
     amoled_scale_history_test(directory);
     amoled_refresh_test();
+    amoled_top_status_test();
+    amoled_top_status_clock_test();
+    amoled_early_cancel_test();
     puts("AMOLED UI: 480 px pages, merged scale, separate battery, local preferences, stale guards, completed command feedback, event tones and glyph coverage passed");
 }
 #endif
@@ -1059,6 +1519,8 @@ static void visual_review(const char *directory)
     machine.steam=127; machine.steam_target=128; machine.scale_battery_percent=78;
     gbs_ui_set_machine(&machine); gbs_ui_show(GBS_PAGE_HOME); save_screen(directory,"ready");
     bridge.job=true; bridge.job_deadline_ms=173000; bridge.recipe_enabled=true; bridge.recipe_grams=30;
+    bridge.recipe_current=bridge.recipe_log_valid=true;
+    strcpy(bridge.job_id,"synthetic-review-cup");strcpy(bridge.flow_job_id,bridge.job_id);strcpy(bridge.recipe_job_id,bridge.job_id);
     strcpy(bridge.recipe_phase,"applying"); gbs_ui_set_bridge(&bridge); save_screen(directory,"setting");
     gbs_ui_show(GBS_PAGE_LINK);save_screen(directory,"link-setting");strcpy(bridge.recipe_phase,"applied");gbs_ui_set_bridge(&bridge);save_screen(directory,"link-accepted");
     gbs_ui_show(GBS_PAGE_HOME);save_screen(directory,"accepted");
@@ -1069,7 +1531,7 @@ static void visual_review(const char *directory)
     const char *names[]={"settings","display","orientation","scale","device-battery","connections"};
     for(unsigned i=0;i<sizeof(pages)/sizeof(*pages);++i){gbs_ui_show(pages[i]);save_screen(directory,names[i]);}
     gbs_ui_show(GBS_PAGE_RECORD);save_screen(directory,"record-empty");
-    bridge.pending=true;bridge.unconfirmed_grams=30.2;bridge.unconfirmed_seconds=27.7;bridge.answer_deadline_ms=100000;gbs_ui_set_bridge(&bridge);save_screen(directory,"record-pending");
+    bridge.pending=bridge.flow_result_valid=true;bridge.flow_result_grams=bridge.unconfirmed_grams=30.2;bridge.flow_result_seconds=bridge.unconfirmed_seconds=27.7;bridge.answer_deadline_ms=100000;gbs_ui_set_bridge(&bridge);save_screen(directory,"record-pending");
     gbs_ui_show(GBS_PAGE_HOME);save_screen(directory,"sending");
     bridge.job=bridge.pending=false;bridge.successes=1;bridge.result_grams=30.2;bridge.result_seconds=27.7;strcpy(bridge.outcome,"success");gbs_ui_set_bridge(&bridge);save_screen(directory,"received");
     gbs_ui_show(GBS_PAGE_RECORD);save_screen(directory,"record-received");
@@ -1102,15 +1564,118 @@ static void visual_review(const char *directory)
     scene(5);save_screen(directory,"offline");
     scene(1);machine.stale=true;gbs_ui_set_machine(&machine);save_screen(directory,"stale");
     scene(1);machine.scale_connected=false;gbs_ui_set_machine(&machine);save_screen(directory,"scale-off-home");
-    scene(1);click("35g");save_screen(directory,"manual");pending=false;
-    gbs_ui_init(submit,NULL);scene(1);gbs_ui_set_device_preferences(true,false);gbs_ui_show(GBS_PAGE_ORIENTATION);save_screen(directory,"orientation-auto");
+    scene(1);click("36g");save_screen(directory,"manual");pending=false;
+    gbs_ui_init(submit,NULL);scene(1);gbs_ui_set_device_preferences(true,0);gbs_ui_show(GBS_PAGE_ORIENTATION);save_screen(directory,"orientation-auto");
+}
+
+static void approved_reset(void)
+{
+    gbs_ui_init(submit,NULL); scene(1); pending=false;
+    machine.weight=machine.dose1=20; machine.coffee=92.8; machine.steam=127;
+    machine.ble.valid=machine.ble.configured=machine.ble.connected=machine.ble.control_ready=true;
+    machine.ble.observed_ms=10000;
+    gbs_ui_set_machine(&machine);
+}
+
+static void approved_job(void)
+{
+    bridge.job=true; bridge.recipe_enabled=bridge.recipe_current=true;
+    bridge.job_deadline_ms=190000; bridge.recipe_grams=0;
+    strcpy(bridge.job_id,"synthetic-approved-cup");
+    strcpy(bridge.flow_job_id,bridge.job_id); strcpy(bridge.recipe_job_id,bridge.job_id);
+    strcpy(bridge.recipe_phase,"reading"); strcpy(bridge.phase,"waiting_for_coffee");
+    gbs_ui_set_bridge(&bridge);
+}
+
+static void approved_recipe(const char *phase)
+{
+    bridge.recipe_log_valid=true; bridge.recipe_grams=30;
+    strcpy(bridge.recipe_phase,phase); gbs_ui_set_bridge(&bridge);
+    if(!strcmp(phase,"applied")) {
+        machine.weight=machine.dose1=30; gbs_ui_set_machine(&machine);
+    }
+}
+
+static void approved_result(void)
+{
+    bridge.pending=true; bridge.job_deadline_ms=0; bridge.answer_deadline_ms=170000;
+    bridge.flow_result_valid=true; bridge.flow_result_grams=bridge.unconfirmed_grams=30.2;
+    bridge.flow_result_seconds=bridge.unconfirmed_seconds=27.7;
+    strcpy(bridge.phase,"sending"); gbs_ui_set_bridge(&bridge);
+}
+
+static void approved_frame(const char *directory,const char *name,int64_t now)
+{
+    static const struct {const char *name,*title,*timer;const char *nodes;} expected[]={
+        {"01-ready","等待磨粉",NULL,"wwwww"},
+        {"02-read-recipe","读取配方中","02:58","wawww"},
+        {"03-apply-recipe","同步咖啡机","02:52","ddaww"},
+        {"04-wait-result","等待本杯结果","02:43","dddaw"},
+        {"05-send-result","回传磨豆机","01:58","dddda"},
+        {"06-complete","本杯已完成",NULL,"ddddd"},
+        {"07-recipe-failed","配方读取失败","02:45","wfwww"},
+        {"08-setting-failed","咖啡机设定失败","02:42","ddfww"},
+        {"09-setting-unknown","设定结果未确认","02:42","dduww"},
+        {"10-delivery-unknown","回传结果未确认",NULL,"ddddu"},
+        {"11-timeout-closing","正在结束本杯","00:00","dddtw"},
+        {"12-timeout-ended","本杯已结束",NULL,"dddtw"},
+        {"13-editor","出杯量",NULL,NULL}
+    };
+    bridge.observed_ms=now; machine.ble.observed_ms=now;
+    machine.scale_observed_ms=now; gbs_ui_set_machine(&machine); gbs_ui_set_bridge(&bridge);
+    gbs_device_status_t device={.valid=true,.battery_present_known=true,.battery_present=true,
+        .battery_percent_known=true,.battery_percent=84,.charging_known=true,.observed_ms=now};
+    gbs_ui_set_device(&device);
+    gbs_ui_tick(now); paint(); visible_labels(lv_scr_act());
+    unsigned index=0;
+    while(index<sizeof(expected)/sizeof(*expected)&&strcmp(expected[index].name,name))++index;
+    assert(index<sizeof(expected)/sizeof(*expected));
+    assert(find_text(lv_scr_act(),expected[index].title));
+    if(expected[index].timer)assert(find_text(lv_scr_act(),expected[index].timer));
+    if(expected[index].nodes)assert_amoled_nodes(expected[index].nodes);
+    save_screen(directory,name);
+}
+
+static void approved_review(const char *directory)
+{
+    unsigned controls=requests,reads=data_requests;
+    approved_reset(); approved_frame(directory,"01-ready",10000);
+    approved_job(); approved_frame(directory,"02-read-recipe",12000);
+    approved_recipe("applying"); approved_frame(directory,"03-apply-recipe",18000);
+    approved_recipe("applied"); approved_frame(directory,"04-wait-result",27000);
+    approved_result(); approved_frame(directory,"05-send-result",52000);
+    bridge.job=bridge.pending=bridge.recipe_current=false; bridge.job_id[0]=0;
+    bridge.successes=1; bridge.result_grams=30.2; bridge.result_seconds=27.7;
+    strcpy(bridge.outcome,"success"); approved_frame(directory,"06-complete",53000);
+
+    approved_reset(); approved_job(); strcpy(bridge.recipe_phase,"failed");
+    approved_frame(directory,"07-recipe-failed",25000);
+    approved_reset(); approved_job(); approved_recipe("applying"); approved_recipe("failed");
+    approved_frame(directory,"08-setting-failed",28000);
+    approved_reset(); approved_job(); approved_recipe("applying"); approved_recipe("unconfirmed");
+    approved_frame(directory,"09-setting-unknown",28000);
+    approved_reset(); approved_job(); approved_recipe("applied"); approved_result();
+    bridge.job=bridge.pending=bridge.recipe_current=false; bridge.job_id[0]=0;
+    strcpy(bridge.outcome,"delivery_unknown"); approved_frame(directory,"10-delivery-unknown",53000);
+    approved_reset(); approved_job(); approved_recipe("applied");
+    bridge.pending=bridge.canceling=true; bridge.job_deadline_ms=0; bridge.answer_deadline_ms=210000;
+    approved_frame(directory,"11-timeout-closing",190000);
+    bridge.job=bridge.pending=bridge.canceling=bridge.recipe_current=false; bridge.job_id[0]=0;
+    strcpy(bridge.outcome,"canceled"); approved_frame(directory,"12-timeout-ended",210000);
+
+    approved_reset(); machine.weight=machine.dose1=30; gbs_ui_set_machine(&machine);
+    gbs_ui_show(GBS_PAGE_WEIGHT); tap(373,340); tap(373,340);
+    assert(find_text(lv_scr_act(),"应用 32g")); approved_frame(directory,"13-editor",10000);
+    assert(requests==controls&&data_requests==reads);
+    puts("Approved AMOLED review: 13 synthetic 480 x 480 frames, no device requests");
 }
 #endif
 
 int main(int argc,char **argv)
 {
     bool review=argc>2&&!strcmp(argv[1],"--review");
-    bool test=review||(argc>1 && !strcmp(argv[1],"--self-test"));
+    bool approved=argc>2&&!strcmp(argv[1],"--approved-review");
+    bool test=review||approved||(argc>1 && !strcmp(argv[1],"--self-test"));
     self_testing=test;
     SDL_SetMainReady(); assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_TIMER)==0);
     SDL_Window *window=SDL_CreateWindow("GbS Touch - SYNTHETIC DATA - 0: unavailable, 1-8: scenarios",SDL_WINDOWPOS_CENTERED,
@@ -1126,7 +1691,7 @@ int main(int argc,char **argv)
     gbs_ui_set_reader(read_data); gbs_ui_set_schedule_submit(submit_schedule);
     if(test) {
 #ifdef HUB_AMOLED_216
-        if(review) visual_review(argv[2]); else if(WIDTH==480) amoled_self_test(argc>2?argv[2]:NULL); else legacy_self_test(NULL);
+        if(approved) approved_review(argv[2]); else if(review) visual_review(argv[2]); else if(WIDTH==480) amoled_self_test(argc>2?argv[2]:NULL); else legacy_self_test(NULL);
 #else
         legacy_self_test(argc>2?argv[2]:NULL);
 #endif

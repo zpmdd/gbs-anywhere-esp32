@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run the automatic recipe transaction against in-memory services."""
-import os
 from pathlib import Path
 import subprocess
 import tempfile
 import test_command_coordinator as coordinator
+from host_cjson import cjson_source_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 NVS = '''#pragma once
@@ -25,7 +25,7 @@ esp_err_t nvs_commit(nvs_handle_t);
 
 
 def main():
-    idf = Path(os.environ['IDF_PATH'])
+    json_dir = cjson_source_dir()
     with tempfile.TemporaryDirectory(prefix='gbs-follow-test-') as directory:
         root = Path(directory); (root / 'freertos').mkdir()
         for name, data in {'esp_err.h': coordinator.ESP_ERR_STUB + '\n#define ESP_ERR_NOT_FINISHED 0x109\nconst char *esp_err_to_name(esp_err_t);\n',
@@ -37,9 +37,9 @@ def main():
         exe = root / 'follow'
         subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-declarations',
                         '-fsanitize=address,undefined', '-g', '-I', str(root), '-I', str(ROOT / 'main'),
-                        '-I', str(ROOT / 'integrated/main'), '-I', str(idf / 'components/json/cJSON'),
+                        '-I', str(ROOT / 'integrated/main'), '-I', str(json_dir),
                         str(ROOT / 'integrated/tests/test_recipe_follow.c'), str(ROOT / 'integrated/main/logic.c'),
-                        str(idf / 'components/json/cJSON/cJSON.c'), '-lm', '-o', str(exe)], check=True)
+                        str(json_dir / 'cJSON.c'), '-lm', '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

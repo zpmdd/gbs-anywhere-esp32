@@ -872,8 +872,8 @@ hub_command_submit_status_t hub_command_submit(
             400,
             supported ? "invalidTtl" : "unsupportedDeadlineKind",
             supported
-                ? "clientTtlMs must be an integer between 1 and 8000."
-                : "The 8-second v2 deadline is available only for Quick Weight, Prebrew and guarded preset mode."
+                ? "clientTtlMs must be an integer between 1 and 12000."
+                : "The v2 deadline is available only for Quick Weight, Prebrew and guarded preset mode."
         );
         populate_v2_metadata(
             &submission->result,

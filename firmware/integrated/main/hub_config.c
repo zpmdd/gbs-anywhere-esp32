@@ -207,6 +207,71 @@ esp_err_t hub_config_save_bbw_selection(const hub_machine_selection_identity_t *
     return err;
 }
 
+static bool bbw_doses_valid(const hub_bbw_doses_t *value)
+{
+    return memchr(value->serial_number, 0, sizeof(value->serial_number)) && value->serial_number[0]
+        && memchr(value->mode, 0, sizeof(value->mode))
+        && (!strcmp(value->mode, "Dose1") || !strcmp(value->mode, "Dose2")
+            || !strcmp(value->mode, "Continuous") || !strcmp(value->mode, "PulsesType"))
+        && isfinite(value->dose1) && value->dose1 > 0 && value->dose1 <= 200
+        && isfinite(value->dose2) && value->dose2 > 0 && value->dose2 <= 200;
+}
+
+esp_err_t hub_config_get_bbw_doses(const hub_machine_selection_identity_t *target, hub_bbw_doses_t *out)
+{
+    if (!target || !out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    nvs_handle_t handle;
+    esp_err_t err = open_config(NVS_READONLY, &handle);
+    if (err != ESP_OK) return err;
+    size_t size = sizeof(*out);
+    err = nvs_get_blob(handle, "bbw_doses_v1", out, &size);
+    nvs_close(handle);
+    if (err == ESP_OK && (size != sizeof(*out) || !bbw_doses_valid(out)
+            || strcmp(out->serial_number, target->serial_number)))
+        err = ESP_ERR_INVALID_STATE;
+    if (err != ESP_OK) memset(out, 0, sizeof(*out));
+    return err;
+}
+
+esp_err_t hub_config_save_bbw_doses(const hub_machine_selection_identity_t *target, const char *mode, double dose1, double dose2)
+{
+    if (!target || !mode || strlen(mode) >= sizeof(((hub_bbw_doses_t *)0)->mode)) return ESP_ERR_INVALID_ARG;
+    hub_bbw_doses_t next = {0}, previous = {0};
+    memcpy(next.serial_number, target->serial_number, sizeof(next.serial_number));
+    strcpy(next.mode, mode);
+    next.dose1 = dose1; next.dose2 = dose2;
+    if (!bbw_doses_valid(&next)) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = ensure_machine_selection_mutex();
+    if (err != ESP_OK) return err;
+    if (xSemaphoreTake(machine_selection_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+        return ESP_ERR_TIMEOUT;
+    err = load_machine_selection_identity_locked();
+    if (err == ESP_OK && (target->generation != machine_selection_identity.generation
+            || strcmp(target->serial_number, machine_selection_identity.serial_number)))
+        err = ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK) {
+        esp_err_t read_err = hub_config_get_bbw_doses(target, &previous);
+        if (read_err == ESP_OK && dose1 == previous.dose1 && dose2 == previous.dose2 && !strcmp(mode, previous.mode)) {
+            xSemaphoreGive(machine_selection_mutex);
+            return ESP_OK;
+        }
+        if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND && read_err != ESP_ERR_INVALID_STATE)
+            err = read_err;
+    }
+    if (err == ESP_OK) {
+        nvs_handle_t handle;
+        err = open_config(NVS_READWRITE, &handle);
+        if (err == ESP_OK) {
+            err = nvs_set_blob(handle, "bbw_doses_v1", &next, sizeof(next));
+            if (err == ESP_OK) err = nvs_commit(handle);
+            nvs_close(handle);
+        }
+    }
+    xSemaphoreGive(machine_selection_mutex);
+    return err;
+}
+
 esp_err_t hub_config_init(void)
 {
     /*

@@ -122,6 +122,13 @@ one coalesced refresh request; the client polls cached reads for at most 30 seco
 without repeated refresh POSTs. Existing telemetry and pending controls keep
 priority on the shared Hub task. Collection buffers live in PSRAM.
 
+The integrated local adapter preserves the same `202` loading response as LAN
+reads, so a cold cache keeps polling until the background read completes.
+Cloud IO contention uses bounded read retries and still yields to controls.
+When counters and coffee records succeed but the trend fails or is incomplete,
+the records remain available with `trend: null`; missing records are not
+replaced with a successful empty list.
+
 | Data | Hub contract |
 | --- | --- |
 | Schedule read | `GET /machine/schedule`, capability `schedule`; up to 64 plans. |

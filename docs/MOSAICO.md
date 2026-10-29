@@ -199,17 +199,31 @@ off the PA while retaining the BSP-owned handles for reuse. Microphone capture
 is not enabled. A success cue reports the existing command/receipt outcome; it
 does not independently prove physical machine or grinder action.
 
-## Field evidence as of 2026-10-28
+## Field evidence as of 2026-10-29
 
 The final installed application was:
 
 | Artifact field | Value |
 | --- | --- |
-| Build ID | `8d4984d3` |
-| Application size | 4,412,704 bytes |
-| SHA-256 | `d1a78f1dd657f0e9797ebf5a18f5c2348d2c5d4f9431c0bc6f4fc69d7ba62c32` |
+| Build ID | `2c3f4497` |
+| Application size | 4,412,800 bytes |
+| SHA-256 | `e329d61c4f094b6587b2b0303b142fb008090b20555ff6b8c8e9e19cfc00dca2` |
 
-On **`8d4984d3`**, LAN OTA, restart and health recovery succeeded; Cloud
+On **`2c3f4497`**, LAN OTA and restart succeeded with the expected image running
+in `ota_0`. The first history refresh completed in 13.4 seconds and returned
+15 Cloud records. The actual framebuffer showed the three-row list and page
+`1 / 5`; the user also confirmed the records were visible on the device.
+This validates existing-record display, not a new extraction or grinder result.
+
+The repair preserves the local adapter's `202` loading state, retries transient
+Cloud IO lock contention within the existing attempt limit, and retains valid
+coffee records with `trend: null` when the chart cannot be read completely.
+The integrated and root host suites and S31 build passed. Offline production-code
+tests cover trend timeout/malformed responses, missing records, bounded lock
+retry and foreground priority. All three statistics endpoints succeeded in the
+hardware run; forced trend failure was tested offline only.
+
+On the preceding **`8d4984d3`**, LAN OTA, restart and health recovery succeeded; Cloud
 authentication and paired-grinder readiness were observed. A 100-second
 observation captured **four automatic BLE temperature updates**; coffee and
 steam current temperatures remained present with fresh cached data. This

@@ -23,6 +23,7 @@ static int submissions,refresh_requests;
 static double weight=30;
 static const char *readiness="ready";
 static const char *ble_connected="false";
+static hub_state_slow_read_state_t statistics_state=HUB_STATE_SLOW_READ_HIT;
 static char completed_id[37];
 static const char *ID="11111111-1111-4111-8111-111111111111";
 int64_t esp_timer_get_time(void) { return clock_ms*1000; }
@@ -39,7 +40,7 @@ esp_err_t hub_cloud_request_refresh(void) {
 const char *hub_state_machine_binding_json(void)
 { return "{\"selected\":true,\"serialNumber\":\"SYNTHETIC\",\"generation\":1}"; }
 const char *hub_state_capabilities_json(void)
-{ return "{\"supportsSmartPresetDecisionValidation\":true,\"brewByWeightDose1\":{\"available\":true},\"brewByWeightDose2\":{\"available\":true},\"brewByWeightMode\":{\"available\":true},\"schedule\":{\"available\":true}}"; }
+{ return "{\"supportsSmartPresetDecisionValidation\":true,\"brewByWeightDose1\":{\"available\":true},\"brewByWeightDose2\":{\"available\":true},\"brewByWeightMode\":{\"available\":true},\"schedule\":{\"available\":true},\"statistics\":{\"available\":true}}"; }
 const char *hub_state_ble_diagnostics_json(void)
 {
     static char data[256];
@@ -55,7 +56,7 @@ const char *hub_state_machine_state_json(void)
 hub_state_slow_read_result_t hub_state_schedule_read(void)
 { return (hub_state_slow_read_result_t){.body="{\"status\":\"refreshing\"}",.state=HUB_STATE_SLOW_READ_REFRESHING}; }
 hub_state_slow_read_result_t hub_state_statistics_read(int days)
-{ assert(days==7); return (hub_state_slow_read_result_t){.body="{\"recentCoffees\":[]}",.state=HUB_STATE_SLOW_READ_HIT,.stale=true}; }
+{ assert(days==7); return (hub_state_slow_read_result_t){.body="{\"recentCoffees\":[{\"time\":\"2026-10-29T01:00:00Z\",\"extractionSeconds\":29.2}],\"trend\":null}",.state=statistics_state,.stale=true}; }
 const char *hub_state_start_slow_cloud_read_json(const char *kind,int days)
 { assert(!strcmp(kind,"schedule")&&days==7); return "{\"ok\":true,\"accepted\":true,\"scheduled\":true,\"kind\":\"schedule\"}"; }
 hub_command_submit_status_t hub_command_submit(const hub_command_request_t *c,hub_command_completion_fn fn,void *ctx,hub_command_submission_t *out)
@@ -127,7 +128,18 @@ int main(void)
     assert(gbs_hub_refresh(&config,&io,10000,&machine)&&(machine.writable&(1u<<GBS_ACTION_WEIGHT)));
     bool stale=false;
     assert(hub_touchscreen_exchange("/machine/statistics?days=7",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==200&&stale);
-    assert(hub_touchscreen_exchange("/machine/schedule",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==503);
+    assert(hub_touchscreen_exchange("/machine/schedule",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==202);
+    statistics_state=HUB_STATE_SLOW_READ_REFRESHING;
+    gbs_ui_data_t collection;
+    gbs_hub_fetch_data(&config,&io,GBS_DATA_HISTORY,false,10000,&collection);
+    assert(collection.state==GBS_DATA_LOADING&&!collection.valid);
+    statistics_state=HUB_STATE_SLOW_READ_HIT;
+    gbs_hub_fetch_data(&config,&io,GBS_DATA_HISTORY,false,10000,&collection);
+    assert(collection.state==GBS_DATA_READY&&collection.valid&&collection.count==1);
+    assert(collection.items.coffees[0].seconds==29.2);
+    statistics_state=HUB_STATE_SLOW_READ_UNAVAILABLE;
+    assert(hub_touchscreen_exchange("/machine/statistics?days=7",NULL,"SYNTHETIC",reply,sizeof(reply),10000,&stale)==503);
+    statistics_state=HUB_STATE_SLOW_READ_HIT;
     assert(hub_touchscreen_exchange("/diagnostics/slow-cloud-reads/refresh?kind=schedule","{}","SYNTHETIC",reply,sizeof(reply),10000,&stale)==200);
     assert(hub_touchscreen_exchange("/diagnostics/cloud/refresh","{}","SYNTHETIC",reply,sizeof(reply),10000,&stale)==202);
     assert(refresh_requests==1&&refresh_pending);

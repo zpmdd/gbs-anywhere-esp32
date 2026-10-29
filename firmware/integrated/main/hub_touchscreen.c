@@ -39,7 +39,8 @@ int hub_touchscreen_exchange(const char *path,const char *body,const char *seria
         hub_state_slow_read_result_t result=!strcmp(path,"/machine/schedule")?hub_state_schedule_read():hub_state_statistics_read(7);
         *stale=result.stale;
         status=copy(result.body,reply,size,false);
-        if(status==200&&result.state!=HUB_STATE_SLOW_READ_HIT) status=503;
+        if(status==200&&result.state==HUB_STATE_SLOW_READ_REFRESHING) status=202;
+        else if(status==200&&result.state==HUB_STATE_SLOW_READ_UNAVAILABLE) status=503;
     } else if(body&&(!strcmp(path,"/diagnostics/slow-cloud-reads/refresh?kind=schedule")||
                      !strcmp(path,"/diagnostics/slow-cloud-reads/refresh?kind=statistics&days=7"))) {
         const char *kind=strstr(path,"kind=schedule")?"schedule":"statistics";

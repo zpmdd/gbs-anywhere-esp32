@@ -2621,6 +2621,11 @@ static esp_err_t cloud_fetch_json_text(
                 0,
                 0
             );
+            if (lock_err == ESP_ERR_TIMEOUT && attempt + 1 < max_attempts
+                && !hub_command_interactive_pending() && !cloud_command_is_waiting()) {
+                vTaskDelay(pdMS_TO_TICKS(CLOUD_STATISTICS_RETRY_BASE_DELAY_MS * (attempt + 1)));
+                continue;
+            }
             return lock_err;
         }
         esp_err_t err = cloud_readonly_http_request(
@@ -4187,18 +4192,18 @@ esp_err_t hub_cloud_statistics_json_alloc_for_serial(
     }
 
     if (statistics_missing_required_trend(coffees, flushes)) {
-        cJSON_Delete(counter);
-        cJSON_Delete(recent);
-        cJSON_Delete(trend);
-        cJSON_Delete(coffees);
-        cJSON_Delete(flushes);
-        err = trend_err != ESP_OK ? trend_err : ESP_ERR_INVALID_RESPONSE;
-        ESP_LOGW(
-            TAG,
-            "Cloud statistics returned no complete coffee/flush trend: %s",
-            esp_err_to_name(err)
-        );
-        goto cleanup;
+        trend_err = trend_err != ESP_OK ? trend_err : ESP_ERR_INVALID_RESPONSE;
+        if (!statistics_array_has_rows(recent)) {
+            cJSON_Delete(counter);
+            cJSON_Delete(recent);
+            cJSON_Delete(trend);
+            cJSON_Delete(coffees);
+            cJSON_Delete(flushes);
+            err = trend_err;
+            goto cleanup;
+        }
+        // A missing chart must not discard successfully read coffee history.
+        ESP_LOGW(TAG, "Cloud history available without trend: %s", esp_err_to_name(trend_err));
     }
 
     add_counter_number_or_null(

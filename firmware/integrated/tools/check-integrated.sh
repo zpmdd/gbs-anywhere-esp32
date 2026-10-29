@@ -29,6 +29,7 @@ python tools/test_command_coordinator.py
 python tools/test_ble_worker_recovery.py
 python tools/test_cloud_command_timing.py
 python tools/test_cloud_connection_reuse.py
+python tools/test_cloud_history.py
 python tools/test_quick_weight_control.py
 python tools/test_cloud_quick_weight.py
 python tools/test_integrated_support.py

@@ -2,6 +2,11 @@
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.de.md">Deutsch</a>
 </p>
 
+> **S31 update (2026-11-01):** build `96c43cd7` passed physical sleep/wake
+> readiness and one real 20 g recipe-follow cup, with acknowledged 19.4 g / 38.148 s
+> feedback. See [recovery screens](docs/GALLERY.md#s31-wake-recovery--480--480)
+> and [exact-build evidence](docs/MOSAICO.md#wake-readiness-on-the-home-screen).
+>
 > **New hardware support (2026-10-28):** experimental ESP-Mosaico / ESP32-S31
 > support is on [`codex/s31-mosaico-port`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port).
 > See the [Mosaico guide](docs/MOSAICO.md) for its 480 × 480 display, 16 MB PSRAM,

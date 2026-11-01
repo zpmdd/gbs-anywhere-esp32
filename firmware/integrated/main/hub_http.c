@@ -2575,7 +2575,7 @@ static esp_err_t grinder_recipe_probe_handler(httpd_req_t *req)
 static esp_err_t display_diagnostics_handler(httpd_req_t *req)
 {
     if(require_authorized(req)!=ESP_OK) return ESP_OK;
-    char body[1536];
+    char body[2048];
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
     return gbs_display_diagnostics_json(body,sizeof(body))?hub_routes_send_json(req,body):
         hub_routes_send_service_unavailable(req,"display diagnostics unavailable");

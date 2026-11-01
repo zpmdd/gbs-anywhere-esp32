@@ -11,8 +11,8 @@ variant of a product family. No ready-to-flash general release is implied.
 | Board | Build entry | Flash / PSRAM | Display | Source / evidence |
 | --- | --- | --- | --- | --- |
 | Waveshare ESP32-S3-Touch-LCD-1.69, integrated | `firmware/integrated`: `sh tools/build-integrated.sh touchscreen` | 16 MB / 8 MB octal | 240 × 280, ST7789 / CST816 | `main`. Physical touch, two recipe-follow cups and a separate OTA/scale-state cycle. |
-| Waveshare ESP32-S3-Touch-AMOLED-2.16, integrated | `firmware/integrated`: `sh tools/build-integrated.sh amoled216` | 16 MB / 8 MB octal | 480 × 480, CO5300 / CST9220 | [Current development branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port). Earlier S3 builds have rotation/touch, battery and cup evidence; current source passes an isolated S3 build regression. See [exact-build scope](AMOLED216.md). |
-| ESP-Mosaico, ESP32-S31, integrated | `firmware/integrated`: `sh tools/build-integrated.sh mosaico` | 16 MB NOR / 16 MB PSRAM | 480 × 480, CO5300 / CST9220 | [S31 branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port). USB installation, LAN OTA and automatic BLE temperature refresh; preceding builds have rotation/touch and sound evidence. [Cup and endurance gates remain open](MOSAICO.md). |
+| Waveshare ESP32-S3-Touch-AMOLED-2.16, integrated | `firmware/integrated`: `sh tools/build-integrated.sh amoled216` | 16 MB / 8 MB octal | 480 × 480, CO5300 / CST9220 | [Current development branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port). Earlier S3 builds have rotation/touch, battery and cup evidence; an earlier source revision passed an isolated S3 build regression. See [exact-build scope](AMOLED216.md). |
+| ESP-Mosaico, ESP32-S31, integrated | `firmware/integrated`: `sh tools/build-integrated.sh mosaico` | 16 MB NOR / 16 MB PSRAM | 480 × 480, CO5300 / CST9220 | [S31 branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port). `96c43cd7` passed sleep/wake readiness and one recipe-follow cup with acknowledged feedback. [Exact-build evidence; repeatability/endurance pending](MOSAICO.md). |
 | ESP32-S3, lightweight companion | Root: `idf.py build` | 8 MB / 8 MB octal | None | `main`. Historical feedback/boot evidence has [build-specific limits](UPSTREAM.md#validation). |
 | ESP32-S3, integrated headless | `firmware/integrated`: `sh tools/build-integrated.sh headless` | 8 MB / 8 MB octal | None | `main`. Local build checks; dedicated hardware acceptance pending. |
 | Waveshare 1.69-inch, external-Hub preview | Root: `GBS_TOUCHSCREEN=ON` | 16 MB / 8 MB octal | 240 × 280 | `main`. Synthetic UI/client checks; separate Hub required. See [guide](TOUCHSCREEN.md). |
@@ -96,7 +96,9 @@ integrated LCD support; see its [scope](TOUCHSCREEN.md).
 - AMOLED: [power, battery and cup evidence](AMOLED216.md#validation-status-2026-10-23),
   including accepted node cues on `f8b54b1a`; subsequent `211d2963` has local
   UI and startup checks, with the physical cross-cup check still open.
-- ESP-Mosaico: final installed build `8d4984d3` passed four automatic BLE
+- ESP-Mosaico: `96c43cd7` passed one sleep/wake and new-cup return as detailed
+  in [MOSAICO.md](MOSAICO.md#wake-readiness-on-the-home-screen).
+  Earlier build `8d4984d3` passed four automatic BLE
   temperature refreshes over 100 seconds with Cloud and grinder ready. USB
   installation and LAN OTA were exercised during the port. Four-direction
   rotation/touch passed on `0436954d`; sound was confirmed on an earlier S31

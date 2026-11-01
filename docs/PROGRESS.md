@@ -1,11 +1,21 @@
 # Development progress
 
-Updated 2026-10-28. The integrated firmware now has an ESP-Mosaico ESP32-S31
+Updated 2026-11-01. The integrated firmware now has an ESP-Mosaico ESP32-S31
 profile alongside the existing S3 profiles. Current development is on
 [`codex/s31-mosaico-port`](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port);
 `main` and the older AMOLED branch retain their recorded scopes. All variants
 remain experimental. The results below distinguish local checks, named field
 builds and the remaining hardware gates.
+
+## S31 wake readiness and real-cup return (2026-11-01)
+
+Build `96c43cd7` displays actual clock synchronization and linkage recovery in
+the home status area, then returns to cup progress when a new job begins.
+After application OTA, the user completed a physical sleep/wake cycle and one
+20 g recipe-follow cup. The measured 19.4 g / 38.148 s result received the
+grinder's acknowledgement; the success counter advanced from 10 to 11 without
+manual replay. Native UI, host and S31 build checks passed. See the
+[exact-build evidence and remaining limits](MOSAICO.md#wake-readiness-on-the-home-screen).
 
 ## ESP-Mosaico port (2026-10-28)
 
@@ -97,7 +107,7 @@ See the [exact-build status](AMOLED216.md#validation-status-2026-10-23).
 
 | Surface | Evidence and status |
 | --- | --- |
-| ESP-Mosaico S31 | `8d4984d3`: automatic BLE temperature refresh and Cloud/grinder readiness. Earlier S31 builds: rotation/touch and sound. Complete new-cup writes, endurance and charging gates remain open. |
+| ESP-Mosaico S31 | `96c43cd7`: physical sleep/wake readiness and one real cup with recipe application and acknowledged return. Earlier builds: BLE temperature, rotation/touch and sound. Repeated cups, endurance and charging gates remain open. |
 | S3 AMOLED on the current development branch | Isolated full ESP-IDF 5.5.4 build passed without changing the active S31 dependency tree or flashing the S3 board. Earlier S3 hardware results remain build-specific. |
 | Integrated touchscreen source | `c88791b2` has one successful cup in each direction. Later `b923fa91` passed OTA and one scale off/on/off cycle on the 1.69-inch board; a new-build cup, endurance and physical touch latency remain unverified. |
 | Integrated headless | Shared Hub/grinder core with no display tasks. Dedicated integrated-headless hardware acceptance remains open. |
@@ -137,8 +147,8 @@ UI calls the same board's Hub directly. Their setup guides must not be mixed.
 
 ## Remaining work, in order
 
-1. Complete S31 new-cup recipe writes and feedback acceptance on the installed
-   build, followed by battery-runtime and charging checks. Recheck rotation,
+1. Repeat S31 cup acceptance beyond the single verified `96c43cd7` cup,
+   followed by battery-runtime and charging checks. Recheck rotation,
    touch and sound if subsequent changes affect those paths.
 2. Verify a real cup on `b923fa91`, then repeat alternating-handle tests beyond
    the single successful cup in each direction on the earlier `c88791b2` build.

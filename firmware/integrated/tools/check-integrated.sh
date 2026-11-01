@@ -22,6 +22,7 @@ for name in logic worker display_model device_policy mosaico_battery scale_batte
 done
 python integrated/tests/test_amoled_audio.py
 python integrated/tests/test_mosaico_orientation.py
+python integrated/tests/test_mosaico_power.py
 python integrated/tests/test_display_preferences.py
 python tools/test_integrated_surface.py
 python tools/test_schedule_control.py
@@ -30,6 +31,7 @@ python tools/test_ble_worker_recovery.py
 python tools/test_cloud_command_timing.py
 python tools/test_cloud_connection_reuse.py
 python tools/test_cloud_history.py
+python tools/test_cloud_time_sync.py
 python tools/test_quick_weight_control.py
 python tools/test_cloud_quick_weight.py
 python tools/test_integrated_support.py

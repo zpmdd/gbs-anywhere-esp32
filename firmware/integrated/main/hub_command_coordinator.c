@@ -82,6 +82,20 @@ static void unlock_commands(void)
     xSemaphoreGive(command_mutex);
 }
 
+bool hub_command_begin_sleep(void)
+{
+    if (!lock_commands()) return false;
+    for (size_t i=0;i<HUB_COMMAND_QUEUE_CAPACITY;++i) {
+        if (inflight_entries[i].used) { unlock_commands(); return false; }
+    }
+    return true;
+}
+
+void hub_command_end_sleep(void)
+{
+    unlock_commands();
+}
+
 static const char *command_kind_name(hub_command_kind_t kind)
 {
     switch (kind) {

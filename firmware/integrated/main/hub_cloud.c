@@ -170,6 +170,7 @@ static bool machine_selected = false;
 static bool ble_token_cached = false;
 static bool cached_snapshot = false;
 static bool sntp_initialized = false;
+static atomic_bool sntp_synchronized, sntp_failed;
 static bool command_refresh_pending = false;
 static uint32_t command_refresh_generation = 0;
 static bool refresh_running = false;
@@ -924,31 +925,39 @@ static bool time_is_reasonable(void)
     return tm.tm_year + 1900 >= 2025;
 }
 
+const char *hub_cloud_time_status(void)
+{
+    if (atomic_load(&sntp_synchronized) && time_is_reasonable()) return "synchronized";
+    return atomic_load(&sntp_failed) ? "failed" : "syncing";
+}
+
 static esp_err_t ensure_time_synced(void)
 {
-    if (time_is_reasonable()) {
+    // RTC retains a plausible date across deep sleep, not proof of a fresh clock sync.
+    if (atomic_load(&sntp_synchronized) && time_is_reasonable()) {
         return ESP_OK;
     }
+    atomic_store(&sntp_failed, false);
 
     if (!sntp_initialized) {
         esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
         config.wait_for_sync = true;
         esp_err_t err = esp_netif_sntp_init(&config);
         if (err != ESP_OK) {
+            atomic_store(&sntp_failed, true);
             return err;
         }
         sntp_initialized = true;
     }
 
     for (int i = 0; i < 15; i++) {
-        if (time_is_reasonable()) {
-            return ESP_OK;
-        }
         esp_err_t err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(2000));
         if (err == ESP_OK && time_is_reasonable()) {
+            atomic_store(&sntp_synchronized, true);
             return ESP_OK;
         }
     }
+    atomic_store(&sntp_failed, true);
     return ESP_ERR_TIMEOUT;
 }
 

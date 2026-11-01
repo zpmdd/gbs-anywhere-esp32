@@ -57,6 +57,8 @@ typedef struct {
 } hub_cloud_websocket_auth_t;
 
 esp_err_t hub_cloud_refresh(void);
+// Current boot's SNTP evidence, independent of a retained RTC date or Cloud login.
+const char *hub_cloud_time_status(void);
 // Bounded accessory read on the existing keeper/Cloud IO path.
 esp_err_t hub_cloud_refresh_scale(bool *request_attempted);
 bool hub_cloud_has_fresh_scale_battery(void);

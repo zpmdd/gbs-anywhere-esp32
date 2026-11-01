@@ -235,6 +235,7 @@ BaseType_t xQueueReset(QueueHandle_t handle)
     return pdTRUE;
 }
 
+static bool mutex_held;
 SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
     return (SemaphoreHandle_t)1;
@@ -244,12 +245,16 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t ticks)
 {
     (void)semaphore;
     (void)ticks;
+    if (mutex_held) return pdFALSE;
+    mutex_held=true;
     return pdTRUE;
 }
 
 BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
 {
     (void)semaphore;
+    assert(mutex_held);
+    mutex_held=false;
     return pdTRUE;
 }
 
@@ -1293,8 +1298,26 @@ static void test_recipe_guard_and_manual_override(void)
     require_true(!observed_online_required, "manual command inherited automatic connectivity policy");
 }
 
+static void test_sleep_admission(void)
+{
+    reset();
+    completion_capture_t capture = {0};
+    hub_command_submission_t submission = {0};
+    hub_command_request_t command = request("00000000-0000-4000-8000-000000000001", HUB_COMMAND_BBW_DOSE);
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED, "submit not accepted");
+    require_true(!hub_command_begin_sleep(), "sleep interrupted queued control");
+    require_true(hub_command_coordinator_process_next_for_test(), "control did not finish");
+    require_true(hub_command_begin_sleep(), "idle sleep was rejected");
+    command = request("00000000-0000-4000-8000-000000000002", HUB_COMMAND_POWER);
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_QUEUE_FULL, "control entered while sleeping");
+    hub_command_end_sleep();
+    require_true(submit(&command, &capture, &submission) == HUB_COMMAND_ACCEPTED, "abandoned sleep did not release controls");
+    require_true(hub_command_coordinator_process_next_for_test(), "control did not resume");
+}
+
 int main(void)
 {
+    test_sleep_admission();
     test_recipe_guard_and_manual_override();
     test_v2_status_without_deadline();
     require_true(hub_command_coordinator_start() == ESP_OK, "coordinator failed to start");
@@ -1374,7 +1397,7 @@ def main() -> None:
         subprocess.run(command, cwd=ROOT, check=True)
         subprocess.run([str(binary_path)], cwd=ROOT, check=True)
 
-    print("command coordinator host tests passed (33 cases including idle-read grace boundaries, cold-boot queue reset and request-scoped timing)")
+    print("command coordinator host tests passed (including sleep admission, idle-read grace, cold-boot queue reset and request-scoped timing)")
 
 
 if __name__ == "__main__":

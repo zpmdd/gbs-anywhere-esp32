@@ -9,3 +9,7 @@ bool hub_touchscreen_parse_command(const char *path, const char *body, const cha
 // In-process dispatch only; never opens a socket or reads another Hub's identity.
 int hub_touchscreen_exchange(const char *path, const char *body, const char *serial,
                             char *reply, size_t size, int64_t deadline_ms, bool *stale);
+#ifdef HUB_MOSAICO
+bool hub_touchscreen_begin_sleep(void);
+void hub_touchscreen_end_sleep(void);
+#endif

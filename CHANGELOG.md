@@ -1,5 +1,22 @@
 # Changelog
 
+## S31 sleep, recovery and feedback - 2026-11-01
+
+- Make the AI-button hold enter deep sleep at the hold threshold, with a failure
+  cue; a separate short press wakes with a success cue and restores saved mode.
+  Active cups and queued controls prevent sleep.
+- Recover the Mosaico battery gauge from its unconfigured ROM profile, verify
+  the BSP profile with bounded retries and expose battery diagnostics.
+- Require a fresh SNTP completion after every boot and repair inherited future
+  coffee watermarks when accepting a fresh job, preserving the no-replay journal.
+- Show clock synchronization, linkage recovery and readiness on the native
+  home screen; retain previous cup outcomes in details and prioritize new cups.
+- Validate application build `96c43cd7` on S31 through a physical sleep/wake
+  cycle and one 20 g recipe-follow cup: 19.4 g / 38.148 s, acknowledged return,
+  success counter 10 -> 11 and user confirmation. No manual return was needed.
+- Publish synthetic native-renderer recovery previews and exact-build evidence.
+  Repeated cups, physical burr adjustment and battery endurance remain open.
+
 ## Documentation - 2026-10-23
 
 - Reorganize the project overview around the coffee workflow, native screenshots,

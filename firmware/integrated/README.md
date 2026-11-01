@@ -35,7 +35,7 @@ the build. S3 and S31 application images are not interchangeable, including when
 they have the same output filename.
 
 This profile reuses the AMOLED interface and workflow with Mosaico-specific
-display/touch orientation, BMI270, read-only BQ27220 battery monitoring, ES8311
+display/touch orientation, BMI270, BQ27220 monitoring with verified BSP-profile recovery, ES8311
 audio and USB CDC. It has 16 MB PSRAM and three 5 MiB application partitions in
 16 MB NOR flash. Its initial installation requires its own bootloader,
 `partitions.mosaico.csv`, application and private NVS; never flash an S3 image
@@ -46,10 +46,12 @@ calibration. The NAND flash is not modified or required.
 The new device uses model `lamabuddy-esp32s31-mosaico` and hostname
 `lamabuddy-mosaico`. A retired grinder identity must have only one running
 owner. First-install imports start in monitor mode and establish a fresh
-task baseline before activation. Final build `8d4984d3` has OTA/restart and
+task baseline before activation. Earlier build `8d4984d3` has OTA/restart and
 100-second, four-update BLE temperature evidence. Four-direction rotation and
 touch were confirmed on `0436954d`, and sound on an earlier installation;
-these were not repeated manual checks of the final build. S31 real cups, BLE
+these were not repeated manual checks of that build. Build `96c43cd7` passed
+sleep/wake readiness and one real 20 g recipe-follow cup, returning a measured
+19.4 g / 38.148 s result with grinder acknowledgement. Repeated cups, BLE
 writes, prolonged stability and battery endurance remain open. More PSRAM is
 capacity, not a measured speedup. See the guide for the exact artifact digest
 and remaining hardware gates.

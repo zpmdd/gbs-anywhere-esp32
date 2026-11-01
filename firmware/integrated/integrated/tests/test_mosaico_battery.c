@@ -4,6 +4,9 @@
 
 int main(void)
 {
+    assert(gbs_mosaico_battery_needs_profile(3000));
+    assert(!gbs_mosaico_battery_needs_profile(65));
+    assert(!gbs_mosaico_battery_needs_profile(80));
     gbs_device_status_t status={.orientation=GBS_ORIENTATION_USB_TOP};
     gbs_mosaico_battery_update(&status,true,8,23,32,54,100);
     assert(status.valid && status.battery_present && status.battery_percent_known && status.battery_percent==54);

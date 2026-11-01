@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "hub_config.h"
+#include "hub_cloud.h"
 #include "hub_wifi.h"
 #include "hub_grinder.h"
 #include "hub_command_coordinator.h"
@@ -101,6 +102,7 @@ static void add_display_state(cJSON *j)
     cJSON_AddBoolToObject(j, "canceling", pending && canceled);
     cJSON_AddBoolToObject(j, "coffee_invalid", invalid_coffee);
     cJSON_AddBoolToObject(j, "baseline_pending", baseline_jobs || !cloud_initialized);
+    cJSON_AddNumberToObject(j, "watermark_ms", ledger.watermark_ms);
     cJSON_AddNumberToObject(j, "job_deadline_ms", have_job && !pending ? job_deadline_us / 1000 : 0);
     cJSON_AddNumberToObject(j, "answer_deadline_ms", pending ? answer_deadline_us / 1000 : 0);
     cJSON_AddNumberToObject(j, "grinder_retry_at_ms", next_jobs / 1000);
@@ -130,6 +132,7 @@ static void publish(const char *phase)
     cJSON_AddStringToObject(j, "build", esp_app_get_description()->version);
     cJSON_AddStringToObject(j, "mode", active ? "active" : "monitor");
     cJSON_AddStringToObject(j, "phase", phase);
+    cJSON_AddStringToObject(j, "clock_status", hub_cloud_time_status());
     add_display_state(j);
     gbs_recipe_follow_diagnostics(j);
     cJSON_AddBoolToObject(j, "wifi", atomic_load(&wifi_online));
@@ -384,6 +387,11 @@ static void jobs_tick(void)
     }
     int idle=0;
     if(!atomic_compare_exchange_strong(&admission,&idle,1)) { cJSON_Delete(reply); return; }
+    // Rebase a pre-sync wake's future watermark only with a fresh job and Cloud baseline; keep seen IDs.
+    if (ledger.watermark_ms > now) {
+        ESP_LOGW(TAG, "rebasing future coffee watermark after clock synchronization");
+        ledger.watermark_ms = 0;
+    }
     if (before.time_ms > ledger.watermark_ms) ledger.watermark_ms = before.time_ms;
     if (now > ledger.watermark_ms) ledger.watermark_ms = now;
     cJSON_ArrayForEach(item, jobs) if (gbs_parse_job(item, &job)) gbs_remember(&ledger, job.uuid);

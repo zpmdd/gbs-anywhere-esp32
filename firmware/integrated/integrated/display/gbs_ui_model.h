@@ -5,7 +5,7 @@
 typedef struct {
     bool valid, wifi, grinder, cloud, storage, pairing, active, job, pending, canceling;
     bool baseline, mode_failed, invalid_coffee;
-    char phase[32], outcome[40];
+    char phase[32], outcome[40], clock_status[16];
     char recipe_phase[24], job_id[64];
     char flow_job_id[64], recipe_job_id[64];
     bool recipe_current;
@@ -137,6 +137,7 @@ typedef enum {
 
 bool gbs_ui_parse_bridge(const char *json, gbs_ui_bridge_t *out);
 gbs_ui_stage_t gbs_ui_stage(const gbs_ui_bridge_t *state);
+gbs_ui_stage_t gbs_ui_home_stage(const gbs_ui_bridge_t *state);
 unsigned gbs_ui_remaining(int64_t deadline_ms, int64_t now_ms);
 bool gbs_ui_busy(const gbs_ui_bridge_t *state, gbs_ui_control_t control, bool confirming);
 unsigned gbs_ui_backlight(unsigned brightness, bool dim_enabled, int64_t idle_ms, bool busy);

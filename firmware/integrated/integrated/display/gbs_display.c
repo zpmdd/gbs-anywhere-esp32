@@ -1,6 +1,10 @@
 #include "gbs_display.h"
 #include "gbs_ui.h"
 #include "gbs_hub_client.h"
+#ifdef HUB_MOSAICO
+#include "hub_touchscreen.h"
+#include "esp_sleep.h"
+#endif
 #include "driver/gpio.h"
 #ifdef HUB_AMOLED_216
 #include "gbs_board_amoled216.h"
@@ -110,7 +114,7 @@ bool gbs_display_diagnostics_json(char *buffer,size_t size)
     display_performance_t perf;
     portENTER_CRITICAL(&performance_lock); perf=performance; portEXIT_CRITICAL(&performance_lock);
 #ifdef HUB_AMOLED_216
-    char board[768]="";
+    char board[1152]="";
     gbs_audio_diagnostics_t audio=gbs_board_amoled216_audio_diagnostics();
     float xyz[3]={0};
     bool imu_valid=gbs_board_amoled216_acceleration(xyz);
@@ -126,6 +130,18 @@ bool gbs_display_diagnostics_json(char *buffer,size_t size)
         pmu.decoded.battery_percent_known?"true":"false",pmu.decoded.battery_percent,pmu.decoded.observed_ms,
         audio.success,audio.failure,audio.notice,audio.errors,audio.volume_percent,atomic_load(&variable_weight));
     if (board_count<0 || (size_t)board_count>=sizeof(board)) return false;
+#ifdef HUB_MOSAICO
+    int extra=snprintf(board+board_count,sizeof(board)-(size_t)board_count,
+        ",\"gaugeValid\":%s,\"batteryVoltageMv\":%u,\"batteryCurrentMa\":%d,"
+        "\"batteryAverageCurrentMa\":%d,\"batteryRemainingMah\":%u,\"batteryFullMah\":%u,"
+        "\"batteryDesignMah\":%u,\"gaugeOperation\":%u,\"batteryProfileReady\":%s,"
+        "\"batteryProfileAttempts\":%u,\"wakeCauses\":%lu",
+        pmu.gauge_valid?"true":"false",pmu.voltage_mv,pmu.current_ma,pmu.average_current_ma,
+        pmu.remaining_mah,pmu.full_mah,pmu.design_mah,pmu.operation,
+        pmu.profile_ready?"true":"false",pmu.profile_attempts,
+        (unsigned long)esp_sleep_get_wakeup_causes());
+    if(extra<0 || (size_t)extra>=sizeof(board)-(size_t)board_count) return false;
+#endif
 #else
     const char *board="";
 #endif
@@ -406,7 +422,19 @@ static void task(void *unused)
             last_input=now;
             if(manual_sleep || backlight==0) manual_sleep=false;
             else gbs_ui_home_safe();
-        } else if(user_key==GBS_BUTTON_LONG) manual_sleep=true;
+        } else if(user_key==GBS_BUTTON_LONG) {
+#ifdef HUB_MOSAICO
+            gbs_ui_home_safe();
+            if(!gbs_ui_keep_awake() && hub_touchscreen_begin_sleep()) {
+                esp_err_t sleep_error=gbs_board_mosaico_sleep();
+                hub_touchscreen_end_sleep();
+                backlight=0; /* Restore brightness if preparation failed after blanking. */
+                ESP_LOGW(TAG,"Sleep not entered: %s",esp_err_to_name(sleep_error));
+            }
+#else
+            manual_sleep=true;
+#endif
+        }
         if(boot_key==GBS_BUTTON_SHORT) {
             last_input=now;
             if(manual_sleep || backlight==0) manual_sleep=false;

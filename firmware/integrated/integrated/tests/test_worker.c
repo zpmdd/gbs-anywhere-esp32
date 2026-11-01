@@ -234,10 +234,44 @@ static void idle_coffee_scheduling(void)
     cloud_initialized=true; listed_job=true; jobs_tick();
     assert(have_job&&accepted&&coffee_reads==2&&idle_defer_queries==0&&recipe_ticks==1);
 }
+static void corrected_wake_clock(void)
+{
+    const int64_t offsets[] = {1, 60000, 87670, 120000, 120001, 1606000};
+    for (unsigned i=0;i<sizeof(offsets)/sizeof(offsets[0]);++i) {
+        reset();
+        gbs_remember(&ledger, NEW_ID);
+        ledger.watermark_ms = gbs_now_ms() + offsets[i];
+        listed_job = true;
+        jobs_tick();
+        assert(have_job && accepted && ledger.watermark_ms == gbs_now_ms());
+        assert(gbs_seen(&ledger, NEW_ID));
+        coffee_tick(); assert(done_calls == 0); // The fresh baseline cup is never replayed.
+        measured(); assert(done_calls == 1 && ledger.successes == 1 && !have_job);
+        listed_job = true; jobs_tick(); assert(accept_calls == 1 && done_calls == 1);
+    }
+
+    reset();
+    ledger.watermark_ms = gbs_now_ms() + 120000;
+    fake_coffee.time_ms = ledger.watermark_ms;
+    listed_job = true; jobs_tick();
+    assert(have_job && ledger.watermark_ms == gbs_now_ms() + 120000);
+    measured(); assert(have_job && done_calls == 0); // Retain a future cup confirmed by the fresh Cloud baseline.
+
+    reset(); ledger.watermark_ms = gbs_now_ms() + 1606000;
+    fake_coffee.time_ms = ledger.watermark_ms;
+    listed_job = true; jobs_tick();
+    assert(!have_job && !accept_calls && !done_calls); // A bad Cloud clock cannot authorize rebasing.
+
+    reset(); cloud_initialized = false;
+    ledger.watermark_ms = gbs_now_ms() + 1606000;
+    listed_job = true; jobs_tick();
+    assert(!have_job && !accept_calls && ledger.watermark_ms == gbs_now_ms() + 1606000);
+}
 int main(void)
 {
     idle_coffee_scheduling();
     boot_recovery();
+    corrected_wake_clock();
     // Background battery acquisition observes admission without reserving it or changing worker state.
     for(int state=0;state<=3;++state) {
         atomic_store(&admission,state);
@@ -398,5 +432,5 @@ int main(void)
 
     reset(); listed_job = true; fail_storage = true; jobs_tick();
     assert(!storage_ok && !have_job && accept_calls == 0 && done_calls == 0);
-    puts("PASS: idle-read defer preserves due/health and live baselines, cold-boot dedup/no replay, fresh next cup, worker recovery, ambiguous delivery and NVS failure");
+    puts("PASS: idle-read defer, wake-clock correction, cold-boot dedup/no replay, fresh next cup, worker recovery, ambiguous delivery and NVS failure");
 }

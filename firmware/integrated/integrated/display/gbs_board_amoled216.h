@@ -21,6 +21,13 @@ bool gbs_board_amoled216_acceleration(float xyz[3]);
 typedef struct {
     uint8_t raw00, raw01;
     gbs_device_status_t decoded;
+#ifdef HUB_MOSAICO
+    bool gauge_valid;
+    bool profile_ready;
+    unsigned profile_attempts;
+    uint16_t voltage_mv, remaining_mah, full_mah, design_mah, operation;
+    int16_t current_ma, average_current_ma;
+#endif
 } gbs_pmu_diagnostics_t;
 /* Copy the last sensor poll under its mutex; never performs I2C reads.
  * Expired decoded status is invalid, while raw bytes remain diagnostic. */
@@ -31,3 +38,9 @@ bool gbs_board_amoled216_buttons(int64_t now_ms, bool blank,
 
 typedef struct { unsigned success, failure, notice, errors, volume_percent; } gbs_audio_diagnostics_t;
 gbs_audio_diagnostics_t gbs_board_amoled216_audio_diagnostics(void);
+#ifdef HUB_MOSAICO
+/* Consume release of the sleep press before display, networking or jobs start. */
+void gbs_board_mosaico_check_wake(void);
+/* Returns only if sleep is rejected before peripherals are powered down. */
+esp_err_t gbs_board_mosaico_sleep(void);
+#endif

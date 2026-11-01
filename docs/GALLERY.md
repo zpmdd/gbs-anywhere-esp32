@@ -7,6 +7,26 @@ compiled LVGL renderer; the browser captures run the real status-page HTML
 against a local fixture. None is a device photograph, live telemetry capture
 or new hardware-acceptance result. Current native screen labels are Chinese.
 
+## S31 wake recovery · 480 × 480
+
+Source: `codex/s31-mosaico-port`, the native renderer used by build `96c43cd7`.
+These are **synthetic simulator frames**, separate from the physical sleep/wake
+and cup evidence in the [Mosaico guide](MOSAICO.md#wake-readiness-on-the-home-screen).
+
+<table>
+  <tr>
+    <td align="center"><img src="images/s31-wake-clock.png" width="300" alt="Native home synchronizing time after wake"><br><strong>Synchronize time</strong></td>
+    <td align="center"><img src="images/s31-wake-recovery.png" width="300" alt="Time synchronized; waiting for Cloud linkage"><br><strong>Restore linkage</strong></td>
+    <td align="center"><img src="images/s31-wake-ready.png" width="300" alt="Green linkage readiness while steam preheat remains separate"><br><strong>Linkage ready</strong></td>
+  </tr>
+</table>
+
+The main status area follows actual startup evidence. Linkage readiness is
+independent of boiler preheat and Bluetooth state. A new cup restores the
+usual recipe/result/return progress view; previous outcomes remain in details.
+On S31, hold AI about 1.5 seconds to sleep, release it, then use a separate
+short press to wake. Wait for readiness before grinding.
+
 ## 2.16-inch AMOLED · 480 × 480
 
 Source: the public [AMOLED adaptation branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/amoled-216-local-adaptation).

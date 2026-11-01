@@ -1264,6 +1264,46 @@ static void amoled_offline_weight_test(const char *directory)
     puts("AMOLED offline weight: pending/confirmed/failed, variable success-only memory and Cloud-unavailable guard PASS");
 }
 
+static void amoled_wake_readiness_test(const char *directory)
+{
+    gbs_ui_init(submit,NULL);scene(1);pending=false;
+    unsigned controls=requests;
+    machine.boiler_observed_unix=time(NULL);machine.steam_ready_unix=time(NULL)+480;
+    gbs_ui_set_machine(&machine);
+    strcpy(bridge.outcome,"canceled");strcpy(bridge.clock_status,"syncing");
+    gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"正在校时")&&!find_text(lv_scr_act(),"本杯已结束"));
+    if(directory)save_screen(directory,"wake-clock");
+    strcpy(bridge.clock_status,"failed");gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"校时暂未完成")&&!find_text(lv_scr_act(),"联动已就绪"));
+    if(directory)save_screen(directory,"wake-clock-failed");
+    strcpy(bridge.clock_status,"synchronized");bridge.cloud=false;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"恢复联动中")&&find_text_containing(lv_scr_act(),"等待云端连接"));
+    if(directory)save_screen(directory,"wake-cloud");
+    bridge.cloud=true;bridge.grinder=false;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text_containing(lv_scr_act(),"等待磨豆机连接"));
+    bridge.grinder=true;bridge.baseline=true;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text_containing(lv_scr_act(),"正在同步任务状态"));
+    bridge.baseline=false;gbs_ui_set_bridge(&bridge);paint();
+    lv_obj_t *title=find_text(lv_scr_act(),"联动已就绪");
+    lv_obj_t *detail=find_text_containing(lv_scr_act(),"时间已校准");
+    assert(title&&detail&&find_text(lv_scr_act(),"蒸汽预热"));
+    assert(lv_obj_get_style_text_color(title,0).full==lv_color_hex(0xa6edc4).full);
+    lv_area_t bounds;lv_obj_get_coords(detail,&bounds);
+    assert(bounds.y2<281&&bounds.x2<307);
+    visible_labels(lv_scr_act());
+    if(directory)save_screen(directory,"wake-ready");
+    assert(!strcmp(bridge.outcome,"canceled")&&gbs_ui_stage(&bridge)==GBS_UI_EXPIRED);
+    bridge.job=true;bridge.job_deadline_ms=190000;
+    strcpy(bridge.flow_job_id,"synthetic-wake-cup");strcpy(bridge.job_id,bridge.flow_job_id);
+    gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"等待本杯结果")&&!find_text(lv_scr_act(),"联动已就绪"));
+    bridge.job=false;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"本杯已结束")&&!find_text(lv_scr_act(),"联动已就绪"));
+    assert(requests==controls);
+    puts("AMOLED wake: real clock states, complete readiness, warmup independence, layout and current-cup precedence PASS");
+}
+
 static void amoled_self_test(const char *directory)
 {
     amoled_offline_weight_test(directory);
@@ -1507,6 +1547,7 @@ static void amoled_self_test(const char *directory)
     amoled_top_status_test();
     amoled_top_status_clock_test();
     amoled_early_cancel_test();
+    amoled_wake_readiness_test(directory);
     puts("AMOLED UI: 480 px pages, merged scale, separate battery, local preferences, stale guards, completed command feedback, event tones and glyph coverage passed");
 }
 #endif

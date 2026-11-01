@@ -1,8 +1,13 @@
 #pragma once
 #include "gbs_device.h"
 
-/* BQ27220 TRM SLUUBD4A: BatteryStatus, Current, OperationStatus and SOC.
- * Read the factory gauge profile; do not replace its calibrated capacity. */
+/* BQ27220's unconfigured ROM profile is 3000 mAh, not the Mosaico cell. */
+static inline bool gbs_mosaico_battery_needs_profile(uint16_t design_mah)
+{
+    return design_mah==3000;
+}
+
+/* BQ27220 TRM SLUUBD4A: BatteryStatus, Current, OperationStatus and SOC. */
 static inline void gbs_mosaico_battery_update(gbs_device_status_t *status,
     bool valid, uint16_t flags, int16_t current_ma, uint16_t operation,
     uint16_t percent, int64_t now)

@@ -22,6 +22,9 @@
 #include "hub_state_keeper.h"
 #include "hub_version.h"
 #include "hub_wifi.h"
+#ifdef HUB_MOSAICO
+#include "gbs_board_amoled216.h"
+#endif
 
 #ifdef HUB_GRINDER
 #include "hub_grinder.h"
@@ -53,6 +56,9 @@ static void configure_json_allocator(void)
 
 void app_main(void)
 {
+#ifdef HUB_MOSAICO
+    gbs_board_mosaico_check_wake();
+#endif
     configure_json_allocator();
 
     esp_chip_info_t chip_info;

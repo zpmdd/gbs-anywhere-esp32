@@ -4,6 +4,16 @@ All published images use synthetic data. No private framebuffer, real device
 identifier, network address, pairing identity or raw device log is included.
 The gallery is visual documentation, not an additional hardware test.
 
+## S31 wake recovery (2026-11-01)
+
+`s31-wake-clock`, `s31-wake-recovery` and `s31-wake-ready` are lossless PNG
+exports of `wake-clock`, `wake-cloud` and `wake-ready` from the compiled native
+simulator's `--self-test` frames. They use the same display source as application
+build `96c43cd7` on `codex/s31-mosaico-port`, with synthetic battery, connection
+and warm-up values. They contain no live device pixels or identifiers.
+The self-test checks recovery prerequisites, glyphs, layout and new-cup priority.
+Use the commands below on the S31 development branch to regenerate them.
+
 ## Current showcase (2026-10-23)
 
 | Files | Source |

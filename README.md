@@ -21,6 +21,12 @@ without an always-on computer, container or NAS. Choose a compact headless
 bridge or an integrated touchscreen with coffee-machine controls, recipe
 following and LAN updates. A computer is needed for initial setup and pairing.
 
+**S31 update (2026-11-01):** hold AI to sleep, short-press to wake, and follow
+clock synchronization and linkage recovery directly on the home screen.
+Build `96c43cd7` passed one physical sleep/wake and recipe-follow cup with
+acknowledged feedback. See the [field evidence](docs/MOSAICO.md#wake-readiness-on-the-home-screen)
+and [recovery screens](docs/GALLERY.md#s31-wake-recovery--480--480).
+
 **Prefer a computer or NAS with a browser?** The separate
 [desktop recipe-follow branch](https://github.com/zpmdd/gbs-anywhere/tree/codex/desktop-recipe-follow)
 adds optional automatic recipe targets to the original Rust application for
@@ -87,8 +93,8 @@ of a new field test. [More screens, browser UI and image provenance →](docs/GA
 | Board / build | Display · flash / PSRAM | Source | Evidence |
 | --- | --- | --- | --- |
 | **Waveshare ESP32-S3-Touch-LCD-1.69** · integrated | 240 × 280 · 16 MB / 8 MB | `main`, `touchscreen` | Physical touch, recipe-follow cups in both directions, OTA and scale-state cycle. |
-| **Waveshare ESP32-S3-Touch-AMOLED-2.16** · integrated | 480 × 480 · 16 MB / 8 MB | [Current development branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port), `amoled216` | Earlier S3 builds have rotation/touch, PWR, battery and cup evidence; current source passes an isolated S3 build regression. |
-| **ESP-Mosaico, ESP32-S31** · integrated | 480 × 480 · 16 MB / 16 MB | [S31 branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port), `mosaico` | USB installation, LAN OTA and BLE temperature refresh; earlier S31 builds passed rotation/touch and sound checks. New-cup writes and endurance pending. |
+| **Waveshare ESP32-S3-Touch-AMOLED-2.16** · integrated | 480 × 480 · 16 MB / 8 MB | [Current development branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port), `amoled216` | Earlier S3 builds have rotation/touch, PWR, battery and cup evidence; an earlier source revision passed an isolated S3 build regression. |
+| **ESP-Mosaico, ESP32-S31** · integrated | 480 × 480 · 16 MB / 16 MB | [S31 branch](https://github.com/zpmdd/gbs-anywhere-esp32/tree/codex/s31-mosaico-port), `mosaico` | `96c43cd7`: sleep/wake readiness and one real recipe-follow cup with acknowledged feedback. Earlier builds cover BLE temperature, rotation/touch and sound. Repeatability and endurance pending. |
 | **ESP32-S3, no display** · lightweight | 8 MB / 8 MB octal | `main`, root application | Feedback-port hardware evidence; exact-build limits apply. |
 | **ESP32-S3, no display** · integrated | 8 MB / 8 MB octal | `main`, `headless` | Local build checks; dedicated physical acceptance pending. |
 | **1.69-inch external-Hub preview** | 240 × 280 · 16 MB / 8 MB | `main`, root `GBS_TOUCHSCREEN=ON` | Simulator/client validation; needs a separate Hub. |

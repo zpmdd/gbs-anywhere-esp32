@@ -6,6 +6,24 @@
 #include "hub_state.h"
 #include <stdio.h>
 #include <string.h>
+#ifdef HUB_MOSAICO
+#include "hub_grinder.h"
+#include "hub_brew_timer.h"
+
+bool hub_touchscreen_begin_sleep(void)
+{
+    if (!hub_grinder_begin_maintenance()) return false;
+    if (!hub_command_begin_sleep()) { hub_grinder_end_maintenance(); return false; }
+    if (hub_brew_timer_is_brewing()) { hub_touchscreen_end_sleep(); return false; }
+    return true;
+}
+
+void hub_touchscreen_end_sleep(void)
+{
+    hub_command_end_sleep();
+    hub_grinder_end_maintenance();
+}
+#endif
 
 static int copy(const char *text,char *reply,size_t size,bool identity)
 {

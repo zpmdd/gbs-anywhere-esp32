@@ -56,6 +56,8 @@ bool gbs_ui_parse_bridge(const char *json, gbs_ui_bridge_t *out)
     }
     gbs_ui_bridge_t next = {0};
     strcpy(next.phase, phase->valuestring);
+    const cJSON *clock = cJSON_GetObjectItemCaseSensitive(j, "clock_status");
+    if (cJSON_IsString(clock)) snprintf(next.clock_status, sizeof(next.clock_status), "%s", clock->valuestring);
     next.valid = strcmp(next.phase, "booting") != 0 && strcmp(next.phase, "configuration_required") != 0;
     next.wifi = flag(j, "wifi"); next.grinder = flag(j, "grinder");
     next.cloud = flag(j, "cloud"); next.storage = flag(j, "storage");
@@ -208,6 +210,17 @@ gbs_ui_stage_t gbs_ui_stage(const gbs_ui_bridge_t *s)
     if (s->baseline) return GBS_UI_BASELINE;
     if (!s->active) return GBS_UI_MONITOR;
     return !strcmp(s->outcome, "success") ? GBS_UI_RECEIVED : GBS_UI_READY;
+}
+
+gbs_ui_stage_t gbs_ui_home_stage(const gbs_ui_bridge_t *s)
+{
+    if (s->job || s->pending || s->flow_job_id[0] || !s->clock_status[0]) return gbs_ui_stage(s);
+    // A prior boot's cup stays in details; the idle home reports this boot's readiness.
+    gbs_ui_bridge_t startup = *s;
+    startup.outcome[0] = 0;
+    if (startup.valid && startup.storage && !startup.pairing && startup.wifi && startup.active &&
+        strcmp(startup.clock_status, "synchronized")) return GBS_UI_CLOCK;
+    return gbs_ui_stage(&startup);
 }
 
 unsigned gbs_ui_remaining(int64_t deadline_ms, int64_t now_ms)

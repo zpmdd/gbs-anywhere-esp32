@@ -148,6 +148,10 @@ void hub_command_coordinator_reset(void);
 bool hub_command_target_guard_get(hub_machine_selection_identity_t *target);
 bool hub_command_target_guard_matches(void);
 bool hub_command_interactive_pending(void);
+/* Idle-only sleep admission. Success holds the command mutex until sleep or
+ * hub_command_end_sleep(), called by the same task if sleep is abandoned. */
+bool hub_command_begin_sleep(void);
+void hub_command_end_sleep(void);
 /* Idle-only reads yield while interactive work is pending or for 10 seconds after
  * a manual interactive completion. This does not cancel an in-flight read. */
 bool hub_command_idle_background_deferred(void);

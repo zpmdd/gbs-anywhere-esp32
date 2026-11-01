@@ -413,7 +413,8 @@ static void amoled_refresh(void)
         }
         return;
     }
-    gbs_ui_stage_t stage=gbs_ui_stage(&ui.bridge);
+    gbs_ui_stage_t stage=gbs_ui_home_stage(&ui.bridge);
+    bool startup=ui.bridge.clock_status[0]&&!ui.bridge.flow_job_id[0]&&!ui.bridge.job&&!ui.bridge.pending;
     bool manual=amoled_manual_weight_view(stage);
     bool closing=stage==GBS_UI_CANCELING||(stage==GBS_UI_WAIT&&ui.bridge.job_deadline_ms>0&&ui.now>=ui.bridge.job_deadline_ms);
     bool timed_out=ui.flow.result_timed_out||(stage!=GBS_UI_CANCELING&&ui.bridge.job&&!ui.flow.result_grams&&ui.bridge.job_deadline_ms>0&&ui.now>=ui.bridge.job_deadline_ms);
@@ -461,6 +462,26 @@ static void amoled_refresh(void)
     } else if(stage==GBS_UI_STORAGE||stage==GBS_UI_PAIRING) {
         title=stage==GBS_UI_STORAGE?"账本需要处理":"身份需要处理";subtitle=stage==GBS_UI_STORAGE?"请保留原数据 · 检查存储":"请检查配对与其它客户端";caption="查看详情";glyph=GBS_ICON_FLOW_ALERT;color=RED;detail=true;
     }
+    if(startup) {
+        color=GOLD;
+        if(stage==GBS_UI_READY) {
+            title="联动已就绪";subtitle="时间已校准 · 云端在线\n磨豆机在线 · 等待磨豆";
+            caption="就绪";glyph=GBS_ICON_CHECK;color=GREEN;
+        } else if(stage==GBS_UI_CLOCK) {
+            bool failed=!strcmp(ui.bridge.clock_status,"failed");
+            title=failed?"校时暂未完成":"正在校时";
+            subtitle=failed?"未收到网络时间\n正在重试，请稍候":"网络已连接\n校准完成后恢复联动";
+            caption=failed?"重试中":"恢复中";glyph=GBS_ICON_FLOW_CLOCK;
+        } else if(stage==GBS_UI_BASELINE||stage==GBS_UI_GRINDER||stage==GBS_UI_CLOUD) {
+            title="恢复联动中";
+            subtitle=stage==GBS_UI_CLOUD?"时间已校准\n等待云端连接":stage==GBS_UI_GRINDER?
+                "时间已校准\n等待磨豆机连接":"时间已校准\n正在同步任务状态";
+            caption="连接中";glyph=GBS_ICON_LINK;
+        } else if(stage==GBS_UI_WIFI) {
+            title="正在恢复网络";subtitle="等待 Wi-Fi 连接\n联网后校时与恢复联动";
+            caption="连接中";glyph=GBS_ICON_FLOW_CLOUD;
+        } else if(stage==GBS_UI_STORAGE||stage==GBS_UI_PAIRING) color=RED;
+    }
     if(manual) {
         title=ui.control==GBS_UI_CONTROL_PENDING?"正在设定液重":ui.control==GBS_UI_CONTROL_CONFIRMED?"液重已设定":ui.control==GBS_UI_CONTROL_FAILED?"液重设定失败":"设定结果未确认";
         snprintf(text,sizeof(text),"手动目标 %.0fg%s",ui.requested,ui.control==GBS_UI_CONTROL_CONFIRMED?
@@ -472,11 +493,13 @@ static void amoled_refresh(void)
     }
     if(closing) {title="正在结束本杯";subtitle=timed_out?"本杯超时 · 尚无有效结果":"正在结束任务 · 等待确认";caption=timed_out?"本杯剩余":"取消剩余";color=GOLD;}
     const lv_font_t *headline=strlen(title)>18?&gbs_font_28_semibold:&gbs_font_30_semibold;
+    bool recovery=startup&&!manual;
     refresh_font(ui.fields[F_GLANCE_STAGE],headline,0);
-    lv_obj_set_y(ui.fields[F_GLANCE_STAGE],amoled_text_y(headline,234));
+    lv_obj_set_y(ui.fields[F_GLANCE_STAGE],amoled_text_y(headline,recovery?218:234));
+    refresh_color(ui.fields[F_GLANCE_STAGE],LV_STYLE_TEXT_COLOR,lv_color_hex(recovery?color:TEXT),0);
     set(F_GLANCE_STAGE,title);set(F_GLANCE_PATH,subtitle);
     const lv_font_t *subfont=stage==GBS_UI_RECEIVED&&!manual?&gbs_font_15:&gbs_font_16;
-    refresh_font(ui.fields[F_GLANCE_PATH],subfont,0);lv_obj_set_y(ui.fields[F_GLANCE_PATH],amoled_text_y(subfont,270));
+    refresh_font(ui.fields[F_GLANCE_PATH],subfont,0);lv_obj_set_y(ui.fields[F_GLANCE_PATH],amoled_text_y(subfont,recovery?246:270));
     bool timer=ui.bridge.job;
     bool question=stage==GBS_UI_UNKNOWN&&!manual&&!timer;
     refresh_hidden(am_phase_question,!question);
@@ -488,7 +511,7 @@ static void amoled_refresh(void)
         refresh_color(ui.fields[F_GLANCE_VALUE],LV_STYLE_TEXT_COLOR,lv_color_hex(closing?GOLD:TEXT),0);
     } else {icon_source(ui.phase_icon,glyph,40);refresh_color(ui.phase_icon,LV_STYLE_IMG_RECOLOR,lv_color_hex(color),0);}
     set(F_GLANCE_CAPTION,caption);
-    refresh_color(ui.fields[F_GLANCE_CAPTION],LV_STYLE_TEXT_COLOR,lv_color_hex(stage==GBS_UI_RECEIVED&&!manual?GREEN:MUTED),0);
+    refresh_color(ui.fields[F_GLANCE_CAPTION],LV_STYLE_TEXT_COLOR,lv_color_hex(recovery?color:stage==GBS_UI_RECEIVED&&!manual?GREEN:MUTED),0);
     refresh_hidden(am_detail,!detail);refresh_color(am_detail,LV_STYLE_IMG_RECOLOR,lv_color_hex(color==RED?RED:GOLD),0);
     const gbs_icon_t waiting[]={GBS_ICON_FLOW_WAIT_GRINDER,GBS_ICON_FLOW_FILE,GBS_ICON_FLOW_UPLOAD,GBS_ICON_FLOW_CLOCK,GBS_ICON_FLOW_UPLOAD};
     for(unsigned i=0;i<GBS_FLOW_COUNT;++i) {

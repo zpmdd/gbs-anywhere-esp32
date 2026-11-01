@@ -172,8 +172,40 @@ static void flow_parser(void)
     assert(!s.recipe_log_valid);
 }
 
+static void startup_recovery(void)
+{
+    gbs_ui_bridge_t s = {0};
+    assert(gbs_ui_parse_bridge("{\"phase\":\"ready\",\"mode\":\"active\",\"wifi\":true,"
+        "\"grinder\":true,\"cloud\":true,\"storage\":true,\"clock_status\":\"syncing\","
+        "\"last_outcome\":\"canceled\"}", &s));
+    assert(!strcmp(s.clock_status,"syncing"));
+    assert(gbs_ui_home_stage(&s)==GBS_UI_CLOCK);
+    strcpy(s.clock_status,"failed"); assert(gbs_ui_home_stage(&s)==GBS_UI_CLOCK);
+    strcpy(s.clock_status,"synchronized"); assert(gbs_ui_home_stage(&s)==GBS_UI_READY);
+    assert(gbs_ui_stage(&s)==GBS_UI_EXPIRED&&!strcmp(s.outcome,"canceled"));
+    s.cloud=false; assert(gbs_ui_home_stage(&s)==GBS_UI_CLOUD); s.cloud=true;
+    s.grinder=false; assert(gbs_ui_home_stage(&s)==GBS_UI_GRINDER); s.grinder=true;
+    s.baseline=true; assert(gbs_ui_home_stage(&s)==GBS_UI_BASELINE); s.baseline=false;
+    s.wifi=false; assert(gbs_ui_home_stage(&s)==GBS_UI_WIFI); s.wifi=true;
+    s.storage=false; assert(gbs_ui_home_stage(&s)==GBS_UI_STORAGE); s.storage=true;
+    s.pairing=true; assert(gbs_ui_home_stage(&s)==GBS_UI_PAIRING); s.pairing=false;
+    s.active=false; assert(gbs_ui_home_stage(&s)==GBS_UI_MONITOR); s.active=true;
+    s.valid=false; assert(gbs_ui_home_stage(&s)==GBS_UI_BOOT); s.valid=true;
+    s.job=true; assert(gbs_ui_home_stage(&s)==GBS_UI_WAIT);
+    s.pending=true; assert(gbs_ui_home_stage(&s)==GBS_UI_SENDING);
+    s.job=s.pending=false;
+    strcpy(s.flow_job_id,"new-cup");
+    assert(gbs_ui_home_stage(&s)==GBS_UI_EXPIRED);
+    strcpy(s.outcome,"delivery_unknown"); assert(gbs_ui_home_stage(&s)==GBS_UI_UNKNOWN);
+    strcpy(s.outcome,"success"); assert(gbs_ui_home_stage(&s)==GBS_UI_RECEIVED);
+    s.flow_job_id[0]=0; strcpy(s.outcome,"delivery_unknown");
+    assert(gbs_ui_home_stage(&s)==GBS_UI_READY&&gbs_ui_stage(&s)==GBS_UI_UNKNOWN);
+    s.clock_status[0]=0; assert(gbs_ui_home_stage(&s)==GBS_UI_UNKNOWN);
+}
+
 int main(void)
 {
+    startup_recovery();
     boiler_warmup();
     flow_evidence(); flow_timeout(); flow_parser();
     gbs_ui_ble_t ble={.valid=true,.observed_ms=1000};

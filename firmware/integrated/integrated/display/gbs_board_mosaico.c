@@ -3,9 +3,13 @@
 #include "bsp/esp_mosaico.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/rtc_io.h"
 #include "esp_check.h"
+#include "esp_attr.h"
 #include "esp_codec_dev.h"
 #include "esp_timer.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -26,6 +30,9 @@ static esp_codec_dev_handle_t codec;
 static gbs_rotation_policy_t rotation;
 static gbs_device_status_t battery;
 static uint16_t battery_flags;
+static gbs_pmu_diagnostics_t gauge_sample;
+static bool battery_profile_ready;
+static unsigned battery_profile_attempts;
 static float acceleration[3];
 static int64_t acceleration_ms;
 static bool acceleration_valid;
@@ -37,6 +44,9 @@ static QueueHandle_t tone_queue;
 static StaticQueue_t tone_queue_storage;
 static uint8_t tone_queue_buffer[4*sizeof(gbs_tone_t)];
 static atomic_uint audio_volume_percent,audio_played[4],audio_errors;
+static atomic_bool sleep_requested,sensors_parked,audio_busy;
+static RTC_DATA_ATTR bool sleep_waiting_release;
+static bool wake_tone_pending;
 
 static esp_err_t command(uint8_t reg,uint8_t value)
 {
@@ -82,12 +92,14 @@ bool gbs_board_amoled216_acceleration(float xyz[3])
 bool gbs_board_amoled216_pmu_diagnostics(gbs_pmu_diagnostics_t *snapshot)
 {
     if (!snapshot || !sensor_mutex || xSemaphoreTake(sensor_mutex,pdMS_TO_TICKS(20))!=pdTRUE) return false;
+    *snapshot=gauge_sample;
     /* Legacy raw00/raw01 fields contain BQ27220 BatteryStatus low/high bytes. */
     snapshot->raw00=(uint8_t)battery_flags;
     snapshot->raw01=(uint8_t)(battery_flags>>8);
     snapshot->decoded=battery;
     xSemaphoreGive(sensor_mutex);
     gbs_mosaico_battery_update(&snapshot->decoded,false,0,0,0,0,esp_timer_get_time()/1000);
+    snapshot->gauge_valid=snapshot->gauge_valid && snapshot->decoded.valid;
     return true;
 }
 
@@ -131,6 +143,8 @@ esp_err_t gbs_board_amoled216_init(size_t transfer_bytes,
     bsp_board_variant_t variant;
     ESP_RETURN_ON_ERROR(bsp_board_variant_get(&variant),TAG,"detect board revision");
     ESP_RETURN_ON_ERROR(bsp_power_init(),TAG,"board power");
+    ESP_RETURN_ON_ERROR(rtc_gpio_hold_dis(BSP_BUTTON_AI_GPIO),TAG,"release wake pin hold");
+    ESP_RETURN_ON_ERROR(rtc_gpio_deinit(BSP_BUTTON_AI_GPIO),TAG,"restore wake button GPIO");
     const gpio_config_t amp={.pin_bit_mask=1ULL<<BSP_AUDIO_PA_CTRL,.mode=GPIO_MODE_OUTPUT};
     ESP_RETURN_ON_ERROR(gpio_set_level(BSP_AUDIO_PA_CTRL,0),TAG,"mute amplifier");
     ESP_RETURN_ON_ERROR(gpio_config(&amp),TAG,"amplifier GPIO");
@@ -160,6 +174,23 @@ static bool read_gauge(uint8_t reg,uint16_t *value)
     return true;
 }
 
+static bool ensure_battery_profile(void)
+{
+    for (unsigned attempt=0;attempt<3;++attempt) {
+        if (attempt) vTaskDelay(pdMS_TO_TICKS(1000));
+        battery_profile_attempts=attempt+1;
+        uint16_t design=0;
+        if (!read_gauge(0x3C,&design) || !design) continue;
+        if (gbs_mosaico_battery_needs_profile(design) || design==80) {
+            /* BSP verifies all fields and skips matching writes, preserving learned capacity. */
+            if (design==3000) ESP_LOGW(TAG,"BQ27220 ROM profile; loading the Mosaico BSP profile");
+            if (bsp_battery_init()!=ESP_OK) continue;
+        }
+        if (read_gauge(0x3C,&design) && design>0 && !gbs_mosaico_battery_needs_profile(design)) return true;
+    }
+    return false;
+}
+
 static bool init_imu(void)
 {
     if (bsp_imu_deinit()!=ESP_OK) return false;
@@ -173,21 +204,38 @@ static void sensors_task(void *unused)
         .device_address=BSP_BATTERY_I2C_ADDR,.scl_speed_hz=400000};
     if (i2c_master_bus_add_device(bsp_i2c_get_handle(),&config,&gauge)!=ESP_OK)
         ESP_LOGW(TAG,"BQ27220 unavailable; battery status is unknown");
-    /* bsp_battery_init writes an 80 mAh profile. Read only, preserving calibration. */
+    battery_profile_ready=ensure_battery_profile();
+    if (!battery_profile_ready) ESP_LOGE(TAG,"BQ27220 profile unavailable; SOC remains unknown");
     bool imu_ready=init_imu();
     if (!imu_ready) ESP_LOGW(TAG,"BMI270 unavailable; keeping the locked orientation");
     int64_t next_battery=0,next_imu_retry=0;
     for (;;) {
+        if (atomic_load(&sleep_requested)) {
+            atomic_store(&sensors_parked,true);
+            while (atomic_load(&sleep_requested)) vTaskDelay(pdMS_TO_TICKS(20));
+            atomic_store(&sensors_parked,false);
+        }
         int64_t now=esp_timer_get_time()/1000;
         if (!imu_ready && now>=next_imu_retry) {
             imu_ready=init_imu(); next_imu_retry=now+5000;
         }
         if (now>=next_battery) {
             uint16_t flags=0,current=0,operation=0,percent=0;
+            gbs_pmu_diagnostics_t sample={0};
             bool valid=read_gauge(0x0A,&flags) && read_gauge(0x0C,&current) &&
                 read_gauge(0x3A,&operation) && read_gauge(0x2C,&percent);
+            uint16_t average=0;
+            sample.gauge_valid=valid && read_gauge(0x08,&sample.voltage_mv) &&
+                read_gauge(0x10,&sample.remaining_mah) && read_gauge(0x12,&sample.full_mah) &&
+                read_gauge(0x3C,&sample.design_mah) && read_gauge(0x14,&average);
+            sample.current_ma=(int16_t)current; sample.average_current_ma=(int16_t)average;
+            sample.operation=operation;
+            sample.profile_ready=battery_profile_ready;
+            sample.profile_attempts=battery_profile_attempts;
             xSemaphoreTake(sensor_mutex,portMAX_DELAY);
+            gauge_sample=sample;
             gbs_mosaico_battery_update(&battery,valid,flags,(int16_t)current,operation,percent,now);
+            if (!battery_profile_ready) battery.battery_percent_known=false;
             if (valid) battery_flags=flags;
             xSemaphoreGive(sensor_mutex);
             next_battery=now+2000;
@@ -279,6 +327,24 @@ static bool play_failure(void)
 #endif
 }
 
+static void play_tone(gbs_tone_t tone)
+{
+    esp_codec_dev_sample_info_t format={.sample_rate=16000,.channel=2,.bits_per_sample=16};
+    /* Unity codec gain preserves the existing PCM volume scaling. */
+    bool ok=esp_codec_dev_open(codec,&format)==ESP_CODEC_DEV_OK &&
+        esp_codec_dev_set_out_vol(codec,100)==ESP_CODEC_DEV_OK &&
+        esp_codec_dev_set_out_mute(codec,false)==ESP_CODEC_DEV_OK;
+    if (ok) ok=tone==GBS_TONE_SUCCESS ? play_success() :
+        tone==GBS_TONE_NOTICE ? play_note(1046,240) : play_failure();
+    /* Drain playback before closing the DAC or entering deep sleep. */
+    if (ok && atomic_load(&audio_volume_percent)) vTaskDelay(pdMS_TO_TICKS(150));
+    audio_cleanup();
+    if(atomic_load(&audio_volume_percent)) {
+        if(ok) atomic_fetch_add(&audio_played[tone],1);
+        else { atomic_fetch_add(&audio_errors,1); ESP_LOGW(TAG,"Tone output interrupted"); }
+    }
+}
+
 static void audio_task(void *unused)
 {
     (void)unused;
@@ -287,31 +353,78 @@ static void audio_task(void *unused)
         gbs_tone_t tone;
         xQueueReceive(tone_queue,&tone,portMAX_DELAY);
         if (!atomic_load(&audio_volume_percent) || esp_timer_get_time()/1000<retry_after) continue;
+        atomic_store(&audio_busy,true);
+        if (atomic_load(&sleep_requested)) { atomic_store(&audio_busy,false); continue; }
         if (!codec && !audio_init()) {
             atomic_fetch_add(&audio_errors,1);
             ESP_LOGW(TAG,"ES8311 output unavailable; skipping tone");
-            retry_after=esp_timer_get_time()/1000+30000; continue;
+            retry_after=esp_timer_get_time()/1000+30000;
+            atomic_store(&audio_busy,false); continue;
         }
-        esp_codec_dev_sample_info_t format={.sample_rate=16000,.channel=2,.bits_per_sample=16};
-        /* Keep unity codec gain. 80% reproduces the previous 20000 PCM peak;
-         * the 100% peak of 25000 still leaves headroom below int16 clipping. */
-        bool ok=esp_codec_dev_open(codec,&format)==ESP_CODEC_DEV_OK &&
-            esp_codec_dev_set_out_vol(codec,100)==ESP_CODEC_DEV_OK &&
-            esp_codec_dev_set_out_mute(codec,false)==ESP_CODEC_DEV_OK;
-        /* Write silence through DMA between notes; a task delay could let
-         * the previous DMA buffer repeat instead of producing a quiet gap. */
-        if (ok) ok=tone==GBS_TONE_SUCCESS ? play_success() :
-            tone==GBS_TONE_NOTICE ? play_note(1046,240) : play_failure();
-        /* Drain the BSP's default DMA queue before closing the DAC. */
-        if (ok && atomic_load(&audio_volume_percent)) vTaskDelay(pdMS_TO_TICKS(150));
-        esp_codec_dev_set_out_mute(codec,true);
-        /* Keep the BSP-owned interfaces reusable for the next cue. */
-        audio_cleanup();
-        if(atomic_load(&audio_volume_percent)) {
-            if(ok) atomic_fetch_add(&audio_played[tone],1);
-            else { atomic_fetch_add(&audio_errors,1); ESP_LOGW(TAG,"Tone output interrupted"); }
-        }
+        play_tone(tone);
+        atomic_store(&audio_busy,false);
     }
+}
+
+static void arm_sleep_button(void)
+{
+    /* A held sleep press first wakes on release, then rearms silently for a new press. */
+    sleep_waiting_release=gpio_get_level(BSP_BUTTON_AI_GPIO)==0;
+    ESP_ERROR_CHECK(esp_sleep_disable_ext1_wakeup_io(1ULL<<BSP_BUTTON_AI_GPIO));
+    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(1ULL<<BSP_BUTTON_AI_GPIO,
+        sleep_waiting_release?ESP_EXT1_WAKEUP_ANY_HIGH:ESP_EXT1_WAKEUP_ANY_LOW));
+    ESP_ERROR_CHECK(rtc_gpio_init(BSP_BUTTON_AI_GPIO));
+    ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(BSP_BUTTON_AI_GPIO));
+    ESP_ERROR_CHECK(rtc_gpio_pullup_en(BSP_BUTTON_AI_GPIO));
+}
+
+void gbs_board_mosaico_check_wake(void)
+{
+    if (!(esp_sleep_get_wakeup_causes() & (1u<<ESP_SLEEP_WAKEUP_EXT1))) return;
+    ESP_ERROR_CHECK(rtc_gpio_hold_dis(BSP_BUTTON_AI_GPIO));
+    ESP_ERROR_CHECK(rtc_gpio_deinit(BSP_BUTTON_AI_GPIO));
+    const gpio_config_t key={.pin_bit_mask=1ULL<<BSP_BUTTON_AI_GPIO,
+        .mode=GPIO_MODE_INPUT,.pull_up_en=GPIO_PULLUP_ENABLE};
+    ESP_ERROR_CHECK(gpio_config(&key));
+    if (sleep_waiting_release) {
+        arm_sleep_button();
+        bsp_power_enter_deep_sleep();
+    }
+    wake_tone_pending=true;
+}
+
+esp_err_t gbs_board_mosaico_sleep(void)
+{
+    ESP_RETURN_ON_ERROR(esp_sleep_enable_ext1_wakeup_io(1ULL<<BSP_BUTTON_AI_GPIO,
+        ESP_EXT1_WAKEUP_ANY_LOW),TAG,"AI wake source");
+    ESP_RETURN_ON_ERROR(bsp_display_brightness_set(0),TAG,"blank before sleep cue");
+    atomic_store(&sleep_requested,true);
+    xQueueReset(tone_queue);
+    int64_t deadline=esp_timer_get_time()/1000+2000;
+    while (!atomic_load(&sensors_parked) || atomic_load(&audio_busy)) {
+        if (esp_timer_get_time()/1000>=deadline) {
+            atomic_store(&sleep_requested,false);
+            esp_sleep_disable_ext1_wakeup_io(1ULL<<BSP_BUTTON_AI_GPIO);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (atomic_load(&audio_volume_percent)) {
+        if (codec || audio_init()) play_tone(GBS_TONE_FAILURE);
+        else atomic_fetch_add(&audio_errors,1);
+    }
+    atomic_store(&audio_volume_percent,0);
+    arm_sleep_button();
+    audio_cleanup();
+    (void)bsp_imu_deinit();
+    /* After panel standby, recovery requires reinitialization from a clean boot. */
+    if (bsp_power_prepare_sleep()!=ESP_OK || bsp_power_set_codec_3v3(false)!=ESP_OK ||
+        bsp_power_set_vcc_3v3(false)!=ESP_OK) {
+        ESP_LOGE(TAG,"Peripheral shutdown failed; restarting instead of remaining blank");
+        esp_restart();
+    }
+    ESP_LOGI(TAG,"Deep sleep; AI button wakes and restores the saved bridge mode");
+    bsp_power_enter_deep_sleep();
 }
 
 static void audio_enqueue(gbs_tone_t tone)
@@ -344,6 +457,10 @@ bool gbs_board_amoled216_tick(int64_t now, bool touching, bool auto_rotate,
     atomic_store(&audio_volume_percent,volume_percent);
     if (!volume_percent) xQueueReset(tone_queue);
     else audio_enqueue(tone);
+    if (wake_tone_pending) {
+        wake_tone_pending=false;
+        if (volume_percent) audio_enqueue(GBS_TONE_SUCCESS);
+    }
     float xyz[3]; int64_t sampled; bool valid;
     xSemaphoreTake(sensor_mutex,portMAX_DELAY);
     *status=battery; memcpy(xyz,acceleration,sizeof(xyz)); sampled=acceleration_ms; valid=acceleration_valid;

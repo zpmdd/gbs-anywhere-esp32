@@ -176,12 +176,18 @@ static void startup_recovery(void)
 {
     gbs_ui_bridge_t s = {0};
     assert(gbs_ui_parse_bridge("{\"phase\":\"ready\",\"mode\":\"active\",\"wifi\":true,"
+        "\"grinder\":true,\"cloud\":true,\"storage\":true,\"clock_status\":\"synchronized\","
+        "\"cloud_policy_required\":true}", &s));
+    assert(s.cloud_policy_required&&s.cloud_app_check&&gbs_ui_home_stage(&s)==GBS_UI_CLOUD);
+    assert(gbs_ui_parse_bridge("{\"phase\":\"ready\",\"mode\":\"active\",\"wifi\":true,"
         "\"grinder\":true,\"cloud\":true,\"storage\":true,\"clock_status\":\"syncing\","
-        "\"last_outcome\":\"canceled\"}", &s));
+        "\"last_outcome\":\"canceled\",\"cloud_app_check\":true}", &s));
+    assert(s.cloud_app_check&&!s.cloud_policy_required);
     assert(!strcmp(s.clock_status,"syncing"));
     assert(gbs_ui_home_stage(&s)==GBS_UI_CLOCK);
     strcpy(s.clock_status,"failed"); assert(gbs_ui_home_stage(&s)==GBS_UI_CLOCK);
-    strcpy(s.clock_status,"synchronized"); assert(gbs_ui_home_stage(&s)==GBS_UI_READY);
+    strcpy(s.clock_status,"synchronized"); assert(gbs_ui_home_stage(&s)==GBS_UI_CLOUD);
+    s.cloud_app_check=false; assert(gbs_ui_home_stage(&s)==GBS_UI_READY);
     assert(gbs_ui_stage(&s)==GBS_UI_EXPIRED&&!strcmp(s.outcome,"canceled"));
     s.cloud=false; assert(gbs_ui_home_stage(&s)==GBS_UI_CLOUD); s.cloud=true;
     s.grinder=false; assert(gbs_ui_home_stage(&s)==GBS_UI_GRINDER); s.grinder=true;
@@ -191,9 +197,10 @@ static void startup_recovery(void)
     s.pairing=true; assert(gbs_ui_home_stage(&s)==GBS_UI_PAIRING); s.pairing=false;
     s.active=false; assert(gbs_ui_home_stage(&s)==GBS_UI_MONITOR); s.active=true;
     s.valid=false; assert(gbs_ui_home_stage(&s)==GBS_UI_BOOT); s.valid=true;
+    s.cloud_app_check=true;
     s.job=true; assert(gbs_ui_home_stage(&s)==GBS_UI_WAIT);
     s.pending=true; assert(gbs_ui_home_stage(&s)==GBS_UI_SENDING);
-    s.job=s.pending=false;
+    s.job=s.pending=s.cloud_app_check=false;
     strcpy(s.flow_job_id,"new-cup");
     assert(gbs_ui_home_stage(&s)==GBS_UI_EXPIRED);
     strcpy(s.outcome,"delivery_unknown"); assert(gbs_ui_home_stage(&s)==GBS_UI_UNKNOWN);

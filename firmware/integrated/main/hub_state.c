@@ -1001,6 +1001,8 @@ const char *hub_state_cloud_diagnostics_json(void)
         "\"bleAuthTokenCached\":%s,"
         "\"hasCachedSnapshot\":%s,"
         "\"refreshPending\":%s,"
+        "\"officialAppCheckSuggested\":%s,"
+        "\"policyAcceptanceRequired\":%s,"
         "\"installationIdentitySha256\":%s%s%s,"
         "\"authRefreshSuccessCount\":%lu,"
         "\"authRefreshFailureCount\":%lu,"
@@ -1018,6 +1020,8 @@ const char *hub_state_cloud_diagnostics_json(void)
         hub_cloud_ble_token_cached() ? "true" : "false",
         hub_cloud_has_cached_snapshot() ? "true" : "false",
         hub_cloud_refresh_pending() ? "true" : "false",
+        hub_cloud_app_check_suggested() ? "true" : "false",
+        hub_cloud_policy_acceptance_required() ? "true" : "false",
         has_installation_identity ? "\"" : "",
         has_installation_identity ? installation_identity_sha256 : "null",
         has_installation_identity ? "\"" : "",

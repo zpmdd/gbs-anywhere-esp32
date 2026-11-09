@@ -125,6 +125,10 @@ static inline void *heap_caps_calloc(size_t count, size_t size, unsigned int cap
 
 
 HARNESS = r"""
+static int steam_manual_requests;
+static int steam_permitted = 1;
+void gbs_smart_steam_manual_override(void) { ++steam_manual_requests; steam_permitted = 0; }
+_Bool gbs_smart_steam_write_allowed(void) { return steam_permitted != 0; }
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -467,6 +471,7 @@ static void reset(void)
     timing_request_id[0] = '\0';
     hub_command_coordinator_reset();
     executor_calls = 0; recipe_cancels = 0; recipe_permitted = true;
+    steam_manual_requests = 0; steam_permitted = 1;
     executor_advance_ms = 0;
     executor_unknown = false;
     memset(executed_kinds, 0, sizeof(executed_kinds));
@@ -1298,6 +1303,24 @@ static void test_recipe_guard_and_manual_override(void)
     require_true(!observed_online_required, "manual command inherited automatic connectivity policy");
 }
 
+static void test_smart_steam_priority_and_override(void)
+{
+    reset();
+    completion_capture_t capture = {0}; hub_command_submission_t submission = {0};
+    hub_command_request_t automatic = request("00000000-0000-4000-8000-000000000220", HUB_COMMAND_STEAM_ENABLED);
+    automatic.automatic_steam = true;
+    require_true(submit(&automatic,&capture,&submission)==HUB_COMMAND_ACCEPTED,"automatic steam rejected");
+    hub_command_request_t conflict=automatic;conflict.automatic_steam=false;
+    require_true(submit(&conflict,&capture,&submission)==HUB_COMMAND_CONFLICT,"automatic identity ignored");
+    hub_command_request_t manual=request("00000000-0000-4000-8000-000000000221",HUB_COMMAND_STEAM_ENABLED);
+    require_true(submit(&manual,&capture,&submission)==HUB_COMMAND_ACCEPTED&&steam_manual_requests==1,"manual steam did not cancel automation");
+    require_true(hub_command_coordinator_process_next_for_test()&&observed_permission&&!observed_online_required,"manual steam did not run first");
+    require_true(hub_command_coordinator_process_next_for_test()&&!observed_permission&&observed_online_required,"cancelled automatic steam could write");
+    require_true(hub_command_side_effect_allowed()&&!hub_command_requires_online_machine(),"automatic guard leaked");
+    automatic.kind=HUB_COMMAND_POWER;
+    require_true(submit(&automatic,&capture,&submission)==HUB_COMMAND_INVALID,"automatic flag accepted on power");
+}
+
 static void test_sleep_admission(void)
 {
     reset();
@@ -1318,6 +1341,7 @@ static void test_sleep_admission(void)
 int main(void)
 {
     test_sleep_admission();
+    test_smart_steam_priority_and_override();
     test_recipe_guard_and_manual_override();
     test_v2_status_without_deadline();
     require_true(hub_command_coordinator_start() == ESP_OK, "coordinator failed to start");
@@ -1383,6 +1407,8 @@ def main() -> None:
             "-Wextra",
             "-Werror",
             "-DHUB_GRINDER=1",
+            "-DHUB_MOSAICO=1",
+            "-I", str(ROOT / "integrated/display"),
             "-I", str(ROOT / "integrated/main"),
             "-I",
             str(include_path),

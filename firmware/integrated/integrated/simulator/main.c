@@ -139,6 +139,11 @@ static bool submit(gbs_ui_action_t action, double value, uint32_t request_id, co
         saved_weight=(unsigned)value; ++weight_saves; return true;
     }
     if (reject_submit) return false;
+    if(action==GBS_ACTION_SMART_STEAM) {
+        assert(!request_id&&!expected&&(value==0||value==1));
+        machine.smart_steam.enabled=value!=0;
+        return true;
+    }
     if (action == GBS_ACTION_BRIGHTNESS || action == GBS_ACTION_DIM || action==GBS_ACTION_ROTATION_AUTO) return true;
     if(gbs_ui_machine_action(action)&&(!expected||!gbs_ui_action_unchanged(action,expected,&machine))) return false;
     ++requests; command = action; requested = value; command_id=request_id; pending = true; submitted_at = SDL_GetTicks();
@@ -1280,6 +1285,26 @@ static void amoled_wake_readiness_test(const char *directory)
     strcpy(bridge.clock_status,"synchronized");bridge.cloud=false;gbs_ui_set_bridge(&bridge);paint();
     assert(find_text(lv_scr_act(),"恢复联动中")&&find_text_containing(lv_scr_act(),"等待云端连接"));
     if(directory)save_screen(directory,"wake-cloud");
+    bridge.cloud_app_check=true;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"云端访问受阻")&&find_text_containing(lv_scr_act(),"请打开官方 App 检查"));
+    lv_area_t app_bounds;lv_obj_get_coords(find_text_containing(lv_scr_act(),"请打开官方 App 检查"),&app_bounds);
+    assert(app_bounds.y2<281&&app_bounds.x2<307);
+    visible_labels(lv_scr_act());
+    if(directory)save_screen(directory,"wake-official-app");
+    bridge.cloud_policy_required=true;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"请确认用户协议")&&find_text_containing(lv_scr_act(),"确认协议后自动恢复"));
+    lv_obj_get_coords(find_text_containing(lv_scr_act(),"确认协议后自动恢复"),&app_bounds);
+    assert(app_bounds.y2<281&&app_bounds.x2<307);
+    visible_labels(lv_scr_act());
+    if(directory)save_screen(directory,"wake-policy-required");
+    bridge.cloud_policy_required=false;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"云端访问受阻")&&!find_text(lv_scr_act(),"请确认用户协议"));
+    bridge.wifi=false;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"正在恢复网络")&&!find_text(lv_scr_act(),"云端访问受阻"));
+    bridge.wifi=true;strcpy(bridge.clock_status,"syncing");gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"正在校时")&&!find_text(lv_scr_act(),"云端访问受阻"));
+    strcpy(bridge.clock_status,"synchronized");bridge.cloud_app_check=false;gbs_ui_set_bridge(&bridge);paint();
+    assert(find_text(lv_scr_act(),"恢复联动中")&&!find_text(lv_scr_act(),"云端访问受阻"));
     bridge.cloud=true;bridge.grinder=false;gbs_ui_set_bridge(&bridge);paint();
     assert(find_text_containing(lv_scr_act(),"等待磨豆机连接"));
     bridge.grinder=true;bridge.baseline=true;gbs_ui_set_bridge(&bridge);paint();
@@ -1294,18 +1319,43 @@ static void amoled_wake_readiness_test(const char *directory)
     visible_labels(lv_scr_act());
     if(directory)save_screen(directory,"wake-ready");
     assert(!strcmp(bridge.outcome,"canceled")&&gbs_ui_stage(&bridge)==GBS_UI_EXPIRED);
-    bridge.job=true;bridge.job_deadline_ms=190000;
+    bridge.cloud_app_check=true;bridge.cloud_policy_required=true;bridge.job=true;bridge.job_deadline_ms=190000;
     strcpy(bridge.flow_job_id,"synthetic-wake-cup");strcpy(bridge.job_id,bridge.flow_job_id);
     gbs_ui_set_bridge(&bridge);paint();
-    assert(find_text(lv_scr_act(),"等待本杯结果")&&!find_text(lv_scr_act(),"联动已就绪"));
+    assert(find_text(lv_scr_act(),"等待本杯结果")&&!find_text(lv_scr_act(),"联动已就绪")&&!find_text(lv_scr_act(),"云端访问受阻")&&!find_text(lv_scr_act(),"请确认用户协议"));
     bridge.job=false;gbs_ui_set_bridge(&bridge);paint();
-    assert(find_text(lv_scr_act(),"本杯已结束")&&!find_text(lv_scr_act(),"联动已就绪"));
+    assert(find_text(lv_scr_act(),"本杯已结束")&&!find_text(lv_scr_act(),"联动已就绪")&&!find_text(lv_scr_act(),"请确认用户协议"));
     assert(requests==controls);
     puts("AMOLED wake: real clock states, complete readiness, warmup independence, layout and current-cup precedence PASS");
 }
 
 static void amoled_self_test(const char *directory)
 {
+    gbs_ui_init(submit,NULL);scene(1);pending=false;
+    machine.smart_steam_available=true;
+    machine.smart_steam=(gbs_steam_status_t){.enabled=true,.phase=GBS_STEAM_WAIT_MACHINE};
+    gbs_ui_set_machine(&machine);gbs_ui_show(GBS_PAGE_SMART_STEAM);paint();
+    assert(find_text(lv_scr_act(),"智能蒸汽")&&find_text(lv_scr_act(),"等待咖啡机开机"));
+    if(directory)save_screen(directory,"smart-steam-settings");
+    unsigned policy_requests=requests;
+    tap(424,133);assert(!machine.smart_steam.enabled&&requests==policy_requests);
+    tap(424,133);assert(machine.smart_steam.enabled&&requests==policy_requests);
+    gbs_ui_tick(13000);
+    gbs_ui_show(GBS_PAGE_HOME);
+    machine.smart_steam.phase=GBS_STEAM_APPLYING;gbs_ui_set_machine(&machine);paint();
+    assert(find_text(lv_scr_act(),"自动关闭中"));
+    if(directory)save_screen(directory,"smart-steam-applying");
+    machine.smart_steam.phase=GBS_STEAM_READY;machine.steam_enabled=false;
+    gbs_ui_set_machine(&machine);paint();assert(find_text(lv_scr_act(),"蒸汽已关闭"));
+    if(directory)save_screen(directory,"smart-steam-morning");
+    machine.smart_steam.target=true;machine.steam_enabled=true;gbs_ui_set_machine(&machine);paint();
+    assert(find_text(lv_scr_act(),"拿铁 · 蒸汽"));
+    if(directory)save_screen(directory,"smart-steam-afternoon");
+    for(unsigned phase=GBS_STEAM_CLOCK;phase<=GBS_STEAM_STORAGE;++phase) {
+        machine.smart_steam.phase=(gbs_steam_phase_t)phase;
+        gbs_ui_set_machine(&machine);gbs_ui_show(GBS_PAGE_SMART_STEAM);paint();
+        gbs_ui_show(GBS_PAGE_HOME);paint();
+    }
     amoled_offline_weight_test(directory);
     amoled_current_weight_test(directory);
     amoled_variable_weight_test(directory);

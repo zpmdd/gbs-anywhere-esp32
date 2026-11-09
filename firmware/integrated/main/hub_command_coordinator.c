@@ -19,6 +19,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hub_cloud.h"
+#ifdef HUB_MOSAICO
+#include "gbs_smart_steam.h"
+#endif
 #ifdef HUB_GRINDER
 #include "recipe_follow.h"
 #endif
@@ -61,6 +64,7 @@ static portMUX_TYPE target_guard_lock = portMUX_INITIALIZER_UNLOCKED;
 static hub_machine_selection_identity_t active_target;
 static bool active_target_set;
 static uint32_t active_grinder_recipe;
+static bool active_automatic_steam;
 static portMUX_TYPE interactive_pending_lock = portMUX_INITIALIZER_UNLOCKED;
 static size_t interactive_pending_count;
 static bool manual_interactive_completed;
@@ -162,6 +166,7 @@ static bool command_supports_v2_deadline(const hub_command_request_t *request)
 static bool request_is_interactive_priority(const hub_command_request_t *request)
 {
     return request != NULL
+        && !request->automatic_steam
         && (command_is_interactive_priority(request->kind)
             || (request->deadline.enforced
                 && request->kind == HUB_COMMAND_PREBREW));
@@ -250,6 +255,7 @@ static uint64_t command_payload_fingerprint(const hub_command_request_t *request
     uint64_t value = 1469598103934665603ULL;
     value = fingerprint_bytes(value, &request->kind, sizeof(request->kind));
     value = fingerprint_bytes(value, &request->grinder_recipe_generation, sizeof(request->grinder_recipe_generation));
+    value = fingerprint_bytes(value, &request->automatic_steam, sizeof(request->automatic_steam));
     switch (request->kind) {
     case HUB_COMMAND_QUICK_WEIGHT:
         value = fingerprint_bytes(
@@ -374,6 +380,7 @@ static void clear_active_target(void)
     memset(&active_target, 0, sizeof(active_target));
     active_target_set = false;
     active_grinder_recipe = false;
+    active_automatic_steam = false;
     portEXIT_CRITICAL(&target_guard_lock);
 }
 
@@ -402,11 +409,17 @@ bool hub_command_side_effect_allowed(void)
 {
     portENTER_CRITICAL(&target_guard_lock);
     uint32_t automatic = active_grinder_recipe;
+    bool steam = active_automatic_steam;
     portEXIT_CRITICAL(&target_guard_lock);
 #ifdef HUB_GRINDER
     if (automatic && !gbs_recipe_follow_generation_can_write(automatic)) return false;
 #else
     if (automatic) return false;
+#endif
+#ifdef HUB_MOSAICO
+    if (steam && !gbs_smart_steam_write_allowed()) return false;
+#else
+    if (steam) return false;
 #endif
     return hub_command_target_guard_matches();
 }
@@ -414,7 +427,7 @@ bool hub_command_side_effect_allowed(void)
 bool hub_command_requires_online_machine(void)
 {
     portENTER_CRITICAL(&target_guard_lock);
-    bool required = active_grinder_recipe != 0;
+    bool required = active_grinder_recipe != 0 || active_automatic_steam;
     portEXIT_CRITICAL(&target_guard_lock);
     return required;
 }
@@ -654,6 +667,7 @@ static bool process_next(TickType_t wait_ticks)
         set_active_target(&item.request.target);
         portENTER_CRITICAL(&target_guard_lock);
         active_grinder_recipe = item.request.grinder_recipe_generation;
+        active_automatic_steam = item.request.automatic_steam;
         portEXIT_CRITICAL(&target_guard_lock);
         hub_cloud_command_timing_begin(item.request.request_id);
         error = hub_control_execute_request(&item.request, &result);
@@ -812,6 +826,10 @@ hub_command_submit_status_t hub_command_submit(
 
     command_queue_item_t item = {0};
     item.request = *request;
+    if (request->automatic_steam && request->kind != HUB_COMMAND_STEAM_ENABLED) {
+        populate_submission_result(submission, HUB_COMMAND_INVALID, ESP_ERR_INVALID_ARG, "", false, false);
+        return HUB_COMMAND_INVALID;
+    }
     item.completion = completion;
     item.context = context;
     if (request->request_id[0] == '\0') {
@@ -1092,6 +1110,11 @@ hub_command_submit_status_t hub_command_submit(
         );
         return HUB_COMMAND_QUEUE_FULL;
     }
+#ifdef HUB_MOSAICO
+    if (!item.request.automatic_steam && (item.request.kind == HUB_COMMAND_STEAM_ENABLED
+        || item.request.kind == HUB_COMMAND_STEAM_LEVEL || item.request.kind == HUB_COMMAND_STEAM_TEMPERATURE))
+        gbs_smart_steam_manual_override();
+#endif
     (void)xTaskNotifyGive(command_worker_handle);
 
     populate_submission_result(

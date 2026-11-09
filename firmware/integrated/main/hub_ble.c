@@ -2438,7 +2438,7 @@ static esp_err_t execute_ble_write_json(
     confirmation_proof_candidate.conn_handle = BLE_HS_CONN_HANDLE_NONE;
     char status[128] = {0};
     if (err == ESP_OK) {
-        if (!hub_config_machine_selection_matches(&target)
+        if (!hub_config_machine_selection_matches(&target) || !hub_command_side_effect_allowed()
             || strcmp(op.selection.serial_number, target.serial_number) != 0) {
             set_last_error("BLE command target changed before write.");
             guard_rejected = true;

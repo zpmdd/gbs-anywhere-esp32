@@ -74,7 +74,7 @@ enum { BG = 0x101610, SURFACE = 0x202420, LINE = 0x343734, TEXT = 0xf4f0e4, MUTE
 #endif
 enum { BACK = 100, MINUS, PLUS, APPLY, CONFIRM, DISCARD, KEEP,
        MODE_MONITOR, MODE_ACTIVE, BRIGHTNESS, DIM, DISPLAY_SAVE, STEAM_TOGGLE,
-       ROTATION_TOGGLE, SOUND_VOLUME, SOUND_SAVE, SCALE_REFRESH, DIM_SAVE,
+       ROTATION_TOGGLE, SOUND_VOLUME, SOUND_SAVE, SCALE_REFRESH, DIM_SAVE, SMART_STEAM_TOGGLE,
        DATA_REFRESH, DATA_PREVIOUS, DATA_NEXT, PLAN_ENABLED, PLAN_STEAM, PLAN_APPLY, PLAN_SEND,
        HOUR_MINUS, HOUR_PLUS, MINUTE_MINUS, MINUTE_PLUS, PRESET = 200, CHOICE = 400, DATA_ROW = 500, PLAN_DAY = 600 };
 enum { F_COFFEE, F_COFFEE_TARGET, F_STEAM, F_STEAM_CURRENT, F_STEAM_TARGET, F_WEIGHT, F_STAGE,
@@ -531,6 +531,14 @@ static void event(lv_event_t *e)
         snprintf(ui.preference_notice,sizeof(ui.preference_notice),"%s",ok?"已保存":"保存失败，请重试");ui.preference_notice_until=ui.now+2500;render();return;
     }
     if(a==ROTATION_TOGGLE) { toggle_rotation(); return; }
+    if(a==SMART_STEAM_TOGGLE) {
+        bool enabled=!ui.machine.smart_steam.enabled;
+        bool ok=ui.machine.smart_steam_available&&ui.submit&&ui.submit(GBS_ACTION_SMART_STEAM,enabled,0,NULL,ui.context);
+        if(ok) ui.machine.smart_steam.enabled=enabled;
+        queue_tone(ok?GBS_TONE_SUCCESS:GBS_TONE_FAILURE);
+        snprintf(ui.preference_notice,sizeof(ui.preference_notice),"%s",ok?"已保存":"保存失败，请重试");
+        ui.preference_notice_until=ui.now+2500;render();return;
+    }
     if(a==SOUND_VOLUME) {
         ui.sound_draft=lv_slider_get_value(lv_event_get_target(e));
         ui.dirty=ui.sound_draft!=ui.sound_volume;
@@ -1825,6 +1833,8 @@ void gbs_ui_set_machine(const gbs_ui_machine_t *s)
     double old = current_value();
     bool indicator_changed = ui.machine.available != s->available || ui.machine.stale != s->stale;
     bool steam_changed = ui.machine.steam_enabled_known != s->steam_enabled_known || ui.machine.writable != s->writable || ui.machine.stale != s->stale;
+    bool policy_changed=ui.machine.smart_steam_available!=s->smart_steam_available ||
+        ui.machine.smart_steam.enabled!=s->smart_steam.enabled || ui.machine.smart_steam.phase!=s->smart_steam.phase;
     ui.machine = *s;
     if (editor() && ui.dirty && !gbs_ui_action_unchanged(parameter()->action,&ui.edit_snapshot,s)) ui.conflict = true;
     if (editor() && !ui.dirty && ui.control != GBS_UI_CONTROL_PENDING && isfinite(current_value())) {
@@ -1833,7 +1843,8 @@ void gbs_ui_set_machine(const gbs_ui_machine_t *s)
         ui.edit_snapshot = *s;
     }
     bool choices_changed=parameter()&&choice_label(parameter()->action,0)&&old!=current_value();
-    if ((indicator_changed && ui.page == GBS_PAGE_HOME) || (steam_changed && ui.page == GBS_PAGE_STEAM)||choices_changed) render(); else refresh();
+    if ((indicator_changed && ui.page == GBS_PAGE_HOME) || (steam_changed && ui.page == GBS_PAGE_STEAM)||choices_changed ||
+        (policy_changed&&(ui.page==GBS_PAGE_SMART_STEAM||ui.page==GBS_PAGE_SETTINGS))) render(); else refresh();
 }
 void gbs_ui_control_result(uint32_t request_id, gbs_ui_control_t result)
 {

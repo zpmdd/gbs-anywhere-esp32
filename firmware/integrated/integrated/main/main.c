@@ -133,6 +133,8 @@ static void publish(const char *phase)
     cJSON_AddStringToObject(j, "mode", active ? "active" : "monitor");
     cJSON_AddStringToObject(j, "phase", phase);
     cJSON_AddStringToObject(j, "clock_status", hub_cloud_time_status());
+    cJSON_AddBoolToObject(j, "cloud_app_check", hub_cloud_app_check_suggested());
+    cJSON_AddBoolToObject(j, "cloud_policy_required", hub_cloud_policy_acceptance_required());
     add_display_state(j);
     gbs_recipe_follow_diagnostics(j);
     cJSON_AddBoolToObject(j, "wifi", atomic_load(&wifi_online));

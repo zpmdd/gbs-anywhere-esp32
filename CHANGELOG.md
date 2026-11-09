@@ -1,5 +1,76 @@
 # Changelog
 
+## Maintenance verification - 2026-11-09
+
+- Consolidate the pending S31 smart-steam, confirmation-recovery and official-app
+  reminder changes with their fonts, diagnostics, tests and field documentation.
+- Re-run integrated/root offline checks, crypto checks, the three native AMOLED
+  CTest checks and the S31 build successfully before publication. No new flashing
+  or real-cup test was performed; earlier field results remain build-specific.
+
+## Explicit Cloud policy reminder - 2026-11-06 (unreleased)
+
+- Recognize the documented `USER_MUST_ACCEPT_POLICY` code from a complete,
+  authenticated Cloud rejection and show **Confirm the user agreement** on
+  AMOLED. A single explicit code is enough; unrelated 403/412 responses retain
+  the existing suggested official-app check without claiming a policy update.
+- Keep the code observation bounded and temporary, clear it on another complete
+  authenticated response or authentication result, and preserve active-cup
+  outcomes. Do not store response bodies, accept agreements or add requests.
+- Expose `policyAcceptanceRequired` in Cloud diagnostics and
+  `cloud_policy_required` in grinder/display state. Integrated/root host checks,
+  native AMOLED rendering/tests and the S31 build pass. This source change has
+  not been installed or verified against a fresh real policy rejection.
+
+## Official app recovery hint - 2026-11-03 (unreleased)
+
+- Show an actionable AMOLED home hint to open the official app, check updates
+  and confirm its agreement after repeated paired Cloud access rejections.
+  Require Wi-Fi, synchronized time and a successful login; a single 412,
+  ordinary network errors and coffee-machine power-off do not qualify.
+- Clear the hint on normal readback, a new authentication result or expired
+  evidence. Preserve active-cup and delivery outcomes. This suggests a check;
+  it does not claim that a terms update is the only possible cause.
+- Install `a8cbc2db`: normal Cloud/grinder readiness and an absent hint were
+  verified on hardware, with no new control command. Rejection detection,
+  clearing and the rendered warning were tested with synthetic evidence.
+
+## S31 steam confirmation recovery - 2026-11-03 (unreleased)
+
+- Clear an unknown smart-steam outcome when a later fresh, online observation
+  matches the current time window, including a journal restored after restart.
+  Preserve manual priority and never replay the uncertain steam command.
+- Reject observations preceding the current boot's command when reconciling
+  its result. Stale, missing and offline observations remain unconfirmed.
+- Let dashboard refresh wait briefly for shared grinder/statistics IO, while
+  preserving foreground command priority and bounded contention backoff.
+- Install build `a8ec00d5` and verify that a restored unknown result becomes
+  confirmed from fresh Cloud state, with no new steam command. The actual home
+  screen shows linkage ready and steam disabled. This boot separately waited
+  about 80 seconds for network time; no new cup was tested on this revision.
+
+## S31 smart steam - 2026-11-02 (unreleased)
+
+- Add opt-in Beijing-time steam selection at startup/wake: off during
+  07:00-12:00 and on during 14:00-20:00, preserving the selected steam level.
+- Show automatic progress and confirmation in the home steam area and add a
+  native settings switch. Other hours keep the current setting.
+- Require fresh clock and boiler evidence, share the command coordinator,
+  preserve manual choices for the current window and journal before sending so
+  sleep/reconnect cannot replay an uncertain write.
+- Support the same automation outside Bluetooth range with bounded Cloud reads,
+  explicit steam/machine-state parsing and fresh confirmation after the command.
+- Cover the policy, runtime adapter, manual priority, readback and UI offline.
+- Install build `e1fbb5b5` and validate one morning transition with Bluetooth
+  disconnected: one Cloud command, steam on -> off, level 3 preserved and fresh
+  readback confirmed on the actual home screen. Afternoon hardware acceptance
+  and repeated-cycle validation remain open.
+- Validate two consecutive 30 g cups on the same build: 30.1 g / 26.476 s and
+  30.2 g / 32.762 s, both with recipe synchronization and grinder-acknowledged
+  returns; success counter 11 -> 12 -> 13, with no manual replay.
+- Check HTTP route capacity at compile time so added board-specific endpoints
+  cannot produce a firmware image that aborts during route registration.
+
 ## S31 sleep, recovery and feedback - 2026-11-01
 
 - Make the AI-button hold enter deep sleep at the hold threshold, with a failure

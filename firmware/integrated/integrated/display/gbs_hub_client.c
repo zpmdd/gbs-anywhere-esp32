@@ -3,6 +3,9 @@
 #include "esp_heap_caps.h"
 #include "hub_touchscreen.h"
 #include "hub_config.h"
+#ifdef HUB_MOSAICO
+#include "gbs_smart_steam.h"
+#endif
 #include "esp_log.h"
 #ifdef HUB_AMOLED_216
 #include "gbs_scale_battery_cache.h"
@@ -208,6 +211,13 @@ static void task(void *unused)
 #ifdef HUB_AMOLED_216
         save_scale_battery_when_idle();
 #endif
+#ifdef HUB_MOSAICO
+        xSemaphoreTake(hub.mutex,portMAX_DELAY);
+        machine=hub.machine;
+        bool control_busy=hub.busy;
+        xSemaphoreGive(hub.mutex);
+        if(!control_busy) gbs_smart_steam_tick(&machine);
+#endif
         ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(250));
     }
 }
@@ -287,12 +297,20 @@ bool gbs_hub_read(gbs_ui_machine_t *machine,uint32_t *request_id,gbs_ui_control_
         machine->stale=true; machine->writable=0;
     }
     if(gbs_ui_scale_is_stale(machine,now(NULL))) machine->scale_stale=true;
+#ifdef HUB_MOSAICO
+    machine->smart_steam_available=true;
+    machine->smart_steam=gbs_smart_steam_status();
+#endif
     return true;
 }
 bool gbs_hub_running(void) { return hub.task != NULL; }
 esp_err_t gbs_hub_start(const char *machine_serial)
 {
     (void)machine_serial;
+#ifdef HUB_MOSAICO
+    esp_err_t steam_error=gbs_smart_steam_init();
+    if(steam_error!=ESP_OK) ESP_LOGW(TAG,"Smart steam unavailable: %s",esp_err_to_name(steam_error));
+#endif
     hub.config=heap_caps_calloc(1,sizeof(*hub.config),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(!hub.config) return ESP_ERR_NO_MEM;
     strcpy(hub.config->hub_id,"local");

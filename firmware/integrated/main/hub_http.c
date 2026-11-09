@@ -43,6 +43,9 @@
 #endif
 #ifdef HUB_TOUCHSCREEN
 #include "gbs_display.h"
+#ifdef HUB_MOSAICO
+#include "gbs_smart_steam.h"
+#endif
 #endif
 #include "hub_security.h"
 #include "hub_state.h"
@@ -2602,7 +2605,33 @@ static esp_err_t display_frame_handler(httpd_req_t *req)
 }
 #endif
 
+#ifdef HUB_MOSAICO
+static esp_err_t smart_steam_handler(httpd_req_t *req)
+{
+    if(require_authorized(req)!=ESP_OK) return ESP_OK;
+    if(req->method==HTTP_POST) {
+        char body[64];
+        if(read_json_body(req,body,sizeof(body))!=ESP_OK) return hub_routes_send_bad_request(req,"enabled required");
+        cJSON *json=cJSON_ParseWithOpts(body,NULL,true);
+        const cJSON *value=cJSON_GetObjectItemCaseSensitive(json,"enabled");
+        bool valid=cJSON_IsObject(json)&&cJSON_GetArraySize(json)==1&&cJSON_IsBool(value);
+        bool enabled=cJSON_IsTrue(value);
+        cJSON_Delete(json);
+        if(!valid) return hub_routes_send_bad_request(req,"enabled must be a boolean");
+        if(gbs_smart_steam_enable(enabled)!=ESP_OK) return hub_routes_send_service_unavailable(req,"setting not saved");
+    }
+    char body[320];
+    httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    return gbs_smart_steam_json(body,sizeof(body))?hub_routes_send_json(req,body):
+        hub_routes_send_service_unavailable(req,"smart steam unavailable");
+}
+#endif
+
 static const hub_http_route_t HUB_HTTP_ROUTES[] = {
+#ifdef HUB_MOSAICO
+    {"/controls/steam-policy", HTTP_GET, smart_steam_handler, false},
+    {"/controls/steam-policy", HTTP_POST, smart_steam_handler, false},
+#endif
 #ifdef HUB_TOUCHSCREEN
     {"/diagnostics/display", HTTP_GET, display_diagnostics_handler, false},
     {"/diagnostics/display/frame", HTTP_GET, display_frame_handler, false},
@@ -2665,6 +2694,9 @@ static const hub_http_route_t HUB_HTTP_ROUTES[] = {
     {"/controls/schedule", HTTP_POST, schedule_control_handler, false},
 };
 
+_Static_assert(sizeof(HUB_HTTP_ROUTES) / sizeof(HUB_HTTP_ROUTES[0])
+    <= HUB_HTTP_MAX_URI_HANDLERS, "HTTP route capacity is too small");
+
 bool hub_http_local_lock(void)
 {
     return route_dispatch_mutex && xSemaphoreTake(route_dispatch_mutex, pdMS_TO_TICKS(100)) == pdTRUE;
@@ -2711,11 +2743,6 @@ esp_err_t hub_http_register_routes(
     if (route_dispatch_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    if ((sizeof(HUB_HTTP_ROUTES) / sizeof(HUB_HTTP_ROUTES[0]))
-        > HUB_HTTP_MAX_URI_HANDLERS) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
     for (size_t index = 0; index < sizeof(HUB_HTTP_ROUTES) / sizeof(HUB_HTTP_ROUTES[0]); index++) {
         const hub_http_route_t *route = &HUB_HTTP_ROUTES[index];
         if (transport == HUB_HTTP_TRANSPORT_HTTPS_V2 && route->legacy_only) {

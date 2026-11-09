@@ -6,7 +6,7 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 
-#define HUB_HTTP_MAX_URI_HANDLERS 57
+#define HUB_HTTP_MAX_URI_HANDLERS 60
 #define HUB_HTTP_LEGACY_MAX_OPEN_SOCKETS 2
 #define HUB_HTTP_HTTPS_MAX_OPEN_SOCKETS 2
 

@@ -78,9 +78,15 @@ static const char *fail_api;
 static int api_error(const char *name) { if(fail_api&&!strcmp(name,fail_api)) {fail_api=NULL;return ESP_ERR_NO_MEM;}return 0;}
 static char sent_nonce[16][64], sent_body[16][256];
 static int sent_method[16], sent_timeout[16];
+static int policy_observations, policy_status;
+static void record_cloud_policy_response(int status, const http_response_t *response) {
+    assert(response&&!fail_finish&&!fail_inflate);
+    ++policy_observations;policy_status=status;
+}
 static void reset(void) {
     memset(plan,0,sizeof(plan)); plan_count=plan_index=0;
     init_count=cleanup_count=connect_count=perform_count=posts=signatures=0;
+    policy_observations=policy_status=0;
     fail_sign=fail_init=fail_setter=fail_finish=fail_inflate=false;
     fail_api=NULL;clock_us=1000000;delays=0;side_effect_allowed=true;memset(&command_timing,0,sizeof(command_timing));
     memset(sent_nonce,0,sizeof(sent_nonce)); memset(sent_body,0,sizeof(sent_body));
@@ -288,7 +294,25 @@ static void setup_and_cleanup(void) {
     /* Legacy setup failure classification remains unchanged by the opt-in path. */
     reset();fail_sign=true;a=run_post(NULL,NULL);assert(a.err==ESP_ERR_NO_MEM&&a.request_started&&a.attempts==1&&posts==0);
 }
+static void policy_observation_gate(void)
+{
+    for(int scenario=0;scenario<6;++scenario) {
+        reset();
+        const char *token=scenario==1?NULL:scenario==2?"":tokens.access_token;
+        int error=scenario==3?ESP_ERR_HTTP_INCOMPLETE_DATA:ESP_OK;
+        fail_finish=scenario==4;fail_inflate=scenario==5;
+        reply(error,403,false,10);
+        http_response_t r={0};int status=0;
+        int err=cloud_http_request_no_retry("https://example.test/things",HTTP_METHOD_GET,&key,
+            token,NULL,&r,&status,4000,NULL,NULL);
+        assert(status==403);
+        assert(policy_observations==(scenario==0?1:0));
+        if(scenario==0)assert(!err&&policy_status==403);
+        hub_http_response_reset(&r);
+    }
+}
 int main(void) {
+    policy_observation_gate();
     lifetime();no_replay();connect_only_retry();setup_and_cleanup();
     puts("Scoped Cloud connection reuse PASS: actual helper lifetime, timing, setter failures, status isolation, bounded connect retry and no ambiguous POST replay");
     return 0;

@@ -245,8 +245,40 @@ static void amoled_device_page(void)
         label(body,"平放时保持上一方向\n画面和触摸坐标同步旋转",0,150,424,&gbs_font_20,MUTED);
     }
 }
+static const char *smart_steam_caption(void)
+{
+    const gbs_steam_status_t *s=&ui.machine.smart_steam;
+    if(!s->enabled) return "自动蒸汽已关闭";
+    switch(s->phase) {
+    case GBS_STEAM_CLOCK: return "等待校时";
+    case GBS_STEAM_WAIT_MACHINE: return "等待咖啡机开机";
+    case GBS_STEAM_OUTSIDE: return "保持手动设置";
+    case GBS_STEAM_WAIT_IDLE: return "等待制作完成";
+    case GBS_STEAM_APPLYING: return s->target?"自动开启中":"自动关闭中";
+    case GBS_STEAM_READY: return s->target?"拿铁 · 蒸汽已开启":"美式 · 蒸汽已关闭";
+    case GBS_STEAM_MANUAL: return "本时段手动优先";
+    case GBS_STEAM_FAILED: return "自动设置失败";
+    case GBS_STEAM_UNKNOWN: return "请核对蒸汽状态";
+    case GBS_STEAM_STORAGE: return "设置存储异常";
+    default: return "等待咖啡机开机";
+    }
+}
+
 static bool amoled_settings_page(void)
 {
+    if(ui.page==GBS_PAGE_SMART_STEAM) {
+        ui.native_layout=true;amoled_header("智能蒸汽");
+        lv_obj_t *r=amoled_row(lv_scr_act(),"按北京时间自动设置",NULL,100,72,SMART_STEAM_TOGGLE);
+        lv_obj_set_x(r,28);lv_obj_set_width(r,424);
+        amoled_toggle(r,371,19,ui.machine.smart_steam.enabled);
+        if(!ui.machine.smart_steam_available)lv_obj_add_state(r,LV_STATE_DISABLED);
+        label(lv_scr_act(),"07:00–12:00  美式 · 关闭蒸汽",28,194,424,&gbs_font_20,TEXT);
+        label(lv_scr_act(),"14:00–20:00  拿铁 · 开启蒸汽",28,242,424,&gbs_font_20,TEXT);
+        label(lv_scr_act(),"其他时间保持原设置",28,294,424,&gbs_font_18,MUTED);
+        label(lv_scr_act(),"手动修改本时段优先 · 休眠时暂停",28,330,424,&gbs_font_18,MUTED);
+        centered(label(lv_scr_act(),ui.machine.smart_steam_available?smart_steam_caption():"此硬件未启用",28,402,424,&gbs_font_20,GOLD));
+        return true;
+    }
     if(ui.page!=GBS_PAGE_SETTINGS&&ui.page!=GBS_PAGE_DISPLAY&&ui.page!=GBS_PAGE_BRIGHTNESS&&ui.page!=GBS_PAGE_SOUND)return false;
     bool volume=ui.page==GBS_PAGE_SOUND;
     ui.native_layout=true;amoled_header(ui.page==GBS_PAGE_SETTINGS?"设置":ui.page==GBS_PAGE_DISPLAY?"显示与声音":volume?"音量":"屏幕亮度");
@@ -267,6 +299,7 @@ static bool amoled_settings_page(void)
         const int pages[]={GBS_PAGE_MACHINE,GBS_PAGE_COFFEES,GBS_PAGE_SCHEDULE,GBS_PAGE_DISPLAY,GBS_PAGE_MODE,GBS_PAGE_CONNECTIONS,GBS_PAGE_ABOUT};
         const gbs_icon_t symbols[]={GBS_ICON_COFFEE,GBS_ICON_HISTORY,GBS_ICON_CLOCK,GBS_ICON_SUN,GBS_ICON_LINK,GBS_ICON_WIFI,GBS_ICON_HELP_CIRCLE};
         for(int i=0;i<7;++i){lv_obj_t *r=amoled_row(ui.body,"",NULL,i*68,68,pages[i]);icon(r,symbols[i],0,23,22,i==4?GREEN:MUTED);label(r,names[i],34,19,280,&gbs_font_23,TEXT);icon(r,GBS_ICON_CHEVRON_RIGHT,402,23,22,MUTED);if(i==4){lv_obj_t *v=label(r,ui.bridge.active?"运行":"监测",314,22,75,&gbs_font_20,MUTED);lv_obj_set_style_text_align(v,LV_TEXT_ALIGN_RIGHT,0);}}
+        if(ui.machine.smart_steam_available)amoled_row(ui.body,"智能蒸汽",ui.machine.smart_steam.enabled?"已开启":"已关闭",7*68,68,GBS_PAGE_SMART_STEAM);
     } else {
         lv_obj_t *r=amoled_row(ui.body,"屏幕亮度",NULL,0,68,GBS_PAGE_BRIGHTNESS);lv_obj_t *v=field(r,F_BRIGHTNESS,302,20,122,&gbs_amoled_number_24,MUTED);lv_obj_set_style_text_align(v,LV_TEXT_ALIGN_RIGHT,0);
         r=amoled_row(ui.body,"自动调暗 / 熄屏","60s 调暗 · 120s 熄屏",68,68,DIM_SAVE);amoled_toggle(r,371,19,ui.dim);
@@ -482,6 +515,12 @@ static void amoled_refresh(void)
             caption="连接中";glyph=GBS_ICON_FLOW_CLOUD;
         } else if(stage==GBS_UI_STORAGE||stage==GBS_UI_PAIRING) color=RED;
     }
+    bool app_check=stage==GBS_UI_CLOUD && ui.bridge.cloud_app_check;
+    if(app_check) {
+        title=ui.bridge.cloud_policy_required?"请确认用户协议":"云端访问受阻";
+        subtitle=ui.bridge.cloud_policy_required?"请打开官方 App\n确认协议后自动恢复":"请打开官方 App 检查\n更新应用并确认协议";
+        caption="请确认";glyph=GBS_ICON_ALERT_CIRCLE;color=WARN;
+    }
     if(manual) {
         title=ui.control==GBS_UI_CONTROL_PENDING?"正在设定液重":ui.control==GBS_UI_CONTROL_CONFIRMED?"液重已设定":ui.control==GBS_UI_CONTROL_FAILED?"液重设定失败":"设定结果未确认";
         snprintf(text,sizeof(text),"手动目标 %.0fg%s",ui.requested,ui.control==GBS_UI_CONTROL_CONFIRMED?
@@ -493,7 +532,7 @@ static void amoled_refresh(void)
     }
     if(closing) {title="正在结束本杯";subtitle=timed_out?"本杯超时 · 尚无有效结果":"正在结束任务 · 等待确认";caption=timed_out?"本杯剩余":"取消剩余";color=GOLD;}
     const lv_font_t *headline=strlen(title)>18?&gbs_font_28_semibold:&gbs_font_30_semibold;
-    bool recovery=startup&&!manual;
+    bool recovery=(startup||app_check)&&!manual;
     refresh_font(ui.fields[F_GLANCE_STAGE],headline,0);
     lv_obj_set_y(ui.fields[F_GLANCE_STAGE],amoled_text_y(headline,recovery?218:234));
     refresh_color(ui.fields[F_GLANCE_STAGE],LV_STYLE_TEXT_COLOR,lv_color_hex(recovery?color:TEXT),0);
@@ -564,6 +603,23 @@ static void amoled_refresh(void)
         else if(i&&isfinite(ui.machine.steam)&&isfinite(ui.machine.steam_target))snprintf(text,sizeof(text),"%.0f° / %.0f°",ui.machine.steam,ui.machine.steam_target);
         else strcpy(text,"—");
         set(id,text);
+        if(i&&ui.machine.smart_steam_available&&ui.machine.smart_steam.enabled) {
+            const gbs_steam_status_t *s=&ui.machine.smart_steam;
+            bool manual=s->phase==GBS_STEAM_MANUAL||s->phase==GBS_STEAM_OUTSIDE;
+            const char *title=s->phase==GBS_STEAM_READY?(s->target?"拿铁 · 蒸汽":"美式 · 蒸汽"):manual?"手动 · 蒸汽":"智能蒸汽";
+            refresh_label(am_boiler_title[i],title);
+            bool off=ui.machine.steam_enabled_known&&!ui.machine.steam_enabled;
+            if((s->phase!=GBS_STEAM_READY&&!manual) || (s->phase==GBS_STEAM_READY&&!s->target) || (manual&&off)) {
+                refresh_font(ui.fields[id],&gbs_font_16,0);
+                lv_obj_set_x(ui.fields[id],270);lv_obj_set_y(ui.fields[id],amoled_text_y(&gbs_font_16,457));
+                lv_obj_set_width(ui.fields[id],186);
+                set(primary,"");refresh_hidden(am_boiler_clock[i],true);
+                const char *caption=s->phase==GBS_STEAM_READY||(manual&&off)?"蒸汽已关闭":smart_steam_caption();
+                set(id,caption);
+                refresh_color(ui.fields[id],LV_STYLE_TEXT_COLOR,lv_color_hex(s->phase==GBS_STEAM_READY?GREEN:
+                    s->phase>=GBS_STEAM_FAILED?RED:MUTED),0);
+            }
+        }
     }
     // A retained selection is independent of whether Cloud currently accepts controls.
     double selected=ui.machine.weight,target=NAN;

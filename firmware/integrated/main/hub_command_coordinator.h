@@ -46,6 +46,7 @@ typedef struct hub_command_request {
     hub_command_deadline_t deadline;
     hub_api_v2_client_surface_t client_surface;
     uint32_t grinder_recipe_generation;
+    bool automatic_steam;
     union {
         struct {
             hub_schedule_entry_t expected, requested;

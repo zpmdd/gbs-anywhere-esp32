@@ -169,7 +169,6 @@ DASHBOARD = r'''
 static const char *json_optional_string(cJSON *j,const char *key) { cJSON *v=cJSON_GetObjectItemCaseSensitive(j,key);return cJSON_IsString(v)?v->valuestring:""; }
 static bool json_optional_bool(cJSON *j,const char *key) { return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j,key)); }
 #define parse_coffee_boiler(...) ((void)0)
-#define parse_steam_level(...) ((void)0)
 #define parse_prebrew(...) ((void)0)
 static int64_t esp_timer_get_time(void) { return 1000000; }
 /* FUNCTIONS */
@@ -182,6 +181,20 @@ int main(void) {
         assert(parse_dashboard_snapshot(body,"SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
         assert(out.connected==(i==0||(i==2&&m!=0)));
         assert(out.explicitly_offline==(i==1));
+        assert(!strcmp(out.machine_mode,m==0?"StandBy":"BrewingMode"));
+        assert(out.machine_brewing==(m==2));
+    }
+    const char *enabled_values[]={"true","false","null","\"true\"","1"};
+    for(unsigned i=0;i<5;++i) {
+        char body[384],name[80];cloud_snapshot_t previous={.steam_enabled_set=true,.steam_enabled=true},out;
+        snprintf(body,sizeof(body),"{\"serialNumber\":\"SYNTHETIC\",\"connected\":true,\"widgets\":[{\"code\":\"CMMachineStatus\",\"output\":{\"status\":\"PoweredOn\",\"mode\":\"BrewingMode\"}},{\"code\":\"CMSteamBoilerLevel\",\"output\":{\"enabled\":%s,\"targetLevel\":\"Level3\"}}]}",enabled_values[i]);
+        assert(parse_dashboard_snapshot(body,"SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
+        assert(out.steam_enabled_set==(i<2)&&out.steam_enabled==(i==0));
+        assert(out.steam_level_set&&out.steam_level==3&&out.boiler_observed_ms==1000);
+        assert(!strcmp(out.machine_mode,"BrewingMode")&&!out.machine_brewing);
+        previous=out;
+        assert(parse_dashboard_snapshot("{\"widgets\":[]}","SYNTHETIC",1,&previous,&out,name,sizeof(name))==ESP_OK);
+        assert(!out.steam_enabled_set&&!out.machine_mode[0]);
     }
     const char *doses[]={"20.0","\"20.0\"","null"};
     for(unsigned i=0;i<3;++i) {
@@ -447,6 +460,57 @@ int main(void) {
 '''
 
 
+REFRESH_IO = r'''
+#include "esp_err.h"
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#define pdTRUE 1
+#define pdMS_TO_TICKS(x) (x)
+#define ESP_RETURN_ON_ERROR(call,...) do { esp_err_t e=(call);if(e)return e; } while(0)
+static const uint32_t CLOUD_READONLY_IO_WAIT_MS=3000;
+static int refresh_mutex,held_ms,elapsed_ms,takes,gives,completions;
+static bool locked,interactive,waiting,interactive_after_take,waiting_after_take;
+static esp_err_t mutex_error;
+static bool hub_command_interactive_pending(void) { return interactive; }
+static bool cloud_command_is_waiting(void) { return waiting; }
+static esp_err_t ensure_refresh_mutex(void) { return mutex_error; }
+static int xSemaphoreTake(int mutex,uint32_t wait) {
+    (void)mutex;assert(!locked&&wait==3000);++takes;
+    if(held_ms>(int)wait) { elapsed_ms+=wait;return 0; }
+    elapsed_ms+=held_ms;locked=true;
+    interactive|=interactive_after_take;waiting|=waiting_after_take;
+    return pdTRUE;
+}
+static void xSemaphoreGive(int mutex) { (void)mutex;assert(locked);locked=false;++gives; }
+static void mark_cloud_io_completed(void) { assert(locked);++completions; }
+/* FUNCTIONS */
+int main(void) {
+    for(int scenario=0;scenario<7;++scenario) {
+        held_ms=1900;elapsed_ms=takes=gives=completions=0;
+        locked=interactive=waiting=interactive_after_take=waiting_after_take=false;mutex_error=ESP_OK;
+        if(scenario==1)held_ms=5000;
+        if(scenario==2)interactive=true;
+        if(scenario==3)waiting=true;
+        if(scenario==4)interactive_after_take=true;
+        if(scenario==5)waiting_after_take=true;
+        if(scenario==6)mutex_error=ESP_ERR_NO_MEM;
+        esp_err_t result=refresh_admission();
+        if(scenario==0) {
+            assert(result==ESP_OK&&locked&&elapsed_ms==1900&&takes==1);
+            cloud_readonly_io_unlock();assert(completions==1&&gives==1);
+        } else {
+            assert(result==(scenario==6?ESP_ERR_NO_MEM:ESP_ERR_INVALID_STATE)&&!locked&&!completions);
+            assert(takes==(scenario==1||scenario==4||scenario==5));
+            assert(gives==(scenario==4||scenario==5));
+            if(scenario==1)assert(elapsed_ms==3000);
+        }
+    }
+    return 0;
+}
+'''
+
+
 def compile_run(directory, name, source, extra=()):
     path=directory/(name+'.c');path.write_text(source)
     subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror',
@@ -503,9 +567,16 @@ def main():
         (directory/'esp_log.h').write_text('#include "esp_err.h"\nconst char *esp_err_to_name(esp_err_t e);\n#define ESP_LOGI(...) ((void)0)\n#define ESP_LOGW(...) ((void)0)\n')
         compile_run(directory,'ota',OTA,[ROOT/'main/hub_ota.c'])
         cloud=(ROOT/'main/hub_cloud.c').read_text()
+        refresh_io='\n'.join('static esp_err_t '+name+'(void) {'+function_body(cloud,name)+'}'
+                             for name in ['cloud_readonly_io_lock'])
+        refresh_io+='\nstatic void cloud_readonly_io_unlock(void) {'+function_body(cloud,'cloud_readonly_io_unlock')+'}'
+        # Exercise the refresh's actual admission path without invoking vendor HTTP.
+        admission=function_body(cloud,'hub_cloud_refresh').split('set_refresh_running(true);',1)[0]
+        refresh_io+='\nstatic esp_err_t refresh_admission(void) {'+admission+'return ESP_OK;}'
+        compile_run(directory,'refresh_io',REFRESH_IO.replace('/* FUNCTIONS */',refresh_io))
         types='\n'.join(re.search(r'typedef struct\s*\{[^}]+\}\s*'+name+r';',cloud).group() for name in ['cloud_snapshot_t','bbw_snapshot_fields_t'])
         pieces=[]
-        for name in ['parse_double_string','json_item_to_double','json_number_to_double','parse_machine_status','parse_brew_by_weight','parse_thing_scale','preserve_missing_bbw_fields','parse_dashboard_snapshot']:
+        for name in ['parse_double_string','json_item_to_double','json_number_to_double','millis_number_to_iso8601','parse_machine_status','parse_steam_level','parse_brew_by_weight','parse_thing_scale','preserve_missing_bbw_fields','parse_dashboard_snapshot']:
             signature=re.search(r'static (?:bool|void|esp_err_t) '+name+r'\([^;{]*\)\s*\{',cloud)
             pieces.append(signature.group()+function_body(cloud,name)+'}')
         json_dir=cjson_source_dir()

@@ -46,6 +46,9 @@ typedef struct {
     bool boiler_warmup_pending;
     int64_t last_refresh_ms;
     int64_t scale_observed_ms;
+    int64_t boiler_observed_ms;
+    bool steam_enabled_known, steam_enabled;
+    bool machine_powered_on, machine_brewing;
     double dose1, dose2;
 } hub_cloud_snapshot_status_t;
 
@@ -59,6 +62,9 @@ typedef struct {
 esp_err_t hub_cloud_refresh(void);
 // Current boot's SNTP evidence, independent of a retained RTC date or Cloud login.
 const char *hub_cloud_time_status(void);
+// Repeated paired access rejections after login; suggests checking the official app.
+bool hub_cloud_app_check_suggested(void);
+bool hub_cloud_policy_acceptance_required(void);
 // Bounded accessory read on the existing keeper/Cloud IO path.
 esp_err_t hub_cloud_refresh_scale(bool *request_attempted);
 bool hub_cloud_has_fresh_scale_battery(void);

@@ -20,13 +20,17 @@ FIELDS = {
         'target_grams', 'target_seconds', 'successes', 'last_outcome',
         'latest_coffee_ms', 'latest_seconds', 'latest_grams',
         'last_success_seconds', 'last_success_grams',
-        'wifi', 'grinder', 'cloud', 'storage', 'uptime_s',
+        'wifi', 'grinder', 'cloud', 'storage', 'uptime_s', 'clock_status',
     ),
     '/machine/state': (
         'connectionState', 'brewByWeightMode', 'brewByWeightDose1',
         'brewByWeightDose2', 'scaleConnected', 'lastUpdated',
         'thingScaleConnected', 'scaleBatteryLevel', 'scaleObservedMs',
         'scaleCalibrationRequired',
+    ),
+    '/machine/live-state': (
+        'brewTimerState', 'extractionSeconds', 'lastEventAt', 'startedAt',
+        'finishedAt', 'sequence', 'source', 'confidence',
     ),
 }
 
@@ -97,14 +101,16 @@ def record(base_url, token, output, duration):
     try:
         with (output / 'samples.jsonl').open('x', encoding='utf-8') as stream:
             while time.monotonic() < deadline:
-                sample = {'sampledAt': utc_now()}
-                for path in ('/diagnostics/grinder', '/machine/state'):
+                sample = {'sampledAt': utc_now(), 'sampledMonotonicNs': time.monotonic_ns()}
+                for path in FIELDS:
+                    if path == '/health':
+                        continue
                     sample[path] = read(base_url, token, path)
                 stream.write(json.dumps(sample, ensure_ascii=False) + '\n')
                 stream.flush()
                 summary['samples'] += 1
-                for path in ('/diagnostics/grinder', '/machine/state'):
-                    if sample[path]['status'] != 200:
+                for path in FIELDS:
+                    if path in sample and sample[path]['status'] != 200:
                         summary['failedReads'] += 1
                 grinder = sample['/diagnostics/grinder'].get('data', {})
                 job = grinder.get('jobRef')

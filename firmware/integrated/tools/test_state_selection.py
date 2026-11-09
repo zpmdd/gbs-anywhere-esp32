@@ -362,6 +362,13 @@ int main(void) {
     strcpy(snapshot.coffee_boiler_ready_time,"2026-10-23T00:42:00Z");
     strcpy(snapshot.steam_boiler_ready_time,"2026-10-23T00:48:00Z");
     hub_cloud_get_snapshot_status(&status);assert(status.is_ready&&status.last_refresh_ms==123);
+    snapshot.steam_enabled_set=true;snapshot.steam_enabled=true;snapshot.boiler_observed_ms=100;
+    strcpy(snapshot.machine_mode,"BrewingMode");snapshot.machine_brewing=true;
+    hub_cloud_get_snapshot_status(&status);
+    assert(status.steam_enabled_known&&status.steam_enabled&&status.machine_powered_on&&status.machine_brewing&&status.boiler_observed_ms==100);
+    selection_matches=false;hub_cloud_get_snapshot_status(&status);
+    assert(!status.steam_enabled_known&&!status.machine_powered_on&&!status.machine_brewing&&!status.boiler_observed_ms);
+    selection_matches=true;hub_cloud_get_snapshot_status(&status);
 #ifdef HUB_AMOLED_216
     assert(status.boiler_warmup_pending);
     clock_unix+=600; // Passing the estimate alone must not cancel the final confirming read.

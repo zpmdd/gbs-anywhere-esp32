@@ -915,8 +915,11 @@ def test_daily_controls_have_system_priority(source: SourceTree) -> None:
     assert "CLOUD_STATISTICS_ENDPOINT_PAUSE_MS" in statistics_pause_body
     assert "CLOUD_COMMAND_REFRESH_WAIT_MS = 12000" in cloud
     refresh_body = function_body(cloud, "hub_cloud_refresh")
-    assert refresh_body.count("hub_command_interactive_pending()") >= 3
-    assert refresh_body.index("hub_command_interactive_pending()") < refresh_body.index("ensure_refresh_mutex()")
+    assert refresh_body.index("cloud_readonly_io_lock()") < refresh_body.index("set_refresh_running(true)")
+    assert "cloud_readonly_io_unlock()" in refresh_body
+    refresh_lock = function_body(cloud, "cloud_readonly_io_lock")
+    assert refresh_lock.count("hub_command_interactive_pending()") >= 3
+    assert refresh_lock.index("hub_command_interactive_pending()") < refresh_lock.index("ensure_refresh_mutex()")
     assert "hub_command_interactive_pending()" in function_body(ble, "hub_ble_worker_task")
     execute_body = function_body(ble, "execute_ble_write_json")
     assert "HUB_BLE_COMMAND_SYNC_TIMEOUT_MS = 250" in ble
@@ -1004,8 +1007,11 @@ def test_daily_controls_have_system_priority(source: SourceTree) -> None:
         control,
         "hub_control_execute_quick_weight_with_deadline",
     )
-    assert 'hub_cloud_set_bbw_mode("Dose1"' in quick_weight_body
-    assert 'hub_cloud_set_bbw_dose("dose1", grams' in quick_weight_body
+    assert "hub_control_execute_quick_weight_checked_with_deadline" in quick_weight_body
+    checked_weight = function_body(control, "hub_control_execute_quick_weight_checked_with_deadline")
+    assert checked_weight.index("hub_command_deadline_can_start_step(") < checked_weight.index(
+        "hub_cloud_set_quick_weight_with_deadline("
+    )
 
 
 def main() -> None:

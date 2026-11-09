@@ -203,6 +203,8 @@ bool gbs_hub_refresh(const gbs_hub_config_t *config,const gbs_hub_io_t *io,int64
             next.ble.valid=true; next.ble.configured=yes(j,"configured");
             next.ble.connected=yes(j,"workerConnected"); next.ble.control_ready=yes(j,"controlSessionReady");
             next.ble.cached_fresh=yes(j,"cachedConnected"); next.ble.observed_ms=io->now(io->context);
+            double age=number(j,"cacheAgeMs",0,(double)next.ble.observed_ms);
+            if(isfinite(age)&&age==floor(age)) next.ble.source_observed_ms=next.ble.observed_ms-(int64_t)age;
         }
         cJSON_Delete(j);
     }

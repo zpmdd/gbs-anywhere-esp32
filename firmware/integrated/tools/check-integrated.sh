@@ -6,13 +6,14 @@ json_dir=$(python "$root/tools/host_cjson.py")
 mkdir -p "$root/build-integrated-host"
 cd "$root"
 cc -std=c11 -Wno-deprecated-declarations -fsanitize=address,undefined -g -I "$json_dir" -c "$json_dir/cJSON.c" -o build-integrated-host/cJSON.o
-for name in logic worker display_model device_policy mosaico_battery scale_battery_cache hub hub_data; do
+for name in logic worker display_model device_policy mosaico_battery scale_battery_cache steam_policy hub hub_data; do
  case "$name" in
  logic|worker) sources="integrated/main/logic.c" ;;
  display_model) sources="integrated/display/gbs_ui_model.c" ;;
  device_policy) sources="integrated/display/gbs_device_policy.c" ;;
  mosaico_battery) sources="" ;;
  scale_battery_cache) sources="integrated/display/gbs_scale_battery_cache.c" ;;
+ steam_policy) sources="integrated/display/gbs_steam_policy.c" ;;
  *) sources="integrated/display/gbs_hub.c integrated/display/gbs_ui_model.c" ;;
  esac
  cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
@@ -25,6 +26,7 @@ python integrated/tests/test_mosaico_orientation.py
 python integrated/tests/test_mosaico_power.py
 python integrated/tests/test_display_preferences.py
 python tools/test_integrated_surface.py
+python tools/test_smart_steam.py
 python tools/test_schedule_control.py
 python tools/test_command_coordinator.py
 python tools/test_ble_worker_recovery.py
@@ -32,6 +34,7 @@ python tools/test_cloud_command_timing.py
 python tools/test_cloud_connection_reuse.py
 python tools/test_cloud_history.py
 python tools/test_cloud_time_sync.py
+python tools/test_cloud_app_check.py
 python tools/test_quick_weight_control.py
 python tools/test_cloud_quick_weight.py
 python tools/test_integrated_support.py

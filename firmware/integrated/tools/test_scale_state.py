@@ -198,6 +198,21 @@ static void on_off_on(void) {
     }
 }
 
+static void steam_and_mode_json(void) {
+    snapshot=baseline();
+    cJSON *json=state_json();assert_null(json,"steamBoilerEnabled");assert_null(json,"machineMode");cJSON_Delete(json);
+    strcpy(snapshot.machine_mode,"BrewingMode");snapshot.steam_enabled_set=true;
+    for(int enabled=0;enabled<2;++enabled) {
+        snapshot.steam_enabled=enabled;json=state_json();
+        assert_bool(json,"steamBoilerEnabled",enabled);
+        assert(!strcmp(cJSON_GetObjectItem(json,"machineMode")->valuestring,"BrewingMode"));
+        assert(cJSON_GetObjectItem(json,"steamLevel")->valueint==2);cJSON_Delete(json);
+    }
+    ++selection.generation;json=state_json();
+    assert_null(json,"steamBoilerEnabled");assert_null(json,"machineMode");cJSON_Delete(json);
+    --selection.generation;
+}
+
 static void missing_or_invalid(void) {
     cloud_snapshot_t good=snapshot;
     const char *invalid[]={"null","1","\"true\"","{}","[]"};
@@ -406,6 +421,7 @@ static void retained_refresh_api_cases(void) {
 }
 
 int main(void) {
+    steam_and_mode_json();
     on_off_on();missing_or_invalid();battery_bounds();freshness_and_connection();binding();fresh_battery_observation();retained_refresh_api_cases();
     assert(!locked);return 0;
 }

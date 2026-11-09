@@ -31,6 +31,7 @@
 #include "hub_command_coordinator.h"
 #include "hub_http_response.h"
 #include "hub_state_keeper.h"
+#include "hub_wifi.h"
 #ifdef HUB_GRINDER
 #include "hub_grinder.h"
 #endif
@@ -107,6 +108,8 @@ typedef struct {
     uint32_t free_heap;
     uint32_t internal_largest;
     uint32_t attempts;
+    uint8_t access_rejections;
+    int64_t observed_ms;
 } readonly_http_diag_t;
 
 typedef struct {
@@ -124,6 +127,10 @@ typedef struct {
     double coffee_temperature;
     bool steam_level_set;
     int steam_level;
+    bool steam_enabled_set, steam_enabled;
+    char machine_mode[16];
+    bool machine_brewing;
+    int64_t boiler_observed_ms;
     char coffee_boiler_ready_time[32];
     char steam_boiler_ready_time[32];
     bool total_coffee_set;
@@ -196,6 +203,7 @@ static int64_t auth_refresh_last_success_uptime_ms = 0;
 static portMUX_TYPE auth_diag_lock = portMUX_INITIALIZER_UNLOCKED;
 static readonly_http_diag_t readonly_http_diags[READONLY_DIAG_COUNT] = {0};
 static portMUX_TYPE readonly_http_diag_lock = portMUX_INITIALIZER_UNLOCKED;
+static int64_t policy_required_ms;
 static bool cached_snapshot_matches_selection(void);
 
 typedef enum {
@@ -318,8 +326,16 @@ static void record_readonly_http_diag(
     uint32_t free_heap = (uint32_t)esp_get_free_heap_size();
     uint32_t internal_largest =
         (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    int64_t observed_ms = esp_timer_get_time() / 1000;
 
     portENTER_CRITICAL(&readonly_http_diag_lock);
+    readonly_http_diag_t *diag = &readonly_http_diags[kind];
+    if (observed_ms < diag->observed_ms || observed_ms - diag->observed_ms > 120000)
+        diag->access_rejections = 0;
+    if (status_code == 403 || status_code == 412) {
+        if (diag->access_rejections < 2) diag->access_rejections++;
+    } else diag->access_rejections = 0;
+    diag->observed_ms = observed_ms;
     readonly_http_diags[kind].err = err;
     readonly_http_diags[kind].status_code = status_code;
     readonly_http_diags[kind].duration_ms = duration_ms;
@@ -329,6 +345,58 @@ static void record_readonly_http_diag(
     readonly_http_diags[kind].internal_largest = internal_largest;
     readonly_http_diags[kind].attempts++;
     portEXIT_CRITICAL(&readonly_http_diag_lock);
+}
+
+static void record_cloud_policy_response(int status_code, const http_response_t *response)
+{
+    bool required = false;
+    // Only retain the documented code, never a vendor response body or message.
+    if (status_code >= 400 && status_code < 500 && response && response->data
+        && response->len > 0 && response->len <= 1024) {
+        const char *end = NULL;
+        cJSON *root = cJSON_ParseWithLengthOpts(response->data, response->len + 1, &end, true);
+        const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+        required = end == response->data + response->len && cJSON_IsString(code)
+            && !strcmp(code->valuestring, "USER_MUST_ACCEPT_POLICY");
+        cJSON_Delete(root);
+    }
+    int64_t observed_ms = esp_timer_get_time() / 1000;
+    portENTER_CRITICAL(&readonly_http_diag_lock);
+    policy_required_ms = required ? observed_ms : 0;
+    portEXIT_CRITICAL(&readonly_http_diag_lock);
+}
+
+bool hub_cloud_policy_acceptance_required(void)
+{
+    int64_t authenticated_ms = hub_cloud_auth_refresh_last_success_uptime_ms();
+    if (!hub_wifi_station_has_ip() || strcmp(hub_cloud_time_status(), "synchronized") || authenticated_ms <= 0)
+        return false;
+    portENTER_CRITICAL(&readonly_http_diag_lock);
+    int64_t observed_ms = policy_required_ms;
+    portEXIT_CRITICAL(&readonly_http_diag_lock);
+    int64_t now = esp_timer_get_time() / 1000;
+    return observed_ms > 0 && observed_ms >= authenticated_ms
+        && now >= observed_ms && now - observed_ms <= 120000;
+}
+
+bool hub_cloud_app_check_suggested(void)
+{
+    if (hub_cloud_policy_acceptance_required()) return true;
+    int64_t authenticated_ms = hub_cloud_auth_refresh_last_success_uptime_ms();
+    if (!hub_wifi_station_has_ip() || strcmp(hub_cloud_time_status(), "synchronized") || authenticated_ms <= 0)
+        return false;
+    readonly_http_diag_t things, dashboard;
+    portENTER_CRITICAL(&readonly_http_diag_lock);
+    things = readonly_http_diags[READONLY_DIAG_THINGS];
+    dashboard = readonly_http_diags[READONLY_DIAG_DASHBOARD];
+    portEXIT_CRITICAL(&readonly_http_diag_lock);
+    int64_t now = esp_timer_get_time() / 1000;
+    // Paired repeated rejection suggests checking the app, not proof of a terms update.
+    return things.access_rejections >= 2 && dashboard.access_rejections >= 2
+        && (things.status_code == 403 || dashboard.status_code == 403)
+        && things.observed_ms >= authenticated_ms && dashboard.observed_ms >= authenticated_ms
+        && now >= things.observed_ms && now - things.observed_ms <= 120000
+        && now >= dashboard.observed_ms && now - dashboard.observed_ms <= 120000;
 }
 
 static void clear_cached_fields(void)
@@ -844,6 +912,11 @@ static void record_auth_refresh_result(bool succeeded)
         auth_refresh_failure_count++;
     }
     portEXIT_CRITICAL(&auth_diag_lock);
+    portENTER_CRITICAL(&readonly_http_diag_lock);
+    readonly_http_diags[READONLY_DIAG_THINGS].access_rejections = 0;
+    readonly_http_diags[READONLY_DIAG_DASHBOARD].access_rejections = 0;
+    policy_required_ms = 0;
+    portEXIT_CRITICAL(&readonly_http_diag_lock);
 }
 
 static esp_err_t parse_installation_key(const char *config_value, installation_key_t *key)
@@ -1370,6 +1443,9 @@ static esp_err_t cloud_http_request_once(
     }
     if (err == ESP_OK) {
         err = inflate_http_response_if_needed(response);
+    }
+    if (err == ESP_OK && access_token != NULL && access_token[0] != '\0') {
+        record_cloud_policy_response(current_status, response);
     }
     goto complete;
 setup_failed:
@@ -3283,8 +3359,13 @@ static bool select_saved_machine_for_refresh(
 
 static void parse_machine_status(cJSON *output, cloud_snapshot_t *parsed)
 {
-    parsed->connected = strcmp(json_optional_string(output, "status"), "PoweredOn") == 0
-        || strcmp(json_optional_string(output, "status"), "Brewing") == 0;
+    const char *status = json_optional_string(output, "status");
+    const char *mode = json_optional_string(output, "mode");
+    parsed->machine_brewing = strcmp(status, "Brewing") == 0;
+    if (strcmp(mode, "BrewingMode") && strcmp(mode, "StandBy") && strcmp(mode, "Off"))
+        mode = !strcmp(status, "PoweredOn") || parsed->machine_brewing ? "BrewingMode"
+            : !strcmp(status, "StandBy") ? "StandBy" : !strcmp(status, "Off") ? "Off" : "";
+    snprintf(parsed->machine_mode, sizeof(parsed->machine_mode), "%s", mode);
 }
 
 static void parse_coffee_boiler(cJSON *output, cloud_snapshot_t *parsed)
@@ -3303,6 +3384,9 @@ static void parse_coffee_boiler(cJSON *output, cloud_snapshot_t *parsed)
 
 static void parse_steam_level(cJSON *output, cloud_snapshot_t *parsed)
 {
+    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(output, "enabled");
+    parsed->steam_enabled_set = cJSON_IsBool(enabled);
+    parsed->steam_enabled = cJSON_IsTrue(enabled);
     const char *level = json_optional_string(output, "targetLevel");
     if (strcmp(level, "Level1") == 0) {
         parsed->steam_level = 1;
@@ -3481,9 +3565,11 @@ static esp_err_t parse_dashboard_snapshot(
         }
 
         if (strcmp(code, "CMMachineStatus") == 0) {
+            parse_machine_status(output, parsed);
             // Standby is an operating mode, not loss of the Cloud connection.
             if (!cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(root, "connected")))
-                parse_machine_status(output, parsed);
+                parsed->connected = !strcmp(json_optional_string(output, "status"), "PoweredOn")
+                    || parsed->machine_brewing;
         } else if (strcmp(code, "CMCoffeeBoiler") == 0) {
             parse_coffee_boiler(output, parsed);
         } else if (strcmp(code, "CMSteamBoilerLevel") == 0) {
@@ -3513,6 +3599,7 @@ static esp_err_t parse_dashboard_snapshot(
     struct tm tm = {0};
     gmtime_r(&now, &tm);
     strftime(parsed->last_updated, sizeof(parsed->last_updated), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    parsed->boiler_observed_ms = esp_timer_get_time() / 1000;
     if (parsed->bbw_scale_connected_set || parsed->thing_scale_connected_set) {
         parsed->scale_observed_ms = esp_timer_get_time() / 1000;
     }
@@ -3701,19 +3788,10 @@ static esp_err_t cloud_fetch_dashboard(
 
 esp_err_t hub_cloud_refresh(void)
 {
-    if (hub_command_interactive_pending()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    ESP_RETURN_ON_ERROR(ensure_refresh_mutex(), TAG, "Cloud refresh mutex unavailable");
-    if (hub_command_interactive_pending()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (xSemaphoreTake(refresh_mutex, 0) != pdTRUE) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (hub_command_interactive_pending()) {
-        xSemaphoreGive(refresh_mutex);
-        return ESP_ERR_INVALID_STATE;
+    esp_err_t lock_err = cloud_readonly_io_lock();
+    if (lock_err != ESP_OK) {
+        // Wait for brief grinder IO; preserve the keeper ticket if no refresh could start.
+        return lock_err == ESP_ERR_TIMEOUT ? ESP_ERR_INVALID_STATE : lock_err;
     }
     set_refresh_running(true);
 
@@ -3896,9 +3974,8 @@ cleanup:
         memset(tokens, 0, sizeof(*tokens));
         free(tokens);
     }
-    mark_cloud_io_completed();
     set_refresh_running(false);
-    xSemaphoreGive(refresh_mutex);
+    cloud_readonly_io_unlock();
     return result;
 }
 
@@ -3974,6 +4051,11 @@ void hub_cloud_get_snapshot_status(hub_cloud_snapshot_status_t *out)
 #endif
     out->last_refresh_ms = last_refresh_ms;
     out->scale_observed_ms = snapshot_usable ? current.scale_observed_ms : 0;
+    out->boiler_observed_ms = snapshot_usable ? current.boiler_observed_ms : 0;
+    out->steam_enabled_known = snapshot_usable && current.steam_enabled_set;
+    out->steam_enabled = current.steam_enabled;
+    out->machine_powered_on = snapshot_usable && !strcmp(current.machine_mode, "BrewingMode");
+    out->machine_brewing = snapshot_usable && current.machine_brewing;
     out->dose1 = current.dose1;
     out->dose2 = current.dose2;
 }
@@ -5470,6 +5552,7 @@ const char *hub_cloud_machine_state_json(void)
     }
     char coffee_temperature[32] = "null";
     char steam_level[8] = "null";
+    char machine_mode[24] = "null";
     char coffee_ready_time[48] = "null";
     char steam_ready_time[48] = "null";
     char total_coffees[16] = "null";
@@ -5507,6 +5590,8 @@ const char *hub_cloud_machine_state_json(void)
     if (current.steam_level_set) {
         snprintf(steam_level, sizeof(steam_level), "%d", current.steam_level);
     }
+    if (current.machine_mode[0])
+        snprintf(machine_mode, sizeof(machine_mode), "\"%s\"", current.machine_mode);
     if (current.coffee_boiler_ready_time[0] != '\0') {
         snprintf(coffee_ready_time, sizeof(coffee_ready_time), "\"%s\"", current.coffee_boiler_ready_time);
     }
@@ -5589,9 +5674,9 @@ const char *hub_cloud_machine_state_json(void)
         "\"coffeeBoilerTargetTemperature\":%s,"
         "\"steamBoilerCurrentTemperature\":null,"
         "\"steamBoilerTargetTemperature\":null,"
-        "\"steamBoilerEnabled\":null,"
+        "\"steamBoilerEnabled\":%s,"
         "\"tankStatus\":null,"
-        "\"machineMode\":null,"
+        "\"machineMode\":%s,"
         "\"smartStandby\":null,"
         "\"lastUpdated\":\"%s\""
         "}",
@@ -5616,6 +5701,8 @@ const char *hub_cloud_machine_state_json(void)
         prebrew_on,
         prebrew_off,
         coffee_temperature,
+        current.steam_enabled_set ? (current.steam_enabled ? "true" : "false") : "null",
+        machine_mode,
         current.last_updated[0] != '\0' ? current.last_updated : "1970-01-01T00:00:00Z"
     );
     return body;

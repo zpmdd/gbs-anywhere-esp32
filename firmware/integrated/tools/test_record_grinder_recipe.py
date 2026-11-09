@@ -52,6 +52,8 @@ def main():
                        'target_grams': 36, 'target_seconds': 30, 'successes': 8},
                 '/machine/state': {'brewByWeightMode': 'Dose1', 'brewByWeightDose1': 20,
                                    **scale, 'scaleName': 'private-scale-name'},
+                '/machine/live-state': {'brewTimerState': 'idle', 'extractionSeconds': None,
+                                        'source': 'unconfigured'},
             }[self.path]
             data.update(token='must-not-be-saved', serialNumber='private-serial')
             self.send_response(200)
@@ -75,6 +77,8 @@ def main():
             sample = json.loads((output / 'samples.jsonl').read_text().splitlines()[0])
             captured_scale = sample['/machine/state']['data']
             assert all(captured_scale[key] == value for key, value in scale.items())
+            assert sample['/machine/live-state']['data']['source'] == 'unconfigured'
+            assert sample['sampledMonotonicNs'] > 0
             assert all(p.stat().st_mode & 0o777 == 0o600 for p in output.iterdir())
             assert Hub.calls == [('GET', p) for p in FIELDS]
             try:
@@ -85,7 +89,7 @@ def main():
                 raise AssertionError('control endpoint accepted')
             Hub.redirect = True
             assert read(base, 'synthetic', path)['status'] == 302
-            assert Hub.calls[-1] == ('GET', path) and len(Hub.calls) == 4
+            assert Hub.calls[-1] == ('GET', path) and len(Hub.calls) == len(FIELDS) + 1
             Hub.redirect = False
             for model in ('lamabuddy-esp32s3-amoled216', 'lamabuddy-esp32s31-mosaico'):
                 Hub.model = model

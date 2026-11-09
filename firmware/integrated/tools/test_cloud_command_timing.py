@@ -42,6 +42,8 @@ static const char *esp_err_to_name(int error) { return error==ESP_OK?"ESP_OK":"E
 static size_t heap_caps_get_free_size(int caps) { (void)caps;assert(!locked);return 50000; }
 static size_t heap_caps_get_largest_free_block(int caps) { (void)caps;assert(!locked);return 16000; }
 typedef hub_http_response_t http_response_t;
+static void record_cloud_policy_response(int status,const http_response_t *response)
+{ (void)status;(void)response; }
 typedef struct { char installation_id[40]; } installation_key_t;
 typedef int esp_http_client_method_t;
 enum { HTTP_METHOD_GET,HTTP_METHOD_POST };

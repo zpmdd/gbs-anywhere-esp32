@@ -354,6 +354,203 @@ read-only capture. Check the new job, recipe application, measured Cloud result
 and explicit grinder acknowledgement separately; do not use either earlier
 failed cup as success evidence.
 
+## Smart steam at startup
+
+The S31 profile adds an opt-in **Settings -> Smart steam** switch. The timezone
+is fixed to Beijing (UTC+8): 07:00 inclusive to 12:00 exclusive disables steam;
+14:00 inclusive to 20:00 exclusive enables steam without changing its level.
+Other hours keep the existing setting. The smart plug continues to supply power
+to the machine/grinder; this feature does not operate the plug, power on the
+machine, start brewing, or change the grinder.
+
+After wake/startup, automatic control waits for a completed SNTP synchronization
+and a dated, powered-on observation of the selected machine. A connected BLE
+observation younger than 15 seconds is preferred; without it, a successful Cloud
+dashboard observation younger than 90 seconds supplies the machine mode and the
+steam widget's explicit `enabled` boolean. Bluetooth range is not required.
+The existing command coordinator gives manual controls priority;
+grinder jobs and known brewing postpone the setting. Bluetooth writes and the
+existing conditional Cloud fallback recheck the automatic permission before a
+side effect. Unknown outcomes are never automatically replayed. Command acceptance
+alone is not confirmation: the home steam area waits for a fresh matching boiler
+observation before showing the applied mode.
+
+While enabled in a configured time window and without fresh BLE, the feature
+requests an existing state-keeper refresh at most every 30 seconds. While waiting
+for a write's confirmation, reads can run every five seconds, for up to 60 seconds
+on the Cloud path. These are state reads, not retries of the steam command; Wi-Fi
+loss, foreground controls and active cups defer background work. The Cloud read
+completion time is local evidence of a new response, not a guarantee of immediate
+vendor-side propagation. A missing matching read shows an unknown outcome after
+the confirmation timeout. Ordinary reads continue, and a later fresh, online
+observation matching the current window clears the warning without another
+steam command. This also repairs an unknown journal restored after a restart.
+Observations preceding this boot's command cannot confirm it, and manual
+choices remain manual even when their value matches the automatic target.
+
+Dashboard refresh uses the shared read-only IO admission path, waiting up to
+three seconds for brief grinder/statistics IO instead of immediately falling
+into the keeper's 30-second contention backoff. Foreground commands retain
+priority before and after acquiring the lock; longer contention still uses the
+existing bounded retry cadence.
+
+The selected machine/date/window and outcome are journaled in NVS before queueing
+a write. This also preserves manual choices across deep sleep and short network
+interruptions. Manual steam commands through the Hub cancel pending automation;
+a different observed steam setting after confirmation is treated as manual.
+The whole current morning/afternoon window then stays manual, including another
+power cycle within that window. A later window/day can apply its own rule at a
+new startup/wake. Toggling the feature off/on does not erase an unknown or manual
+outcome; the ordinary steam control remains available.
+
+Crossing a time boundary during one continuously observed session does not
+switch the boiler. A gap of at least 60 seconds without a fresh online machine
+observation, while the S31's Wi-Fi remains up, allows the next observation to
+start a session; the per-window journal still prevents replay. There is no
+vendor boot counter or Mi Home event subscription, so this is observation-based
+session detection, not proof of a physical power cycle. The time used is the
+first synchronized online observation, not the instant the smart plug switches.
+
+The S31 must be awake. Deep sleep suspends automation until the AI button wakes
+it; a Mi Home plug event cannot wake the current firmware. The steam setting
+may therefore remain at its old value briefly while the machine connects.
+Cloud control only needs the S31 and machine to be online; keeping them within
+Bluetooth range is optional. A disconnected or stale machine stays visibly
+waiting instead of receiving a blind write.
+
+Configuration is off by default on new installs and is persisted separately from
+machine credentials. Authenticated `GET /controls/steam-policy` reports enabled,
+timezone, fixed windows, phase and target. `POST` accepts only
+`{"enabled":true}` or `{"enabled":false}`. The home area and settings distinguish
+waiting, applying, confirmed, manual override, failed, unknown and storage failure.
+
+Offline validation covers both window boundaries, missing clock/boiler evidence,
+busy-machine deferral, BLE-free Cloud control and bounded refreshes, readback after
+an ACK, storage-before-send failure, manual
+priority/cancellation, reboot persistence, and the native 480 x 480 screens.
+Hardware power-on/steam switching is a separate acceptance step after installation.
+
+### Installation check, 2026-11-02
+
+Application build `e49a44c8` was installed on the S31 by USB into the existing
+`ota_0` slot. The 4,477,376-byte image passed the programmer's data verification;
+its SHA-256 is
+`32412beb319826be2e072d193e301b95d77b03784ff3fea7756c4c666f9eab69`.
+The installed partition table and active OTA metadata were read before repair;
+neither they nor the NVS partitions or the previous `ota_1` application were
+written. The USB reset disconnected the programmer after verification, and the
+running `/health` response independently confirmed the new build.
+
+Startup checks observed the display/data task ready, `ESP_OK`, authenticated
+Cloud, completed SNTP synchronization and a valid 100% battery reading. The
+feature was enabled and read back while the machine was off. Its actual 480 x
+480 home frame showed the waiting-for-machine state. These checks do not prove
+a physical boiler transition or battery endurance.
+
+The preceding candidate `d807caf8` failed at startup: its 58 S31 routes exceeded
+the previous capacity of 57, before USB CDC was initialized. The repaired build
+uses capacity 60 and a compile-time assertion against the actual route array.
+That failed candidate is not a hardware acceptance result.
+
+The `e49a44c8` precursor required BLE for automation. Its startup checks passed,
+but the user's Mac position was outside the machine's Bluetooth range, so it did
+not pass the steam scenario. The subsequent Cloud-capable revision parses the
+dashboard's steam boolean and machine mode and can confirm the setting without
+a BLE session.
+
+### Cloud-only steam validation, 2026-11-02
+
+Build `e1fbb5b5` supersedes that precursor. Application-only OTA wrote 4,478,672
+bytes to `ota_1`, restarted successfully and returned the matching running build
+ID. The image SHA-256 is
+`369ea12067153ccf6eb66b84f456cc0dbea636257fd10a7cee7b28c8b965446e`.
+The integrated offline suite and S31 build passed, including explicit Cloud
+boolean/mode parsing, selected-machine isolation, stale observations, bounded
+reads, post-command confirmation, manual precedence and no replay.
+
+The user powered the machine and grinder through the smart plug while the S31
+remained connected to the Mac, outside machine Bluetooth range. Bluetooth stayed
+disconnected throughout the captured validation. After installing this revision,
+the disabled policy's Cloud baseline showed `BrewingMode`, steam enabled and
+steam level 3. Enabling the policy during the Beijing morning window produced
+one `steamEnabled` command through Cloud: `ok=true`, `upstreamAttempts=1`,
+duration 3,471 ms. Its command response did not itself claim device readback.
+
+A later dashboard read showed steam disabled with level 3 unchanged. The policy
+became confirmed about 41.7 seconds after the baseline and remained confirmed
+across eight observations. The actual home frame displayed linkage ready and
+the Americano/steam-disabled state; startup health, display data, SNTP and the
+100% battery reading remained valid. No brew, grinder action or manual steam
+command was sent for this check.
+
+This validates one Cloud-only morning transition after firmware startup. It does
+not yet validate afternoon enablement on hardware, another physical plug cycle
+on this exact build, repeated-day stability or battery endurance. Deep sleep
+still suspends automation.
+
+### Two consecutive cups on the same build, 2026-11-02
+
+After the Cloud-only steam check, the user moved the still-running S31 beside
+the machine and enabled the scale. The scale reported connected with 96%
+battery. One read-only BLE validation restored the session and observed a
+93 C coffee boiler against a 92 C target, with steam disabled. Clock, Cloud,
+grinder, storage and recipe-follow readiness passed before grinding.
+
+The user then made two consecutive cups on build `e1fbb5b5`, observed between
+10:07 and 10:11 Beijing time:
+
+| Cup | Recipe target | Target time | Measured liquid | Measured time | Success counter |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 30 g | 30 s | 30.1 g | 26.476 s | 11 -> 12 |
+| 2 | 30 g | 30 s | 30.2 g | 32.762 s | 12 -> 13 |
+
+Both distinct jobs progressed through recipe waiting, applying and applied.
+Recipe synchronization reported 2,361 ms and 2,592 ms respectively. Each result
+returned the worker to ready with no pending delivery. The persisted success
+counter increments only after `brewDone` returns `Ok`; both increments and their
+corresponding result values were captured. The user also confirmed both cups
+were normal. No manual result replay or device restart was needed.
+
+The read-only capture ended cleanly with 335 samples, two jobs and zero failed
+reads. Final health still reported `e1fbb5b5`, synchronized time, healthy
+Cloud/grinder/storage, no active or pending job, steam disabled and the morning
+policy confirmed. This is a two-cup regression result, not proof of a causal
+grind adjustment, afternoon steam enablement, repeated-day stability or battery
+endurance.
+
+### Late steam confirmation recovery, 2026-11-03
+
+On build `e1fbb5b5`, the morning steam-off command completed in 4,309 ms with
+one upstream attempt, but the policy remained unknown after its confirmation
+timeout. Later fresh Cloud snapshots already showed steam disabled. The saved
+unknown outcome prevented those observations from clearing the warning.
+
+Build `a8ec00d5` repairs that reconciliation and reuses the bounded read-only IO
+admission path for dashboard refresh. Application-only OTA wrote 4,478,560 bytes
+to `ota_0`; the restarted device reported the matching build ID. The image
+SHA-256 is
+`a4db6b913c9bee2bd93f782a379af5eb3ff1c1bc88a5be8c4599750a3946c2a2`.
+The integrated and root offline suites, focused policy/runtime checks and S31
+build passed. Synthetic contention checks cover short lock waits, timeout
+mapping, foreground priority and balanced unlocks; they do not measure a
+hardware latency improvement.
+
+The existing unknown journal was preserved. Fresh Cloud readback confirmed
+steam disabled, without sending another steam command. Across 34 startup
+samples and five follow-up samples, completed and in-flight command counts
+remained zero. The five follow-up samples spanned about 30 seconds: the policy
+stayed confirmed, steam level stayed at 3, clock/Cloud/grinder/storage were
+ready, and no active or pending grinder job remained. The success counter
+stayed at 15. The actual 480 x 480 home frame showed linkage ready and
+Americano / steam disabled; the previous warning was gone.
+
+This startup separately waited about 80 seconds for network time: clock status
+was still syncing at uptime 78 seconds and was first observed synchronized at
+83 seconds. Cloud authentication completed at 83,151 ms, and the first observed
+steam confirmation was at uptime 90 seconds. The clock strategy was unchanged;
+this result does not establish a fast wake-up time. No new cup, physical smart
+plug cycle, afternoon enablement or long-duration run was tested on this build.
+
 ## Wake readiness on the home screen
 
 The native 480 x 480 home now uses its main status area for boot/wake recovery
@@ -419,6 +616,102 @@ user confirmed the success screen. No manual return or replay was performed;
 the prior failed cups were not counted. This proves one exact-build sleep/wake
 and new-cup return, not multi-day repeatability, physical burr adjustment or
 battery endurance. Private captures were stopped after verification.
+
+### Official app check after Cloud access rejection
+
+Publication check on 2026-11-09: integrated/root host checks, crypto checks,
+all three native AMOLED CTest checks and the S31 build passed for the combined
+pending smart-steam/recovery/reminder source. No new device installation or
+cup test was performed for this publication.
+
+The 2026-11-06 source adds an exact-code path based on
+[upstream PR #73](https://github.com/Skamba/gbs-anywhere/pull/73). A complete
+authenticated 4xx response with the top-level JSON string
+`code: "USER_MUST_ACCEPT_POLICY"` shows **请确认用户协议** and
+**请打开官方 App / 确认协议后自动恢复**. Unlike the heuristic below, one such
+response is sufficient. Only a complete JSON error body of at most 1 KiB is
+parsed; an unknown code, invalid body or oversized response cannot assert this
+specific cause. No raw body or provider message is retained in diagnostics.
+
+The observation must follow the latest successful login and be at most two
+minutes old. Wi-Fi and synchronized time remain required. Another complete
+authenticated response without that code, or a new authentication result,
+clears the exact-code state. Login responses and incomplete transport/body
+reads cannot establish it. Existing retries continue after the user confirms
+the policy in the official app; this does not promise an immediate recovery or
+recover an expired cup. The firmware neither accepts agreements nor adds
+requests or retries for this hint.
+
+`policyAcceptanceRequired` on `/diagnostics/cloud` and
+`cloud_policy_required` on `/diagnostics/grinder` distinguish the explicit
+reason from the generic suggestion. Active-cup and delivery outcomes retain
+priority over both messages. This revision is not yet installed or validated
+against a fresh real vendor-policy rejection.
+
+Local validation on 2026-11-06 passed the integrated and root host checks,
+three native AMOLED CTest checks, and the S31 build. The real LVGL renderer
+was inspected with synthetic policy and generic-access-rejection scenarios;
+the new heading fits, contains every required glyph and leaves cup outcomes
+in control. HTTP harnesses cover the complete-response/authentication gate,
+malformed and unrelated errors, expiry, recovery and unchanged request/retry
+behavior. The application is 4,486,512 bytes, with 14% of its 5 MiB slot free;
+its binary SHA-256 is
+`447aab1d5368dcc6c03b11a694f3d968a65cf58698cf009fa00b6920c9236841`.
+These are local build/render results, not new physical-device acceptance.
+
+When no explicit policy code is known, the existing fallback applies:
+
+The home recovery area shows an amber **Cloud access blocked** message with
+instructions to open the official La Marzocco app, check application updates
+and confirm its agreement when all of the following evidence is present:
+
+- Wi-Fi has an IP, this boot completed network time synchronization and Cloud
+  login succeeded.
+- Both the device-list and dashboard endpoints have at least two consecutive
+  403/412 responses, with at least one endpoint's latest response being 403.
+- Both observations follow the latest successful login and are no more than
+  two minutes old. A gap longer than two minutes resets the rejection count.
+
+An ordinary transport failure, a 5xx response, a single 412 or a successfully
+reported powered-off machine does not trigger this hint. A normal response
+from either endpoint clears its rejection count; a new authentication result
+clears both. Wi-Fi loss or incomplete clock synchronization suppresses the
+hint in favor of the corresponding recovery state. Active cups and their
+delivery outcomes retain their existing priority.
+
+This is a suggested troubleshooting step, not a diagnosis of a particular
+agreement version: these HTTP codes can have other causes. The firmware does
+not accept agreements, change authentication or add requests for this feature.
+The existing cached diagnostics expose `officialAppCheckSuggested` on
+`/diagnostics/cloud` and `cloud_app_check` on `/diagnostics/grinder`.
+
+The motivating field incident on build `a8ec00d5` had successful login at
+uptime 9,452 ms, working Wi-Fi/clock/grinder and repeated 403/412 observations,
+with no machine snapshot after several minutes. After the user updated the
+official app and accepted its agreement, the same S31 boot and login session
+recovered. One automatic afternoon steam command completed in 2,533 ms with
+one upstream attempt; fresh Cloud state confirmed steam enabled at level 3.
+The home then showed linkage ready and steam preheating. The app-update and
+agreement effects were not isolated, and the provider response text was not
+captured. This field incident predates the hint itself; no new cup was tested.
+
+The hint revision `a8cbc2db` passed the integrated and root offline checks,
+native AMOLED UI tests and the S31 build. The synthetic classifier exercises
+paired repeated rejection, unrelated errors, login/clock/Wi-Fi prerequisites,
+expiry, bounded counters and recovery. The actual LVGL renderer verifies the
+warning text, glyph coverage, two-line layout, clearing, recovery priorities
+and current-cup precedence.
+
+Application-only OTA installed 4,483,360 bytes in `ota_1`; the running build
+matched. Image SHA-256:
+`d6ec1d11b98723845eb3dfffae46d296a06eeac0513f1ded8b9b7188061a05f8`.
+At observed uptimes 34, 39 and 44 seconds, clock/Cloud/grinder/storage were
+ready, both diagnostic hint flags were false, the afternoon steam policy was
+confirmed at level 3, and no active/pending job or control command existed.
+The success count stayed at 18. A real home frame showed linkage ready and
+the normal latte/steam control. The account prerequisite had already been
+resolved, so the new rejection prompt was not induced on hardware. No new
+cup or long-duration run was tested on this revision.
 
 ## Earlier field evidence as of 2026-10-31
 

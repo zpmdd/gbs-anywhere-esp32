@@ -1,10 +1,11 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include "gbs_steam_policy.h"
 
 typedef struct {
     bool valid, wifi, grinder, cloud, storage, pairing, active, job, pending, canceling;
-    bool baseline, mode_failed, invalid_coffee;
+    bool baseline, mode_failed, invalid_coffee, cloud_app_check, cloud_policy_required;
     char phase[32], outcome[40], clock_status[16];
     char recipe_phase[24], job_id[64];
     char flow_job_id[64], recipe_job_id[64];
@@ -49,10 +50,10 @@ typedef enum { GBS_ACTION_WEIGHT, GBS_ACTION_COFFEE, GBS_ACTION_STEAM,
     GBS_ACTION_PREBREW_MODE, GBS_ACTION_PREBREW_ON, GBS_ACTION_PREBREW_OFF,
     GBS_ACTION_POWER, GBS_ACTION_STANDBY_ENABLED, GBS_ACTION_STANDBY_MINUTES,
     GBS_ACTION_STANDBY_MODE, GBS_ACTION_ROTATION_AUTO, GBS_ACTION_SOUND, GBS_ACTION_WEIGHT_PRESET,
-    GBS_ACTION_COUNT } gbs_ui_action_t;
+    GBS_ACTION_SMART_STEAM, GBS_ACTION_COUNT } gbs_ui_action_t;
 #define GBS_UI_MACHINE_ACTIONS (((1u << GBS_ACTION_COUNT) - 1) & \
     ~((1u << GBS_ACTION_MODE) | (1u << GBS_ACTION_BRIGHTNESS) | (1u << GBS_ACTION_DIM) | \
-      (1u << GBS_ACTION_ROTATION_AUTO) | (1u << GBS_ACTION_SOUND) | (1u << GBS_ACTION_WEIGHT_PRESET)))
+      (1u << GBS_ACTION_ROTATION_AUTO) | (1u << GBS_ACTION_SOUND) | (1u << GBS_ACTION_WEIGHT_PRESET) | (1u << GBS_ACTION_SMART_STEAM)))
 #define GBS_UI_VALUE_UNKNOWN 255u
 #define GBS_UI_CONTROL_WAIT_MS 30000
 #define GBS_UI_MACHINE_FRESH_MS 15000
@@ -67,6 +68,7 @@ typedef struct {
     bool valid, configured, connected, control_ready, cached_fresh;
     char status[32];
     int64_t observed_ms;
+    int64_t source_observed_ms;
 } gbs_ui_ble_t;
 
 // Values are measured snapshots, never copied from targets. NAN means unavailable.
@@ -80,6 +82,8 @@ typedef struct {
     bool available, stale, steam_enabled, steam_enabled_known;
     bool standby_enabled, standby_enabled_known;
     gbs_ui_ble_t ble;
+    bool smart_steam_available;
+    gbs_steam_status_t smart_steam;
     // Cloud scale observations are independent of the display's local battery.
     bool scale_connected_known, scale_connected, scale_battery_known, scale_stale;
     unsigned scale_battery_percent;

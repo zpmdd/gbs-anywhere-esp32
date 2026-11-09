@@ -27,6 +27,11 @@ Build `96c43cd7` passed one physical sleep/wake and recipe-follow cup with
 acknowledged feedback. See the [field evidence](docs/MOSAICO.md#wake-readiness-on-the-home-screen)
 and [recovery screens](docs/GALLERY.md#s31-wake-recovery--480--480).
 
+**Cloud reminder (2026-11-06, source only):** an explicit request to accept the
+provider's updated policy now shows a precise official-app reminder on AMOLED.
+Other access failures retain the existing troubleshooting hint. See
+[detection and validation limits](docs/MOSAICO.md#official-app-check-after-cloud-access-rejection).
+
 **Prefer a computer or NAS with a browser?** The separate
 [desktop recipe-follow branch](https://github.com/zpmdd/gbs-anywhere/tree/codex/desktop-recipe-follow)
 adds optional automatic recipe targets to the original Rust application for
@@ -62,6 +67,7 @@ The lightweight build handles feedback without recipe or machine controls.
 | --- | --- |
 | **Grinder linkage** | Fresh-task detection, measured shot feedback, monitor/active modes, reconnect diagnostics and a persistent no-replay journal. |
 | **Coffee controls** | Quick beverage weights, coffee temperature, steam levels, Brew-by-Weight doses/mode, prebrew, power and smart standby on the integrated profile. |
+| **S31 smart steam** | Optional Beijing-time startup selection: steam off 07:00-12:00, on 14:00-20:00, with manual priority and visible readback. See [behavior and validation limits](docs/MOSAICO.md#smart-steam-at-startup). |
 | **Recipe following** | Target selection from the current grind's recipe, manual cancellation and distinct pending, completed and unknown outcomes. |
 | **Native interface** | LVGL screens, large numerals, color plus icons, cup details, coffee history and existing-schedule editing. |
 | **AMOLED battery sessions** | Scale battery inside one icon, separate device battery, retained history across shutdown, warm-up estimates, optional rotation, physical buttons and audible milestones. |

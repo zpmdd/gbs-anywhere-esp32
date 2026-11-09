@@ -3,6 +3,7 @@
 #include "gbs_hub_client.h"
 #ifdef HUB_MOSAICO
 #include "hub_touchscreen.h"
+#include "gbs_smart_steam.h"
 #include "esp_sleep.h"
 #endif
 #include "driver/gpio.h"
@@ -254,6 +255,9 @@ static bool submit(gbs_ui_action_t action,double value,uint32_t request_id,const
 {
     (void)context;
     if(action==GBS_ACTION_MODE) return request_mode(value!=0);
+#ifdef HUB_MOSAICO
+    if(action==GBS_ACTION_SMART_STEAM) return (value==0||value==1)&&gbs_smart_steam_enable(value!=0)==ESP_OK;
+#endif
     const char *key=NULL;
     if(action==GBS_ACTION_BRIGHTNESS) key="brightness";
     else if(action==GBS_ACTION_DIM) key="dim";

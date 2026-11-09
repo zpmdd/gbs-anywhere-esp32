@@ -61,6 +61,8 @@ bool gbs_ui_parse_bridge(const char *json, gbs_ui_bridge_t *out)
     next.valid = strcmp(next.phase, "booting") != 0 && strcmp(next.phase, "configuration_required") != 0;
     next.wifi = flag(j, "wifi"); next.grinder = flag(j, "grinder");
     next.cloud = flag(j, "cloud"); next.storage = flag(j, "storage");
+    next.cloud_policy_required = flag(j, "cloud_policy_required");
+    next.cloud_app_check = flag(j, "cloud_app_check") || next.cloud_policy_required;
     next.pairing = flag(j, "pairing_required"); next.job = flag(j, "have_job");
     next.pending = flag(j, "pending"); next.canceling = flag(j, "canceling");
     next.baseline = flag(j, "baseline_pending");
@@ -206,7 +208,7 @@ gbs_ui_stage_t gbs_ui_stage(const gbs_ui_bridge_t *s)
     if (!strcmp(s->outcome, "delivery_refused") || !strcmp(s->outcome, "job_disappeared")) return GBS_UI_REFUSED;
     if (!s->wifi) return GBS_UI_WIFI;
     if (!s->grinder) return GBS_UI_GRINDER;
-    if (!s->cloud) return GBS_UI_CLOUD;
+    if (!s->cloud || s->cloud_app_check) return GBS_UI_CLOUD;
     if (s->baseline) return GBS_UI_BASELINE;
     if (!s->active) return GBS_UI_MONITOR;
     return !strcmp(s->outcome, "success") ? GBS_UI_RECEIVED : GBS_UI_READY;

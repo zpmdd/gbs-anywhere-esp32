@@ -1,6 +1,26 @@
 # Upstream comparison and validation
 
-## Current review: 2026-10-28
+## Current scoped port: 2026-11-06
+
+Reviewed upstream `main` at
+[`d31eda5fe4f22486697869848743ac526d4edb38`](https://github.com/Skamba/gbs-anywhere/commit/d31eda5fe4f22486697869848743ac526d4edb38).
+This maintenance change ports only the explicit policy-error detection from
+[#73](https://github.com/Skamba/gbs-anywhere/pull/73), merged upstream and
+included in desktop v0.4.0. It recognizes `USER_MUST_ACCEPT_POLICY` in the
+integrated Hub's existing authenticated response path and adds an AMOLED hint.
+Unknown errors retain the earlier paired-403/412 suggestion. The C port adds
+bounded parsing, fresh-session evidence, a separate diagnostic flag and
+offline regression coverage; it does not copy the Rust hourly log limiter.
+
+The upstream author's real setup established the error code and recovery after
+accepting the agreement; the upstream fix itself used a fake Cloud because the
+real rejection had already ended. Our exact-code path likewise has no new
+physical rejection or installation acceptance. See the
+[S31 behavior and validation notes](MOSAICO.md#official-app-check-after-cloud-access-rejection).
+Other recently reviewed upstream changes remain outside this scoped port.
+The earlier behavior and integration import pins remain unchanged.
+
+## Review: 2026-10-28
 
 Checked upstream `main` at
 [`04b6b1de7ec062280aa2335220c4570314cb6717`](https://github.com/Skamba/gbs-anywhere/commit/04b6b1de7ec062280aa2335220c4570314cb6717).
